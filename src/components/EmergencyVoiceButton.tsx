@@ -7,6 +7,7 @@ interface EmergencyVoiceButtonProps {
   onTranscriptChange: (transcript: string, isFinal: boolean) => void;
   onSubmitEmergency?: (text?: string) => void;
   isAnalyzing: boolean;
+  offlineMode?: boolean;
   soundEnabled: boolean;
   highContrast: boolean;
 }
@@ -29,11 +30,13 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   onTranscriptChange,
   onSubmitEmergency,
   isAnalyzing,
+  offlineMode = false,
   soundEnabled,
   highContrast
 }) => {
   const [isListening, setIsListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(true);
+  const [localSpeechSupported, setLocalSpeechSupported] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
@@ -52,6 +55,8 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       const recognition = new SpeechRecognitionClass();
       recognition.continuous = true;
       recognition.interimResults = true;
+      // The experimental flag is the only honest browser signal that recognition is local.
+      setLocalSpeechSupported((recognition as any).processLocally === true);
       recognition.lang = 'en-US';
 
       recognition.onstart = () => {
@@ -120,6 +125,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   }, [soundEnabled, onTranscriptChange, onSubmitEmergency]);
 
   const toggleRecording = () => {
+    if (offlineMode && !localSpeechSupported) {
+      setMicError('Offline voice recognition is not available on this device.');
+      return;
+    }
     if (isAnalyzing) return;
 
     if (!speechSupported) {
@@ -205,10 +214,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           )}
 
           <span className="text-xs sm:text-sm font-black uppercase tracking-wider text-white drop-shadow">
-            {isAnalyzing ? 'Analyzing emergency...' : isListening ? 'Listening' : 'Tap to Speak'}
+            {offlineMode && !localSpeechSupported ? 'Voice unavailable' : isAnalyzing ? 'Analyzing emergency...' : isListening ? 'Listening' : 'Tap to Speak'}
           </span>
           <span className="text-[10px] text-white/80 font-medium">
-            {isAnalyzing ? 'Nebius Nemotron' : isListening ? 'Tap when finished' : 'Emergency Voice'}
+            {offlineMode && !localSpeechSupported ? 'Type emergency text below' : isAnalyzing ? 'Nebius Nemotron' : isListening ? 'Tap when finished' : 'Emergency Voice'}
           </span>
         </motion.button>
       </div>
@@ -222,7 +231,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           </div>
         ) : (
           <div className="text-xs text-neutral-400">
-            {speechSupported ? 'Tap the button to speak your emergency aloud' : 'Type your emergency details in the box below'}
+            {offlineMode && !localSpeechSupported ? 'Offline voice recognition is not available on this device.' : speechSupported ? 'Tap the button to speak your emergency aloud' : 'Type your emergency details in the box below'}
           </div>
         )}
 

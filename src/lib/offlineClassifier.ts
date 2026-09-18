@@ -31,7 +31,7 @@ const EMERGENCY_RULES: EmergencyRule[] = [
     type: 'Medical - Cardiac Emergency',
     category: 'MEDICAL',
     defaultSeverity: 5,
-    needs: ['ALS Paramedic Ambulance', 'Automated External Defibrillator (AED)', 'Emergency Cardiac Care Team'],
+    needs: ['Ambulance', 'Medical help', 'Automated External Defibrillator (AED)'],
     badgeColor: 'RED',
     prioritySymbol: 'HEART_PULSE',
     actionSteps: [
@@ -113,7 +113,7 @@ const EMERGENCY_RULES: EmergencyRule[] = [
     type: 'Fire - Structure / Smoke Hazard',
     category: 'FIRE',
     defaultSeverity: 5,
-    needs: ['Fire Engine Company', 'Aerial Ladder Squad', 'Thermal Imaging Search Team', 'Paramedic Standby'],
+    needs: ['Fire service', 'Rescue', 'Medical help'],
     badgeColor: 'RED',
     prioritySymbol: 'FLAME',
     actionSteps: [

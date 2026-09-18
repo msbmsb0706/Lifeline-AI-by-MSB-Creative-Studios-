@@ -122,70 +122,40 @@ export default function App() {
     if (coords) setLocationCoords(coords);
   };
 
-  const handleAnalyzeEmergency = async () => {
-    if (!transcript.trim()) return;
+  const handleAnalyzeEmergency = async (providedText?: string) => {
+    const inputText = providedText ?? transcript;
+    if (!inputText.trim()) return;
 
     setIsAnalyzing(true);
     setError(null);
 
-    const textToAnalyze = transcript.trim();
+    const textToAnalyze = inputText.trim();
     const detectedLang = detectLanguage(textToAnalyze);
 
-    // If explicit Offline Fallback Mode is chosen by user
+    // TRUE OFFLINE MODE: classification happens in this browser only. No fetch, no server,
+    // no API key, and no remote logging/storage are involved.
     if (offlineForce) {
-      try {
-        const response = await fetch('/api/analyze-emergency', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: textToAnalyze,
-            location: locationInfo,
-            coordinates: locationCoords,
-            offlineModeForce: true,
-            language: detectedLang.name,
-            targetLanguage: selectedLanguage
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`Offline server returned HTTP ${response.status}`);
-        }
-
-        const json = await response.json();
-        if (json.success && json.data) {
-          const result: EmergencyAnalysisResult = json.data;
-          setNebiusConnected(false);
-          setCurrentResult(result);
-          saveReportToHistory(result);
-          if (soundEnabled) playPing('sos');
-        } else {
-          throw new Error(json.error || 'Failed to analyze offline emergency');
-        }
-      } catch (err: any) {
-        // Direct browser client deterministic fallback
-        const offlineClassified = classifyEmergencyOffline(
-          textToAnalyze,
-          locationInfo || undefined,
-          detectedLang.name,
-          selectedLanguage
-        );
-        const fallbackResult: EmergencyAnalysisResult = {
-          ...offlineClassified,
-          source: 'offline_fallback',
-          model_used: 'Browser Client Deterministic Triage Engine',
-          timestamp: new Date().toISOString(),
-          offline_notice: 'Direct browser offline triage executed. Zero network connectivity.',
-          latency_ms: 10,
-          raw_transcript: textToAnalyze,
-          location_coordinates: locationCoords
-        };
-        setNebiusConnected(false);
-        setCurrentResult(fallbackResult);
-        saveReportToHistory(fallbackResult);
-        if (soundEnabled) playPing('sos');
-      } finally {
-        setIsAnalyzing(false);
-      }
+      const offlineClassified = classifyEmergencyOffline(
+        textToAnalyze,
+        locationInfo || undefined,
+        detectedLang.name,
+        selectedLanguage
+      );
+      const fallbackResult: EmergencyAnalysisResult = {
+        ...offlineClassified,
+        source: 'offline_fallback',
+        model_used: 'LifeLine Local Deterministic Triage Rules',
+        timestamp: new Date().toISOString(),
+        offline_notice: 'OFFLINE — classified locally in this browser. No cloud API was called.',
+        latency_ms: 1,
+        raw_transcript: textToAnalyze,
+        location_coordinates: locationCoords
+      };
+      setNebiusConnected(false);
+      setCurrentResult(fallbackResult);
+      saveReportToHistory(fallbackResult);
+      if (soundEnabled) playPing('sos');
+      setIsAnalyzing(false);
       return;
     }
 
@@ -256,6 +226,27 @@ export default function App() {
 
     setIsTranslating(true);
     setError(null);
+
+    // Offline translation is deliberately local and limited to bundled emergency phrases.
+    if (offlineForce) {
+      const localTrans = translateEmergencyOffline(
+        currentResult.message,
+        targetLangCode,
+        currentResult.emergency_category || 'MEDICAL',
+        currentResult.severity,
+        currentResult.emergency_type,
+        currentResult.detected_language?.code,
+        locationInfo || undefined
+      );
+      const updatedResult: EmergencyAnalysisResult = {
+        ...currentResult,
+        translation: { ...localTrans, source: 'offline_fallback', model_used: 'Bundled emergency phrasebook' }
+      };
+      setCurrentResult(updatedResult);
+      saveReportToHistory(updatedResult);
+      setIsTranslating(false);
+      return;
+    }
 
     try {
       const response = await fetch('/api/translate-emergency', {
@@ -391,10 +382,16 @@ export default function App() {
           </div>
         </div>
 
+        {/* Explicit mode status */}
+        <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${offlineForce ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
+          {offlineForce ? 'OFFLINE — No API Key Required • Local deterministic rules • No cloud calls' : 'ONLINE / HACKATHON — Nebius Token Factory • Configured Nemotron model • API key required'}
+        </div>
+
         {/* Big Emergency Voice Push Button */}
         <EmergencyVoiceButton
           onTranscriptChange={handleTranscriptVoiceChange}
           isAnalyzing={isAnalyzing}
+          offlineMode={offlineForce}
           soundEnabled={soundEnabled}
           highContrast={highContrast}
         />
@@ -404,6 +401,10 @@ export default function App() {
           transcript={transcript}
           onTranscriptChange={setTranscript}
           onSubmitEmergency={handleAnalyzeEmergency}
+          onOfflineTest={(testText) => {
+            setTranscript(testText);
+            handleAnalyzeEmergency(testText);
+          }}
           isAnalyzing={isAnalyzing}
           offlineForce={offlineForce}
           highContrast={highContrast}
@@ -464,7 +465,7 @@ export default function App() {
                 className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs shadow transition-colors"
                 title="Switch to Offline Fallback Mode for immediate on-device triage"
               >
-                Use Offline Fallback
+                Switch to Offline Mode
               </button>
               <button
                 id="error-retry-btn"
@@ -601,7 +602,7 @@ export default function App() {
             </button>
             <span className="text-neutral-600 hidden sm:inline">•</span>
             <div className="text-[10px] text-neutral-400">
-              NVIDIA Nemotron via Nebius Token Factory • Multilingual Emergency Translation
+              {offlineForce ? 'Offline local rules • Bundled emergency phrasebook' : 'NVIDIA Nemotron via Nebius Token Factory • Online emergency translation'}
             </div>
           </div>
         </div>

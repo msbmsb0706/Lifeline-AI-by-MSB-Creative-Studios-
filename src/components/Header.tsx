@@ -95,7 +95,11 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           )}
 
-          {/* Offline / Online AI Mode Pill */}
+          {/* Clearly separated Online / Offline mode selector */}
+          <div className="hidden lg:flex flex-col items-end leading-tight mr-1" aria-label="Current analysis mode">
+            <span className="text-[9px] font-black tracking-widest text-neutral-500">{offlineForce ? 'OFFLINE / RESILIENCE' : 'ONLINE / HACKATHON'}</span>
+            <span className={`text-[9px] font-semibold ${offlineForce ? 'text-amber-400' : 'text-emerald-400'}`}>{offlineForce ? 'No Internet • No API Key' : 'Nebius • Nemotron'}</span>
+          </div>
           <button
             id="toggle-offline-mode-btn"
             onClick={onToggleOfflineForce}
@@ -109,12 +113,12 @@ export const Header: React.FC<HeaderProps> = ({
             {offlineForce ? (
               <>
                 <WifiOff className="w-3.5 h-3.5 text-amber-400" />
-                <span className="hidden xs:inline">Offline Mode</span>
+                <span className="hidden xs:inline">OFFLINE • No API Key</span>
               </>
             ) : (
               <>
                 <Wifi className="w-3.5 h-3.5 text-neutral-400" />
-                <span className="hidden xs:inline">Online AI Mode</span>
+                <span className="hidden xs:inline">ONLINE • Nebius</span>
               </>
             )}
           </button>
