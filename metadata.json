@@ -1,0 +1,6 @@
+{
+  "name": "LifeLine AI by MSB Creative Studios",
+  "description": "Emergency communication assistant with speech-to-text triage, Nemotron-powered rapid classification via Nebius Token Factory, deterministic high-contrast SOS visual cards, and resilient offline fallback mode.",
+  "requestFramePermissions": ["microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
