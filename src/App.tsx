@@ -5,6 +5,7 @@ import { TranscriptArea } from './components/TranscriptArea.tsx';
 import { SOSCardView } from './components/SOSCardView.tsx';
 import { SplashScreen } from './components/SplashScreen.tsx';
 import { PrivacySafetyModal } from './components/PrivacySafetyModal.tsx';
+import { SilentSOS } from './components/SilentSOS.tsx';
 import {
   EmergencyAnalysisResult,
   SystemStatus,
@@ -18,6 +19,7 @@ import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock } from 'luc
 export default function App() {
   const [showSplash, setShowSplash] = useState<boolean>(true);
   const [showPrivacyModal, setShowPrivacyModal] = useState<boolean>(false);
+  const [showSilentSOS, setShowSilentSOS] = useState<boolean>(false);
   const [transcript, setTranscript] = useState('');
   const [locationInfo, setLocationInfo] = useState<string | null>(null);
   const [locationCoords, setLocationCoords] = useState<{ latitude: number; longitude: number; accuracyMeters?: number } | null>(null);
@@ -42,21 +44,8 @@ export default function App() {
     }
   });
 
-  // Check system status from backend on mount
-  useEffect(() => {
-    async function checkStatus() {
-      try {
-        const res = await fetch('/api/status');
-        if (res.ok) {
-          const data: SystemStatus = await res.json();
-          setSystemStatus(data);
-        }
-      } catch (err) {
-        console.warn('Could not fetch backend status. Assuming local offline mode ready.', err);
-      }
-    }
-    checkStatus();
-  }, []);
+  // Deliberately no automatic status request: this keeps Offline/Resilience mode network-silent.
+  // Online mode remains API-backed when the user explicitly selects it and submits an analysis.
 
   // Load recent reports from localStorage ONLY if user has opted into storage feature
   useEffect(() => {
@@ -387,6 +376,17 @@ export default function App() {
           {offlineForce ? 'OFFLINE — No API Key Required • Local deterministic rules • No cloud calls' : 'ONLINE / HACKATHON — Nebius Token Factory • Configured Nemotron model • API key required'}
         </div>
 
+        {/* Silent SOS activation: location is requested only after this explicit user action */}
+        <button
+          id="open-silent-sos-btn"
+          onClick={() => setShowSilentSOS(true)}
+          className="w-full mb-3 py-4 rounded-xl bg-red-700 hover:bg-red-600 border-2 border-red-400 text-white font-black tracking-wide shadow-lg shadow-red-950/50 flex items-center justify-center gap-2"
+        >
+          <ShieldCheck className="w-5 h-5" />
+          SILENT SOS
+          <span className="text-[10px] font-semibold opacity-80">No speaking required • Confirmation required</span>
+        </button>
+
         {/* Big Emergency Voice Push Button */}
         <EmergencyVoiceButton
           onTranscriptChange={handleTranscriptVoiceChange}
@@ -572,6 +572,17 @@ export default function App() {
           </section>
         )}
       </main>
+
+      {showSilentSOS && (
+        <SilentSOS
+          offlineMode={offlineForce}
+          onClose={() => setShowSilentSOS(false)}
+          onSaveResult={(result) => {
+            setCurrentResult(result);
+            saveReportToHistory(result);
+          }}
+        />
+      )}
 
       {/* Footer */}
       <footer className="w-full border-t border-neutral-800/80 py-4 px-4 text-center text-[11px] text-neutral-400">
