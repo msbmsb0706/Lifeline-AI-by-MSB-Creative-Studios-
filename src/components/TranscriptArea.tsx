@@ -22,6 +22,7 @@ interface TranscriptAreaProps {
   onTranscriptChange: (text: string) => void;
   onSubmitEmergency: () => void;
   onTestNebiusConnection?: () => void;
+  onOfflineTest?: (text: string) => void;
   isAnalyzing: boolean;
   offlineForce: boolean;
   highContrast: boolean;
@@ -104,6 +105,7 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
   onTranscriptChange,
   onSubmitEmergency,
   onTestNebiusConnection,
+  onOfflineTest,
   isAnalyzing,
   offlineForce,
   highContrast,
@@ -345,6 +347,23 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
           </select>
         </div>
       </div>
+
+      {/* Local deterministic verification tests */}
+      {offlineForce && onOfflineTest && (
+        <div className="mt-3.5 pt-3 border-t border-amber-800/70">
+          <div className="text-[11px] font-semibold text-amber-300 uppercase tracking-wider mb-2">Offline Test — runs on this device</div>
+          <div className="flex flex-wrap gap-1.5">
+            <button type="button" onClick={() => onOfflineTest('A person is unconscious and needs an ambulance immediately.')} disabled={isAnalyzing}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-700 font-semibold">
+              Test: unconscious + ambulance
+            </button>
+            <button type="button" onClick={() => onOfflineTest('There is a fire inside the building and people are trapped.')} disabled={isAnalyzing}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-700 font-semibold">
+              Test: fire + trapped
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Multilingual Quick Emergency Scenarios */}
       <div className="mt-3.5 pt-3 border-t border-neutral-800/80">
