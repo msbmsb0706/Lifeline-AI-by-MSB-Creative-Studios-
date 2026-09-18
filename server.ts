@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { classifyEmergencyOffline } from './src/lib/offlineClassifier.ts';
@@ -15,9 +14,6 @@ import {
 import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory } from './src/types.ts';
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
 const NEBIUS_BASE_URI = (process.env.NEBIUS_BASE_URI || process.env.NEBIUS_BASE_URL || 'https://api.tokenfactory.us-central1.nebius.com/v1').replace(/\/+$/, '');
