@@ -19,37 +19,58 @@ const QUICK_EVENTS: QuickEvent[] = [
   { label: 'OTHER', icon: '❓', text: 'Possible emergency requiring assessment.' }
 ];
 
+const MAX_EVIDENCE_IMAGES = 2;
+
 const severityLabel = (severity: SeverityLevel | undefined) =>
   severity === 5 ? 'Critical' : severity === 4 ? 'High' : severity === 3 ? 'Moderate' : 'Unknown';
+
+const gpsErrorMessage = (code?: number) => {
+  if (code === 1) return 'GPS unavailable: permission denied. Location was not included.';
+  if (code === 2) return 'GPS unavailable: position could not be determined.';
+  if (code === 3) return 'GPS unavailable: location request timed out.';
+  return 'GPS unavailable.';
+};
 
 export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSaveResult }) => {
   const [selectedEvent, setSelectedEvent] = useState<QuickEvent | null>(null);
   const [message, setMessage] = useState('');
-  const [location, setLocation] = useState<{ text: string; coords?: { latitude: number; longitude: number } }>({ text: 'Not available' });
+  const [location, setLocation] = useState<{ text: string; coords?: { latitude: number; longitude: number } }>({
+    text: 'Requesting current location once…'
+  });
   const [locationRequested, setLocationRequested] = useState(false);
-  const [image, setImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [images, setImages] = useState<File[]>([]);
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [imageNotice, setImageNotice] = useState('');
+  const [shareNotice, setShareNotice] = useState('');
   const [sensorSignal, setSensorSignal] = useState(false);
   const [sensorAvailable, setSensorAvailable] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const motionRef = useRef<{ x: number; y: number; z: number } | null>(null);
+  const previewUrlsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    return () => {
+      previewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      previewUrlsRef.current = [];
+    };
+  }, []);
 
   // One permission request and one position read per activation. No watcher/background tracking.
   useEffect(() => {
     if (locationRequested) return;
     setLocationRequested(true);
     if (!navigator.geolocation) {
-      setLocation({ text: 'Not available' });
+      setLocation({ text: 'GPS unavailable: this browser does not support geolocation.' });
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (position) => setLocation({
-        text: `Available (±${Math.round(position.coords.accuracy)}m)`,
-        coords: { latitude: position.coords.latitude, longitude: position.coords.longitude }
-      }),
-      () => setLocation({ text: 'Not available' }),
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+      (position) =>
+        setLocation({
+          text: `Available (±${Math.round(position.coords.accuracy)}m) — ${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`,
+          coords: { latitude: position.coords.latitude, longitude: position.coords.longitude }
+        }),
+      (error) => setLocation({ text: gpsErrorMessage(error?.code) }),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
     );
   }, [locationRequested]);
 
@@ -77,13 +98,42 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   }, [message, selectedEvent, location.text]);
 
   const possibleEvent = selectedEvent?.label || result.emergency_type || 'Other emergency';
-  const evidence = [location.text !== 'Not available' && 'GPS', image && 'Image', sensorSignal && 'Sensor', 'User trigger'].filter(Boolean).join(' / ');
+  const gpsAvailable = Boolean(location.coords);
+  const evidence = [
+    gpsAvailable && 'GPS',
+    images.length > 0 && `Image (${images.length})`,
+    sensorSignal && 'Sensor',
+    'User trigger'
+  ]
+    .filter(Boolean)
+    .join(' / ');
 
-  const selectImage = (file?: File) => {
-    if (!file) return;
-    setImage(file);
-    setImagePreview(URL.createObjectURL(file));
-    setImageNotice(offlineMode ? 'Offline image analysis unavailable' : 'Possible visual evidence supplied; image interpretation is not certain.');
+  const addImages = (fileList?: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    const incoming = Array.from(fileList).filter((file) => file.type.startsWith('image/'));
+    const remaining = MAX_EVIDENCE_IMAGES - images.length;
+    if (remaining <= 0) {
+      setImageNotice('Maximum of two evidence images already selected.');
+      return;
+    }
+    const nextFiles = incoming.slice(0, remaining);
+    const nextUrls = nextFiles.map((file) => URL.createObjectURL(file));
+    previewUrlsRef.current = [...previewUrlsRef.current, ...nextUrls];
+    setImages((prev) => [...prev, ...nextFiles]);
+    setImagePreviews((prev) => [...prev, ...nextUrls]);
+    setImageNotice(
+      offlineMode
+        ? 'Images are evidence only. They are not sent to any vision AI model. Offline image analysis unavailable.'
+        : 'Images are evidence only. They are not sent to any vision AI model.'
+    );
+  };
+
+  const removeImage = (index: number) => {
+    const url = imagePreviews[index];
+    if (url) URL.revokeObjectURL(url);
+    previewUrlsRef.current = previewUrlsRef.current.filter((_, i) => i !== index);
+    setImages((prev) => prev.filter((_, i) => i !== index));
+    setImagePreviews((prev) => prev.filter((_, i) => i !== index));
   };
 
   const createSilentResult = (): EmergencyAnalysisResult => ({
@@ -99,19 +149,52 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   const confirmShare = async () => {
     const silentResult = createSilentResult();
     onSaveResult?.(silentResult);
-    const shareText = `SILENT SOS\nEmergency type: ${possibleEvent}\nSeverity: ${severityLabel(result.severity)}\nLocation: ${location.text}\nEvidence: ${evidence}\nMessage: ${silentResult.raw_transcript}${image ? `\nImage: ${image.name} (user-provided)` : ''}`;
+    const timestamp = silentResult.timestamp;
+    const imageNames = images.length ? images.map((file, i) => `${i + 1}. ${file.name}`).join('; ') : 'None';
+    const shareText = [
+      'SILENT SOS',
+      `Emergency type: ${possibleEvent}`,
+      `Severity: ${severityLabel(result.severity)}`,
+      `Location: ${location.text}`,
+      `Timestamp: ${timestamp}`,
+      `Evidence: ${evidence}`,
+      `Message: ${silentResult.raw_transcript}`,
+      `Image attachments: ${imageNames}`,
+      'This alert is user-confirmed. LifeLine AI does not automatically contact government or rescue services.'
+    ].join('\n');
+
+    let filesIncluded = false;
+    let notice = '';
     if (navigator.share) {
       try {
         const shareData: ShareData = { title: 'LifeLine AI Silent SOS', text: shareText };
-        if (image && typeof navigator.canShare === 'function' && navigator.canShare({ files: [image] })) {
-          shareData.files = [image];
+        if (images.length > 0 && typeof navigator.canShare === 'function' && navigator.canShare({ files: images })) {
+          shareData.files = images;
+          filesIncluded = true;
         }
         await navigator.share(shareData);
-      } catch { /* user cancelled */ }
+        if (images.length > 0 && !filesIncluded) {
+          notice = 'Share sheet opened. This browser could not attach the image files. Nothing was sent to government or rescue services.';
+        }
+      } catch {
+        /* user cancelled */
+      }
     } else {
-      try { await navigator.clipboard.writeText(shareText); } catch { /* sharing remains user-controlled */ }
+      try {
+        await navigator.clipboard.writeText(shareText);
+        notice =
+          images.length > 0
+            ? 'Alert text copied to clipboard. Image attachments could not be included because file sharing is unavailable. Nothing was sent to government or rescue services.'
+            : 'Alert text copied to clipboard. Nothing was sent to government or rescue services.';
+      } catch {
+        notice = 'Sharing remains user-controlled. Clipboard access was unavailable.';
+      }
     }
     setShowConfirmation(false);
+    if (notice) {
+      setShareNotice(notice);
+      return;
+    }
     onClose();
   };
 
@@ -141,17 +224,37 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
           <div className="grid sm:grid-cols-2 gap-3">
             <label className="rounded-xl border border-neutral-700 bg-neutral-900 p-3 cursor-pointer hover:border-red-500">
               <span className="flex items-center gap-2 font-bold text-sm"><Camera className="w-4 h-4 text-red-400" /> Add emergency image</span>
-              <span className="block text-[11px] text-neutral-400 mt-1">Capture or select one image only. No continuous camera.</span>
-              <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={(e) => selectImage(e.target.files?.[0])} />
+              <span className="block text-[11px] text-neutral-400 mt-1">Capture or select up to two images. No continuous camera.</span>
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                multiple
+                className="sr-only"
+                onChange={(e) => {
+                  addImages(e.target.files);
+                  e.target.value = '';
+                }}
+              />
             </label>
             <div className="rounded-xl border border-neutral-700 bg-neutral-900 p-3 text-sm">
               <div className="flex items-center gap-2 font-bold"><MapPin className="w-4 h-4 text-emerald-400" /> Location</div>
-              <div className={`mt-1 text-xs ${location.text.startsWith('Available') ? 'text-emerald-300' : 'text-amber-300'}`}>{location.text}</div>
-              <div className="text-[10px] text-neutral-500 mt-1">One-time permission request; no background tracking.</div>
+              <div className={`mt-1 text-xs ${gpsAvailable ? 'text-emerald-300' : 'text-amber-300'}`}>{location.text}</div>
+              <div className="text-[10px] text-neutral-500 mt-1">One-time current-position request after Silent SOS activation; no background tracking.</div>
             </div>
           </div>
 
-          {imagePreview && <div className="rounded-xl overflow-hidden border border-neutral-700"><img src={imagePreview} alt="User-provided emergency evidence" className="max-h-48 w-full object-cover" />{imageNotice && <div className="p-2 text-xs text-amber-300 bg-amber-950/70">{imageNotice}</div>}</div>}
+          {imagePreviews.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              {imagePreviews.map((src, index) => (
+                <div key={src} className="rounded-xl overflow-hidden border border-neutral-700 relative">
+                  <img src={src} alt={`User-provided emergency evidence ${index + 1}`} className="max-h-48 w-full object-cover" />
+                  <button type="button" onClick={() => removeImage(index)} className="absolute top-1 right-1 text-[10px] bg-black/70 px-2 py-1 rounded">Remove</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {imageNotice && <div className="p-2 text-xs text-amber-300 bg-amber-950/70 rounded-xl">{imageNotice}</div>}
 
           <div className="rounded-xl bg-red-950/50 border-2 border-red-700 p-4">
             <div className="text-xl font-black mb-3">🚨 POSSIBLE EMERGENCY</div>
@@ -171,6 +274,8 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
             <div className="mt-2 font-black tracking-widest text-red-400">LIFELINE AI • MSB CREATIVE STUDIOS</div>
           </div>
 
+          {shareNotice && <div className="p-3 rounded-xl bg-purple-950/60 border border-purple-700 text-xs text-purple-100">{shareNotice}</div>}
+
           <div className="grid grid-cols-2 gap-3 pt-1">
             <button onClick={() => setShowConfirmation(true)} className="py-4 rounded-xl bg-red-600 hover:bg-red-500 font-black text-sm flex items-center justify-center gap-2"><ShieldAlert className="w-5 h-5" /> SHARE SOS ALERT</button>
             <button onClick={onClose} className="py-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 font-black text-sm flex items-center justify-center gap-2"><CheckCircle2 className="w-5 h-5" /> CANCEL</button>
@@ -179,18 +284,29 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
       </div>
 
       {showConfirmation && (
-        <div className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4">
-          <div className="max-w-lg w-full rounded-2xl border-2 border-amber-500 bg-neutral-950 p-5 shadow-2xl">
+        <div className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="max-w-lg w-full rounded-2xl border-2 border-amber-500 bg-neutral-950 p-5 shadow-2xl my-6">
             <h3 className="text-xl font-black text-amber-300">Confirm what will be shared</h3>
-            <p className="text-xs text-neutral-300 mt-2">Nothing has been shared yet. Review and explicitly confirm.</p>
+            <p className="text-xs text-neutral-300 mt-2">Nothing has been shared yet. Review and explicitly confirm. LifeLine AI does not automatically contact government agencies, police, ambulance, fire service, or rescue organizations.</p>
             <div className="my-4 rounded-xl bg-neutral-900 border border-neutral-700 p-3 text-sm space-y-2">
               <div><b>Emergency type:</b> {possibleEvent}</div>
               <div><b>Severity:</b> {severityLabel(result.severity)}</div>
               <div><b>Location:</b> {location.text}</div>
+              <div><b>Timestamp:</b> {new Date().toISOString()}</div>
               <div><b>User-provided emergency message:</b> {message || selectedEvent?.text || 'None'}</div>
-              <div><b>User-provided image:</b> {image ? `${image.name} (selected)` : 'None'}</div>
+              <div><b>User-provided images:</b> {images.length ? `${images.length} selected` : 'None'}</div>
+              {imagePreviews.length > 0 && (
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  {imagePreviews.map((src, index) => (
+                    <img key={src} src={src} alt={`Review evidence ${index + 1}`} className="rounded-lg max-h-32 w-full object-cover border border-neutral-700" />
+                  ))}
+                </div>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-3"><button onClick={confirmShare} className="py-3 rounded-xl bg-red-600 font-black">CONFIRM SHARE</button><button onClick={() => setShowConfirmation(false)} className="py-3 rounded-xl bg-neutral-800 border border-neutral-600 font-black">GO BACK</button></div>
+            <div className="grid grid-cols-2 gap-3">
+              <button onClick={confirmShare} className="py-3 rounded-xl bg-red-600 font-black">CONFIRM SHARE</button>
+              <button onClick={() => setShowConfirmation(false)} className="py-3 rounded-xl bg-neutral-800 border border-neutral-600 font-black">GO BACK</button>
+            </div>
           </div>
         </div>
       )}
