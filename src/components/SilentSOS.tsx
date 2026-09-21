@@ -10,6 +10,7 @@ interface SilentSOSProps {
 }
 
 type QuickEvent = { label: string; icon: string; text: string };
+
 const QUICK_EVENTS: QuickEvent[] = [
   { label: 'MEDICAL', icon: '🩺', text: 'Medical emergency. Immediate medical help may be needed.' },
   { label: 'FIRE', icon: '🔥', text: 'Possible fire or smoke emergency.' },
@@ -34,9 +35,10 @@ const gpsErrorMessage = (code?: number) => {
 export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSaveResult }) => {
   const [selectedEvent, setSelectedEvent] = useState<QuickEvent | null>(null);
   const [message, setMessage] = useState('');
-  const [location, setLocation] = useState<{ text: string; coords?: { latitude: number; longitude: number } }>({
-    text: 'Requesting current location once…'
-  });
+  const [location, setLocation] = useState<{
+    text: string;
+    coords?: { latitude: number; longitude: number };
+  }>({ text: 'Requesting current location once…' });
   const [locationRequested, setLocationRequested] = useState(false);
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
@@ -64,12 +66,15 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (position) =>
+      (position) => {
         setLocation({
           text: `Available (±${Math.round(position.coords.accuracy)}m) — ${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`,
           coords: { latitude: position.coords.latitude, longitude: position.coords.longitude }
-        }),
-      (error) => setLocation({ text: gpsErrorMessage(error?.code) }),
+        });
+      },
+      (error) => {
+        setLocation({ text: gpsErrorMessage(error?.code) });
+      },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
     );
   }, [locationRequested]);
@@ -78,12 +83,15 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   useEffect(() => {
     if (!('DeviceMotionEvent' in window)) return;
     const onMotion = (event: DeviceMotionEvent) => {
-      const a = event.accelerationIncludingGravity;
-      if (!a) return;
+      const acceleration = event.accelerationIncludingGravity;
+      if (!acceleration) return;
       setSensorAvailable(true);
       const previous = motionRef.current;
-      const current = { x: a.x || 0, y: a.y || 0, z: a.z || 0 };
-      if (previous && Math.abs(current.x - previous.x) + Math.abs(current.y - previous.y) + Math.abs(current.z - previous.z) > 24) {
+      const current = { x: acceleration.x || 0, y: acceleration.y || 0, z: acceleration.z || 0 };
+      if (
+        previous &&
+        Math.abs(current.x - previous.x) + Math.abs(current.y - previous.y) + Math.abs(current.z - previous.z) > 24
+      ) {
         setSensorSignal(true);
       }
       motionRef.current = current;
@@ -149,32 +157,35 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   const confirmShare = async () => {
     const silentResult = createSilentResult();
     onSaveResult?.(silentResult);
-    const timestamp = silentResult.timestamp;
     const imageNames = images.length ? images.map((file, i) => `${i + 1}. ${file.name}`).join('; ') : 'None';
     const shareText = [
       'SILENT SOS',
       `Emergency type: ${possibleEvent}`,
       `Severity: ${severityLabel(result.severity)}`,
       `Location: ${location.text}`,
-      `Timestamp: ${timestamp}`,
+      `Timestamp: ${silentResult.timestamp}`,
       `Evidence: ${evidence}`,
       `Message: ${silentResult.raw_transcript}`,
       `Image attachments: ${imageNames}`,
       'This alert is user-confirmed. LifeLine AI does not automatically contact government or rescue services.'
     ].join('\n');
 
-    let filesIncluded = false;
     let notice = '';
+    const canAttachFiles =
+      images.length > 0 &&
+      typeof navigator.canShare === 'function' &&
+      navigator.canShare({ files: images });
+
     if (navigator.share) {
       try {
         const shareData: ShareData = { title: 'LifeLine AI Silent SOS', text: shareText };
-        if (images.length > 0 && typeof navigator.canShare === 'function' && navigator.canShare({ files: images })) {
+        if (canAttachFiles) {
           shareData.files = images;
-          filesIncluded = true;
         }
         await navigator.share(shareData);
-        if (images.length > 0 && !filesIncluded) {
-          notice = 'Share sheet opened. This browser could not attach the image files. Nothing was sent to government or rescue services.';
+        if (images.length > 0 && !canAttachFiles) {
+          notice =
+            'Share sheet opened. Image files could not be attached because this browser does not support file sharing. Nothing was sent to government or rescue services.';
         }
       } catch {
         /* user cancelled */
@@ -184,12 +195,13 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
         await navigator.clipboard.writeText(shareText);
         notice =
           images.length > 0
-            ? 'Alert text copied to clipboard. Image attachments could not be included because file sharing is unavailable. Nothing was sent to government or rescue services.'
+            ? 'Alert text copied to clipboard. Image files could not be attached because file sharing is unavailable. Nothing was sent to government or rescue services.'
             : 'Alert text copied to clipboard. Nothing was sent to government or rescue services.';
       } catch {
         notice = 'Sharing remains user-controlled. Clipboard access was unavailable.';
       }
     }
+
     setShowConfirmation(false);
     if (notice) {
       setShareNotice(notice);
@@ -199,32 +211,62 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm overflow-y-auto p-3 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="silent-sos-title">
+    <div
+      className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm overflow-y-auto p-3 sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="silent-sos-title"
+    >
       <div className="max-w-2xl mx-auto rounded-2xl border-2 border-red-600 bg-neutral-950 text-white shadow-2xl">
         <div className="p-4 sm:p-5 flex items-start justify-between border-b border-neutral-800">
           <div>
             <div className="text-[10px] font-black tracking-[0.2em] text-red-400">LIFELINE AI • SILENT SOS</div>
-            <h2 id="silent-sos-title" className="text-2xl font-black mt-1">🚨 POSSIBLE EMERGENCY</h2>
-            <p className="text-xs text-neutral-400 mt-1">This creates an alert for your review. It never contacts services automatically.</p>
+            <h2 id="silent-sos-title" className="text-2xl font-black mt-1">
+              🚨 POSSIBLE EMERGENCY
+            </h2>
+            <p className="text-xs text-neutral-400 mt-1">
+              This creates an alert for your review. It never contacts services automatically.
+            </p>
           </div>
-          <button onClick={onClose} className="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700" aria-label="Cancel Silent SOS"><X /></button>
+          <button onClick={onClose} className="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700" aria-label="Cancel Silent SOS">
+            <X />
+          </button>
         </div>
 
         <div className="p-4 sm:p-5 space-y-4">
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {QUICK_EVENTS.map((event) => (
-              <button key={event.label} onClick={() => setSelectedEvent(event)} className={`p-3 rounded-xl border text-left font-black text-xs ${selectedEvent?.label === event.label ? 'bg-red-700 border-white' : 'bg-neutral-900 border-neutral-700 hover:border-red-500'}`}>
-                <span className="text-xl block">{event.icon}</span>{event.label}
+              <button
+                key={event.label}
+                onClick={() => setSelectedEvent(event)}
+                className={`p-3 rounded-xl border text-left font-black text-xs ${
+                  selectedEvent?.label === event.label
+                    ? 'bg-red-700 border-white'
+                    : 'bg-neutral-900 border-neutral-700 hover:border-red-500'
+                }`}
+              >
+                <span className="text-xl block">{event.icon}</span>
+                {event.label}
               </button>
             ))}
           </div>
 
-          <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={2} placeholder="Optional emergency message (no speaking required)" className="w-full rounded-xl bg-black border border-neutral-700 p-3 text-sm outline-none focus:border-red-500" />
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            rows={2}
+            placeholder="Optional emergency message (no speaking required)"
+            className="w-full rounded-xl bg-black border border-neutral-700 p-3 text-sm outline-none focus:border-red-500"
+          />
 
           <div className="grid sm:grid-cols-2 gap-3">
             <label className="rounded-xl border border-neutral-700 bg-neutral-900 p-3 cursor-pointer hover:border-red-500">
-              <span className="flex items-center gap-2 font-bold text-sm"><Camera className="w-4 h-4 text-red-400" /> Add emergency image</span>
-              <span className="block text-[11px] text-neutral-400 mt-1">Capture or select up to two images. No continuous camera.</span>
+              <span className="flex items-center gap-2 font-bold text-sm">
+                <Camera className="w-4 h-4 text-red-400" /> Add emergency image
+              </span>
+              <span className="block text-[11px] text-neutral-400 mt-1">
+                Capture or select up to two images. No continuous camera.
+              </span>
               <input
                 type="file"
                 accept="image/*"
@@ -238,9 +280,13 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
               />
             </label>
             <div className="rounded-xl border border-neutral-700 bg-neutral-900 p-3 text-sm">
-              <div className="flex items-center gap-2 font-bold"><MapPin className="w-4 h-4 text-emerald-400" /> Location</div>
+              <div className="flex items-center gap-2 font-bold">
+                <MapPin className="w-4 h-4 text-emerald-400" /> Location
+              </div>
               <div className={`mt-1 text-xs ${gpsAvailable ? 'text-emerald-300' : 'text-amber-300'}`}>{location.text}</div>
-              <div className="text-[10px] text-neutral-500 mt-1">One-time current-position request after Silent SOS activation; no background tracking.</div>
+              <div className="text-[10px] text-neutral-500 mt-1">
+                One-time current-position request after Silent SOS activation; no background tracking.
+              </div>
             </div>
           </div>
 
@@ -248,8 +294,18 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
             <div className="grid grid-cols-2 gap-2">
               {imagePreviews.map((src, index) => (
                 <div key={src} className="rounded-xl overflow-hidden border border-neutral-700 relative">
-                  <img src={src} alt={`User-provided emergency evidence ${index + 1}`} className="max-h-48 w-full object-cover" />
-                  <button type="button" onClick={() => removeImage(index)} className="absolute top-1 right-1 text-[10px] bg-black/70 px-2 py-1 rounded">Remove</button>
+                  <img
+                    src={src}
+                    alt={`User-provided emergency evidence ${index + 1}`}
+                    className="max-h-48 w-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeImage(index)}
+                    className="absolute top-1 right-1 text-[10px] bg-black/70 px-2 py-1 rounded"
+                  >
+                    Remove
+                  </button>
                 </div>
               ))}
             </div>
@@ -259,26 +315,56 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
           <div className="rounded-xl bg-red-950/50 border-2 border-red-700 p-4">
             <div className="text-xl font-black mb-3">🚨 POSSIBLE EMERGENCY</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
-              <strong>Possible event:</strong><span>{possibleEvent}</span>
-              <strong>Severity:</strong><span>{severityLabel(result.severity)}</span>
-              <strong>Location:</strong><span>{location.text}</span>
-              <strong>Evidence:</strong><span>{evidence}</span>
+              <strong>Possible event:</strong>
+              <span>{possibleEvent}</span>
+              <strong>Severity:</strong>
+              <span>{severityLabel(result.severity)}</span>
+              <strong>Location:</strong>
+              <span>{location.text}</span>
+              <strong>Evidence:</strong>
+              <span>{evidence}</span>
             </div>
-            <div className="mt-3 text-[11px] text-amber-200">Image evidence is not certainty. Sensor data alone is not proof of an emergency.</div>
-            {sensorAvailable && <div className="mt-2 text-[11px] text-sky-300 flex items-center gap-1"><Smartphone className="w-3 h-3" /> Optional motion sensor available {sensorSignal ? '(possible impact signal)' : '(no impact signal)'}</div>}
+            <div className="mt-3 text-[11px] text-amber-200">
+              Image evidence is not certainty. Sensor data alone is not proof of an emergency.
+            </div>
+            {sensorAvailable && (
+              <div className="mt-2 text-[11px] text-sky-300 flex items-center gap-1">
+                <Smartphone className="w-3 h-3" /> Optional motion sensor available{' '}
+                {sensorSignal ? '(possible impact signal)' : '(no impact signal)'}
+              </div>
+            )}
           </div>
 
           <div className="rounded-xl border border-neutral-700 bg-neutral-900 p-3 text-xs text-neutral-300">
-            <div className="font-bold text-white flex items-center gap-2"><Radio className="w-4 h-4 text-emerald-400" /> Locally generated SOS card</div>
-            <div className="mt-2 grid grid-cols-2 gap-2"><span>SOS • {possibleEvent}</span><span>Severity: {severityLabel(result.severity)}</span><span>Location: {location.text}</span><span>{new Date().toLocaleString()}</span></div>
+            <div className="font-bold text-white flex items-center gap-2">
+              <Radio className="w-4 h-4 text-emerald-400" /> Locally generated SOS card
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <span>SOS • {possibleEvent}</span>
+              <span>Severity: {severityLabel(result.severity)}</span>
+              <span>Location: {location.text}</span>
+              <span>{new Date().toLocaleString()}</span>
+            </div>
             <div className="mt-2 font-black tracking-widest text-red-400">LIFELINE AI • MSB CREATIVE STUDIOS</div>
           </div>
 
-          {shareNotice && <div className="p-3 rounded-xl bg-purple-950/60 border border-purple-700 text-xs text-purple-100">{shareNotice}</div>}
+          {shareNotice && (
+            <div className="p-3 rounded-xl bg-purple-950/60 border border-purple-700 text-xs text-purple-100">{shareNotice}</div>
+          )}
 
           <div className="grid grid-cols-2 gap-3 pt-1">
-            <button onClick={() => setShowConfirmation(true)} className="py-4 rounded-xl bg-red-600 hover:bg-red-500 font-black text-sm flex items-center justify-center gap-2"><ShieldAlert className="w-5 h-5" /> SHARE SOS ALERT</button>
-            <button onClick={onClose} className="py-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 font-black text-sm flex items-center justify-center gap-2"><CheckCircle2 className="w-5 h-5" /> CANCEL</button>
+            <button
+              onClick={() => setShowConfirmation(true)}
+              className="py-4 rounded-xl bg-red-600 hover:bg-red-500 font-black text-sm flex items-center justify-center gap-2"
+            >
+              <ShieldAlert className="w-5 h-5" /> SHARE SOS ALERT
+            </button>
+            <button
+              onClick={onClose}
+              className="py-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 font-black text-sm flex items-center justify-center gap-2"
+            >
+              <CheckCircle2 className="w-5 h-5" /> CANCEL
+            </button>
           </div>
         </div>
       </div>
@@ -287,25 +373,52 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
         <div className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4 overflow-y-auto">
           <div className="max-w-lg w-full rounded-2xl border-2 border-amber-500 bg-neutral-950 p-5 shadow-2xl my-6">
             <h3 className="text-xl font-black text-amber-300">Confirm what will be shared</h3>
-            <p className="text-xs text-neutral-300 mt-2">Nothing has been shared yet. Review and explicitly confirm. LifeLine AI does not automatically contact government agencies, police, ambulance, fire service, or rescue organizations.</p>
+            <p className="text-xs text-neutral-300 mt-2">
+              Nothing has been shared yet. Review and explicitly confirm. LifeLine AI does not automatically contact
+              government agencies, police, ambulance, fire service, or rescue organizations.
+            </p>
             <div className="my-4 rounded-xl bg-neutral-900 border border-neutral-700 p-3 text-sm space-y-2">
-              <div><b>Emergency type:</b> {possibleEvent}</div>
-              <div><b>Severity:</b> {severityLabel(result.severity)}</div>
-              <div><b>Location:</b> {location.text}</div>
-              <div><b>Timestamp:</b> {new Date().toISOString()}</div>
-              <div><b>User-provided emergency message:</b> {message || selectedEvent?.text || 'None'}</div>
-              <div><b>User-provided images:</b> {images.length ? `${images.length} selected` : 'None'}</div>
+              <div>
+                <b>Emergency type:</b> {possibleEvent}
+              </div>
+              <div>
+                <b>Severity:</b> {severityLabel(result.severity)}
+              </div>
+              <div>
+                <b>Location:</b> {location.text}
+              </div>
+              <div>
+                <b>Timestamp:</b> {new Date().toISOString()}
+              </div>
+              <div>
+                <b>User-provided emergency message:</b> {message || selectedEvent?.text || 'None'}
+              </div>
+              <div>
+                <b>User-provided images:</b> {images.length ? `${images.length} selected` : 'None'}
+              </div>
               {imagePreviews.length > 0 && (
                 <div className="grid grid-cols-2 gap-2 pt-1">
                   {imagePreviews.map((src, index) => (
-                    <img key={src} src={src} alt={`Review evidence ${index + 1}`} className="rounded-lg max-h-32 w-full object-cover border border-neutral-700" />
+                    <img
+                      key={src}
+                      src={src}
+                      alt={`Review evidence ${index + 1}`}
+                      className="rounded-lg max-h-32 w-full object-cover border border-neutral-700"
+                    />
                   ))}
                 </div>
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <button onClick={confirmShare} className="py-3 rounded-xl bg-red-600 font-black">CONFIRM SHARE</button>
-              <button onClick={() => setShowConfirmation(false)} className="py-3 rounded-xl bg-neutral-800 border border-neutral-600 font-black">GO BACK</button>
+              <button onClick={confirmShare} className="py-3 rounded-xl bg-red-600 font-black">
+                CONFIRM SHARE
+              </button>
+              <button
+                onClick={() => setShowConfirmation(false)}
+                className="py-3 rounded-xl bg-neutral-800 border border-neutral-600 font-black"
+              >
+                GO BACK
+              </button>
             </div>
           </div>
         </div>
