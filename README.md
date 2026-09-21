@@ -10,7 +10,7 @@ LifeLine AI by MSB Creative Studios is an emergency triage application for voice
 
 LifeLine AI helps a user describe an emergency by speaking or typing, then returns a structured triage result. When the server is configured for online analysis, the Node/Express backend sends the transcript to the configured NVIDIA Nemotron model through Nebius Token Factory. When the key is missing or the user chooses Resilience mode, classification stays on local deterministic rules and does not call cloud AI.
 
-The product is designed for explicit user control: microphone, GPS, camera, and sharing are activated by the user. Location is requested once for the active Silent SOS session. Up to two still images may be attached as evidence. Images are not sent to a vision AI model.
+The product is designed for explicit user control: microphone, GPS, camera, and sharing are activated by the user. Location is requested once for the active Silent SOS session. Up to two still images and an optional 10-second SOS video may be attached as evidence. Photo and video evidence are not sent to a vision AI model.
 
 ---
 
@@ -35,12 +35,13 @@ When the user enables offline mode, or the API key is not configured, LifeLine A
 Silent SOS is a user-activated alert flow:
 
 1. The user opens Silent SOS and selects an emergency type (optional message).
-2. The app requests **current device GPS once** (`getCurrentPosition`). There is **no background GPS tracking** and **no `watchPosition`**.
+2. The app requests **current device GPS once** (`getCurrentPosition`). There is **no background GPS tracking** and **no `watchPosition`**. GPS is device geolocation, not inferred from video.
 3. The user may capture or select **up to two images** as emergency evidence. There is **no continuous camera**.
-4. Images are **evidence only**. They are **not** sent to a vision AI model.
-5. A review screen shows emergency type, severity, location or GPS-unavailable reason, timestamp, optional message, and selected images.
-6. Sharing happens only after explicit confirmation (`navigator.share` with files when the browser supports file sharing, otherwise clipboard/text). If files cannot be attached, the UI states that image attachments could not be included.
-7. LifeLine AI **never automatically contacts** government or rescue services.
+4. The user may tap **CAPTURE SOS VIDEO** to record an optional **10-second** clip. Recording starts only after that tap and stops automatically at 10 seconds (or sooner if the user stops or cancels). Camera tracks are released immediately afterward.
+5. Photo and video files are **evidence only**. They are **not** sent to a vision AI model and are **not** analyzed by Nemotron.
+6. A review screen shows emergency type, severity, location or GPS-unavailable reason, timestamp, optional message, selected images, and video if present.
+7. Sharing happens only after explicit confirmation (`navigator.share` with files when the browser supports file sharing, otherwise clipboard/text). If files cannot be attached, the UI states that photo/video attachments could not be included.
+8. LifeLine AI **never automatically contacts** government or rescue services. Completing video capture does not share anything.
 
 GPS errors are shown separately: permission denied, position unavailable, timeout, or geolocation unsupported.
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, CheckCircle2, MapPin, Radio, ShieldAlert, Smartphone, X } from 'lucide-react';
+import { Camera, CheckCircle2, MapPin, Radio, ShieldAlert, Smartphone, Video, X } from 'lucide-react';
 import { classifyEmergencyOffline } from '../lib/offlineClassifier.ts';
 import { EmergencyAnalysisResult, SeverityLevel } from '../types.ts';
 
@@ -21,6 +21,7 @@ const QUICK_EVENTS: QuickEvent[] = [
 ];
 
 const MAX_EVIDENCE_IMAGES = 2;
+const MAX_VIDEO_SECONDS = 10;
 
 function severityLabel(severity: SeverityLevel | undefined): string {
   if (severity === 5) return 'Critical';
@@ -51,13 +52,54 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   const [sensorSignal, setSensorSignal] = useState(false);
   const [sensorAvailable, setSensorAvailable] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoPreview, setVideoPreview] = useState<string | null>(null);
+  const [videoNotice, setVideoNotice] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [secondsLeft, setSecondsLeft] = useState(MAX_VIDEO_SECONDS);
+
   const motionRef = useRef<{ x: number; y: number; z: number } | null>(null);
   const previewUrlsRef = useRef<string[]>([]);
+  const videoPreviewRef = useRef<string | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const countdownTimerRef = useRef<number | null>(null);
+  const liveVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const stopMediaTracks = () => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  };
+
+  const clearCountdown = () => {
+    if (countdownTimerRef.current !== null) {
+      window.clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+  };
+
+  const revokeVideoPreview = () => {
+    if (videoPreviewRef.current) {
+      URL.revokeObjectURL(videoPreviewRef.current);
+      videoPreviewRef.current = null;
+    }
+  };
 
   useEffect(() => {
     return () => {
       previewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       previewUrlsRef.current = [];
+      revokeVideoPreview();
+      clearCountdown();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch {
+          /* already stopped */
+        }
+      }
+      stopMediaTracks();
     };
   }, []);
 
@@ -112,6 +154,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   const evidence = [
     gpsAvailable && 'GPS',
     images.length > 0 && `Image (${images.length})`,
+    videoFile && 'Video',
     sensorSignal && 'Sensor',
     'User trigger'
   ]
@@ -146,6 +189,103 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     setImagePreviews((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const finishRecording = (keep: boolean) => {
+    clearCountdown();
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      try {
+        recorder.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    mediaRecorderRef.current = null;
+    stopMediaTracks();
+    setIsRecording(false);
+    setSecondsLeft(MAX_VIDEO_SECONDS);
+    if (!keep) recordedChunksRef.current = [];
+  };
+
+  const discardVideo = () => {
+    finishRecording(false);
+    revokeVideoPreview();
+    setVideoFile(null);
+    setVideoPreview(null);
+    setVideoNotice('SOS video discarded. Nothing was uploaded.');
+  };
+
+  const startSosVideo = async () => {
+    if (isRecording) return;
+    setVideoNotice('');
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setVideoNotice('Short SOS video is not supported in this browser. Photo evidence can still be used.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: true
+      });
+      mediaStreamRef.current = stream;
+      if (liveVideoRef.current) {
+        liveVideoRef.current.srcObject = stream;
+        await liveVideoRef.current.play().catch(() => undefined);
+      }
+      recordedChunksRef.current = [];
+      const preferredTypes = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+      const mimeType = preferredTypes.find((type) => MediaRecorder.isTypeSupported(type));
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) recordedChunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        finishRecording(false);
+        setVideoNotice('Video recording failed. Camera was stopped. Nothing was uploaded.');
+      };
+      recorder.onstop = () => {
+        stopMediaTracks();
+        const chunks = recordedChunksRef.current;
+        recordedChunksRef.current = [];
+        if (!chunks.length) return;
+        const type = recorder.mimeType || 'video/webm';
+        const blob = new Blob(chunks, { type });
+        const extension = type.includes('mp4') ? 'mp4' : 'webm';
+        const file = new File([blob], `silent-sos-video.${extension}`, { type });
+        revokeVideoPreview();
+        const url = URL.createObjectURL(file);
+        videoPreviewRef.current = url;
+        setVideoFile(file);
+        setVideoPreview(url);
+        setVideoNotice(
+          'SOS video captured locally as evidence only. It is not sent to any vision AI model. Review before sharing.'
+        );
+      };
+      recorder.start(250);
+      setIsRecording(true);
+      setSecondsLeft(MAX_VIDEO_SECONDS);
+      countdownTimerRef.current = window.setInterval(() => {
+        setSecondsLeft((prev) => {
+          if (prev <= 1) {
+            finishRecording(true);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (error) {
+      stopMediaTracks();
+      setIsRecording(false);
+      const denied =
+        error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError');
+      setVideoNotice(
+        denied
+          ? 'Camera permission denied. Video was not recorded. Photo evidence can still be used.'
+          : 'Camera could not be opened. Video was not recorded.'
+      );
+    }
+  };
+
   const createSilentResult = (): EmergencyAnalysisResult => ({
     ...result,
     source: 'offline_fallback',
@@ -160,6 +300,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     const silentResult = createSilentResult();
     onSaveResult?.(silentResult);
     const imageNames = images.length ? images.map((file, i) => `${i + 1}. ${file.name}`).join('; ') : 'None';
+    const attachmentFiles = videoFile ? [...images, videoFile] : images;
     const shareText = [
       'SILENT SOS',
       `Emergency type: ${possibleEvent}`,
@@ -169,23 +310,24 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
       `Evidence: ${evidence}`,
       `Message: ${silentResult.raw_transcript}`,
       `Image attachments: ${imageNames}`,
+      `Video attachment: ${videoFile ? videoFile.name : 'None'}`,
       'This alert is user-confirmed. LifeLine AI does not automatically contact government or rescue services.'
     ].join('\n');
 
     let notice = '';
     const canAttachFiles =
-      images.length > 0 && typeof navigator.canShare === 'function' && navigator.canShare({ files: images });
+      attachmentFiles.length > 0 &&
+      typeof navigator.canShare === 'function' &&
+      navigator.canShare({ files: attachmentFiles });
 
     if (navigator.share) {
       try {
         const shareData: ShareData = { title: 'LifeLine AI Silent SOS', text: shareText };
-        if (canAttachFiles) {
-          shareData.files = images;
-        }
+        if (canAttachFiles) shareData.files = attachmentFiles;
         await navigator.share(shareData);
-        if (images.length > 0 && !canAttachFiles) {
+        if (attachmentFiles.length > 0 && !canAttachFiles) {
           notice =
-            'Share sheet opened. Image files could not be attached because this browser does not support file sharing. Nothing was sent to government or rescue services.';
+            'Share sheet opened. Photo/video files could not be attached because this browser does not support file sharing. Nothing was sent to government or rescue services.';
         }
       } catch {
         /* user cancelled */
@@ -194,8 +336,8 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
       try {
         await navigator.clipboard.writeText(shareText);
         notice =
-          images.length > 0
-            ? 'Alert text copied to clipboard. Image files could not be attached because file sharing is unavailable. Nothing was sent to government or rescue services.'
+          attachmentFiles.length > 0
+            ? 'Alert text copied to clipboard. Photo/video files could not be attached because file sharing is unavailable. Nothing was sent to government or rescue services.'
             : 'Alert text copied to clipboard. Nothing was sent to government or rescue services.';
       } catch {
         notice = 'Sharing remains user-controlled. Clipboard access was unavailable.';
@@ -312,6 +454,67 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
           )}
           {imageNotice && <div className="p-2 text-xs text-amber-300 bg-amber-950/70 rounded-xl">{imageNotice}</div>}
 
+          <div className="rounded-xl border border-neutral-700 bg-neutral-900 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2 font-bold text-sm">
+                <Video className="w-4 h-4 text-red-400" /> Short SOS video
+              </span>
+              {isRecording && <span className="text-xs font-black text-red-400 animate-pulse">RECORDING {secondsLeft}s</span>}
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Video is captured only after you tap CAPTURE SOS VIDEO. Recording stops automatically after 10 seconds.
+              Review before sharing.
+            </p>
+            <video
+              ref={liveVideoRef}
+              muted
+              playsInline
+              className={`w-full max-h-48 rounded-lg bg-black object-cover ${isRecording ? 'block' : 'hidden'}`}
+            />
+            {videoPreview && !isRecording && (
+              <video src={videoPreview} controls playsInline className="w-full max-h-48 rounded-lg bg-black" />
+            )}
+            <div className="flex flex-wrap gap-2">
+              {!isRecording && (
+                <button
+                  type="button"
+                  onClick={startSosVideo}
+                  className="px-3 py-2 rounded-lg bg-red-700 hover:bg-red-600 font-black text-xs"
+                >
+                  CAPTURE SOS VIDEO
+                </button>
+              )}
+              {isRecording && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => finishRecording(true)}
+                    className="px-3 py-2 rounded-lg bg-amber-600 font-black text-xs"
+                  >
+                    STOP
+                  </button>
+                  <button
+                    type="button"
+                    onClick={discardVideo}
+                    className="px-3 py-2 rounded-lg bg-neutral-800 border border-neutral-600 font-black text-xs"
+                  >
+                    CANCEL
+                  </button>
+                </>
+              )}
+              {videoFile && !isRecording && (
+                <button
+                  type="button"
+                  onClick={discardVideo}
+                  className="px-3 py-2 rounded-lg bg-neutral-800 border border-neutral-600 font-black text-xs"
+                >
+                  DISCARD AND RETAKE
+                </button>
+              )}
+            </div>
+            {videoNotice && <div className="text-[11px] text-amber-300">{videoNotice}</div>}
+          </div>
+
           <div className="rounded-xl bg-red-950/50 border-2 border-red-700 p-4">
             <div className="text-xl font-black mb-3">🚨 POSSIBLE EMERGENCY</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
@@ -396,6 +599,9 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
               <div>
                 <b>User-provided images:</b> {images.length ? `${images.length} selected` : 'None'}
               </div>
+              <div>
+                <b>User-provided SOS video:</b> {videoFile ? videoFile.name : 'None'}
+              </div>
               {imagePreviews.length > 0 && (
                 <div className="grid grid-cols-2 gap-2 pt-1">
                   {imagePreviews.map((src, index) => (
@@ -407,6 +613,9 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
                     />
                   ))}
                 </div>
+              )}
+              {videoPreview && (
+                <video src={videoPreview} controls playsInline className="w-full max-h-40 rounded-lg bg-black border border-neutral-700" />
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
