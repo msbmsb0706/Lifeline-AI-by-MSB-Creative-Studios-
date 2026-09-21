@@ -12,6 +12,7 @@ import {
   STANDARDIZED_CATEGORIES
 } from './src/lib/languages.ts';
 import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory } from './src/types.ts';
+import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
 
 dotenv.config();
 
@@ -19,15 +20,39 @@ const PORT = Number(process.env.PORT || 3000);
 const NEBIUS_BASE_URI = (process.env.NEBIUS_BASE_URI || process.env.NEBIUS_BASE_URL || 'https://api.tokenfactory.us-central1.nebius.com/v1').replace(/\/+$/, '');
 const NEBIUS_MODEL = process.env.NEBIUS_MODEL || 'nvidia/nemotron-3-super-120b-a12b';
 
+/**
+ * Express "trust proxy" setting. Behind a hosting proxy (Render, Cloud Run, etc.)
+ * the client address used for rate limiting must come from X-Forwarded-For,
+ * otherwise every visitor would share the proxy's IP. Defaults to one trusted
+ * hop in production and none in development; override with TRUST_PROXY
+ * ("true", "false", a hop count, or a comma-separated list of proxy IPs/subnets).
+ */
+function resolveTrustProxy(): boolean | number | string {
+  const raw = (process.env.TRUST_PROXY || '').trim();
+  if (!raw) return process.env.NODE_ENV === 'production' ? 1 : false;
+  if (raw.toLowerCase() === 'true') return true;
+  if (raw.toLowerCase() === 'false') return false;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return raw;
+}
+
 async function startServer() {
   const app = express();
 
+  app.set('trust proxy', resolveTrustProxy());
   app.use(express.json({ limit: '1mb' }));
 
   console.log('[Nebius Diagnostics] LifeLine AI Backend Initialized');
   console.log('[Nebius Diagnostics] NEBIUS_BASE_URI:', NEBIUS_BASE_URI);
   console.log('[Nebius Diagnostics] NEBIUS_MODEL:', NEBIUS_MODEL);
   console.log('[Nebius Diagnostics] NEBIUS_API_KEY configured:', Boolean(process.env.NEBIUS_API_KEY));
+
+  // Privacy Contact Form — destination mailbox and SMTP credentials are server-side only.
+  // Only booleans are logged; the address itself is never printed or exposed.
+  const privacyContactStatus = getPrivacyContactConfigStatus();
+  console.log('[Privacy Contact] PRIVACY_CONTACT_EMAIL configured:', privacyContactStatus.destinationConfigured);
+  console.log('[Privacy Contact] SMTP delivery configured:', privacyContactStatus.smtpConfigured);
+  app.use('/api/privacy-contact', createPrivacyContactRouter());
 
   // System status endpoint - NEVER reveals keys
   app.get('/api/status', (req, res) => {

@@ -15,7 +15,8 @@ import {
   EyeOff,
   ToggleLeft,
   ToggleRight,
-  Trash2
+  Trash2,
+  Mail
 } from 'lucide-react';
 import { SystemStatus } from '../types.ts';
 
@@ -28,7 +29,51 @@ interface PrivacySafetyModalProps {
   onToggleHistoryStorage: (enabled: boolean) => void;
   onClearHistory: () => void;
   storedReportsCount: number;
+  /** Opens the Privacy Contact Form (no email address is published anywhere in the UI). */
+  onOpenContactForm?: () => void;
 }
+
+/** "Contact & Privacy Requests" card — the only contact channel shown to users. */
+const PrivacyContactCard: React.FC<{ onOpenContactForm?: () => void; compact?: boolean }> = ({
+  onOpenContactForm,
+  compact = false
+}) => (
+  <div
+    id="privacy-contact-section"
+    className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-800/70 flex items-start gap-3"
+  >
+    <div className="p-2 rounded-lg bg-emerald-950/60 border border-emerald-800 text-emerald-400 shrink-0 mt-0.5">
+      <Mail className="w-4 h-4" />
+    </div>
+    <div className="flex-1 min-w-0">
+      <div className="font-extrabold text-white text-xs uppercase tracking-wide">
+        Contact &amp; Privacy Requests
+      </div>
+      <p className="text-neutral-300 text-xs mt-0.5 font-medium">
+        Questions, data access or deletion requests, or feedback about this policy? Contact MSB Creative Studios
+        through the Privacy Contact Form.
+      </p>
+      {!compact && (
+        <p className="text-neutral-400 text-[11px] mt-0.5">
+          The form asks for your name (optional), a reply email address (required) and your message (required). What you
+          submit is used only to respond to your request. Because a reply address is required, submissions are not
+          anonymous.
+        </p>
+      )}
+      {onOpenContactForm && (
+        <button
+          id="open-privacy-contact-form-btn"
+          type="button"
+          onClick={onOpenContactForm}
+          className="mt-2 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs transition-colors flex items-center gap-1.5 active:scale-95"
+        >
+          <Mail className="w-3.5 h-3.5" />
+          <span>Open Privacy Contact Form</span>
+        </button>
+      )}
+    </div>
+  </div>
+);
 
 export const PrivacySafetyModal: React.FC<PrivacySafetyModalProps> = ({
   isOpen,
@@ -38,7 +83,8 @@ export const PrivacySafetyModal: React.FC<PrivacySafetyModalProps> = ({
   historyStorageEnabled,
   onToggleHistoryStorage,
   onClearHistory,
-  storedReportsCount
+  storedReportsCount,
+  onOpenContactForm
 }) => {
   const [activeTab, setActiveTab] = useState<'quick' | 'statement'>('quick');
 
@@ -281,6 +327,9 @@ export const PrivacySafetyModal: React.FC<PrivacySafetyModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* CONTACT & PRIVACY REQUESTS */}
+              <PrivacyContactCard onOpenContactForm={onOpenContactForm} />
             </div>
           ) : (
             /* Full Verbatim Privacy Statement (11 Principles) */
@@ -372,12 +421,15 @@ export const PrivacySafetyModal: React.FC<PrivacySafetyModalProps> = ({
                   </span>
                 </li>
               </ul>
+
+              {/* CONTACT & PRIVACY REQUESTS */}
+              <PrivacyContactCard onOpenContactForm={onOpenContactForm} compact />
             </div>
           )}
         </div>
 
-        {/* Footer with [ I UNDERSTAND ] Button */}
-        <div className="p-4 border-t border-neutral-800 bg-neutral-950/90 flex items-center justify-between gap-3">
+        {/* Footer with Contact Privacy Team + [ I UNDERSTAND ] Buttons */}
+        <div className="p-4 border-t border-neutral-800 bg-neutral-950/90 flex flex-wrap items-center justify-between gap-3">
           <button
             onClick={() => setActiveTab(activeTab === 'quick' ? 'statement' : 'quick')}
             className="text-xs text-neutral-400 hover:text-white underline underline-offset-2"
@@ -385,14 +437,29 @@ export const PrivacySafetyModal: React.FC<PrivacySafetyModalProps> = ({
             {activeTab === 'quick' ? 'View Full Statement (11 Principles)' : 'Back to Summary Card'}
           </button>
 
-          <button
-            id="privacy-understand-btn"
-            onClick={onClose}
-            className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm transition-all shadow-lg shadow-emerald-950/50 flex items-center gap-2 active:scale-95"
-          >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>[ I UNDERSTAND ]</span>
-          </button>
+          <div className="flex items-center gap-2 ml-auto">
+            {onOpenContactForm && (
+              <button
+                id="privacy-contact-team-btn"
+                type="button"
+                onClick={onOpenContactForm}
+                title="Open the Privacy Contact Form"
+                className="px-3 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-emerald-800/70 text-emerald-300 font-bold text-xs transition-colors flex items-center gap-1.5"
+              >
+                <Mail className="w-4 h-4 text-emerald-400" />
+                <span>Contact Privacy Team</span>
+              </button>
+            )}
+
+            <button
+              id="privacy-understand-btn"
+              onClick={onClose}
+              className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm transition-all shadow-lg shadow-emerald-950/50 flex items-center gap-2 active:scale-95"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>[ I UNDERSTAND ]</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

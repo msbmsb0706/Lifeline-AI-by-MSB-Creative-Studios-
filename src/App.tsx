@@ -5,6 +5,7 @@ import { TranscriptArea } from './components/TranscriptArea.tsx';
 import { SOSCardView } from './components/SOSCardView.tsx';
 import { SplashScreen } from './components/SplashScreen.tsx';
 import { PrivacySafetyModal } from './components/PrivacySafetyModal.tsx';
+import { PrivacyContactFormModal } from './components/PrivacyContactFormModal.tsx';
 import { SilentSOS } from './components/SilentSOS.tsx';
 import { EmergencyPartnersManagerModal } from './components/EmergencyPartnersManagerModal.tsx';
 import {
@@ -16,11 +17,12 @@ import { classifyEmergencyOffline } from './lib/offlineClassifier.ts';
 import { translateEmergencyOffline, detectLanguage } from './lib/languages.ts';
 import { getPendingQueue, processPendingQueue, getAutoSendSetting } from './lib/emergencyPartnerQueue.ts';
 import { playPing } from './lib/audio.ts';
-import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send } from 'lucide-react';
+import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send, Mail } from 'lucide-react';
 
 export default function App() {
   const [showSplash, setShowSplash] = useState<boolean>(true);
   const [showPrivacyModal, setShowPrivacyModal] = useState<boolean>(false);
+  const [showPrivacyContactForm, setShowPrivacyContactForm] = useState<boolean>(false);
   const [showPartnersModal, setShowPartnersModal] = useState<boolean>(false);
   const [showSilentSOS, setShowSilentSOS] = useState<boolean>(false);
   const [pendingQueueCount, setPendingQueueCount] = useState<number>(0);
@@ -671,6 +673,16 @@ export default function App() {
               <ShieldCheck className="w-3.5 h-3.5" />
               <span>Privacy & Safety</span>
             </button>
+            <span className="text-neutral-600">•</span>
+            <button
+              id="footer-privacy-contact-btn"
+              onClick={() => setShowPrivacyContactForm(true)}
+              className="text-emerald-400 hover:text-emerald-300 font-bold underline underline-offset-2 flex items-center gap-1 transition-colors"
+              title="Contact the MSB Creative Studios privacy team through the Privacy Contact Form"
+            >
+              <Mail className="w-3.5 h-3.5" />
+              <span>Contact Privacy Team</span>
+            </button>
             <span className="text-neutral-600 hidden sm:inline">•</span>
             <div className="text-[10px] text-neutral-400">
               {offlineForce ? 'Offline local rules • Bundled emergency phrasebook' : 'NVIDIA Nemotron via Nebius Token Factory • Online emergency translation'}
@@ -683,9 +695,19 @@ export default function App() {
       <PrivacySafetyModal
         isOpen={showPrivacyModal}
         onClose={() => setShowPrivacyModal(false)}
-        isOfflineMode={offlineForce || !systemStatus?.nebius_configured}
+        systemStatus={systemStatus}
+        offlineForce={offlineForce}
         historyStorageEnabled={historyStorageEnabled}
         onToggleHistoryStorage={handleToggleHistoryStorage}
+        onClearHistory={handleClearHistory}
+        storedReportsCount={recentReports.length}
+        onOpenContactForm={() => setShowPrivacyContactForm(true)}
+      />
+
+      {/* Privacy Contact Form — posts to /api/privacy-contact; no email address is published in the client */}
+      <PrivacyContactFormModal
+        isOpen={showPrivacyContactForm}
+        onClose={() => setShowPrivacyContactForm(false)}
       />
     </div>
   );
