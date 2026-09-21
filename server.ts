@@ -593,6 +593,143 @@ Source Language: ${detectedSource.name}`;
     }
   });
 
+  // Dedicated Emergency Partner Dispatch Endpoint
+  app.post('/api/emergency-partner/dispatch', async (req, res) => {
+    const startTime = Date.now();
+    const {
+      sosId,
+      timestamp,
+      emergencyType,
+      severity,
+      message,
+      gps,
+      photos,
+      video,
+      partnerId,
+      providerType,
+      userConsentConfirmed
+    } = req.body || {};
+
+    if (!userConsentConfirmed) {
+      res.status(403).json({
+        success: false,
+        error: 'Explicit user review and consent is required prior to emergency partner transmission.'
+      });
+      return;
+    }
+
+    if (!sosId || !emergencyType || !message) {
+      res.status(400).json({
+        success: false,
+        error: 'Missing required SOS payload fields (sosId, emergencyType, message).'
+      });
+      return;
+    }
+
+    console.log(`[Emergency Partner Dispatch] Partner: ${partnerId || 'unknown'} (${providerType}) for SOS: ${sosId}`);
+
+    // 1. PUBLIC CONTACT PROVIDER: Public contacts have no API capability
+    if (providerType === 'PUBLIC_CONTACT') {
+      res.status(400).json({
+        success: false,
+        error: 'PUBLIC CONTACT ONLY — Emergency telephone numbers do not support digital API dispatches. Call official number directly.'
+      });
+      return;
+    }
+
+    // 2. AUTHORIZED API PROVIDER
+    if (providerType === 'AUTHORIZED_API') {
+      const partnerApiUrl = process.env.AUTHORIZED_PARTNER_API_URL;
+      const partnerApiKey = process.env.AUTHORIZED_PARTNER_API_KEY;
+
+      if (!partnerApiUrl || !partnerApiKey) {
+        res.status(400).json({
+          success: false,
+          error: 'AUTHORIZED API DISPATCH — No authorized provider API endpoint or credentials are configured in server environment.'
+        });
+        return;
+      }
+
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const response = await fetch(partnerApiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': partnerApiKey.startsWith('Bearer ') ? partnerApiKey : `Bearer ${partnerApiKey}`
+          },
+          body: JSON.stringify({
+            sosId,
+            timestamp: timestamp || new Date().toISOString(),
+            emergencyType,
+            severity,
+            message,
+            gps,
+            photos,
+            video,
+            source: 'LifeLine AI Framework'
+          }),
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errText = await response.text();
+          res.status(response.status).json({
+            success: false,
+            error: `Authorized partner API returned HTTP ${response.status}: ${errText.slice(0, 200)}`
+          });
+          return;
+        }
+
+        const partnerJson = await response.json();
+        res.json({
+          success: true,
+          data: {
+            success: true,
+            status: 'ACKNOWLEDGED',
+            referenceId: partnerJson.referenceId || `AUTH-ACK-${Date.now().toString(36).toUpperCase()}`,
+            timestamp: new Date().toISOString(),
+            message: partnerJson.message || 'SOS package acknowledged by authorized partner API.',
+            partnerId: partnerId || 'authorized-partner',
+            partnerName: 'Authorized Rescue Network API',
+            providerType: 'AUTHORIZED_API'
+          }
+        });
+        return;
+      } catch (err: any) {
+        res.status(502).json({
+          success: false,
+          error: `Failed to dispatch to authorized partner API: ${err.message}`
+        });
+        return;
+      }
+    }
+
+    // 3. TEST / DEMO PROVIDER
+    // Local mock emergency partner endpoint for demonstration
+    const mockReferenceId = `DEMO-ACK-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+
+    console.log(`[Emergency Partner Dispatch] TEST DEMO Acknowledgment generated: ${mockReferenceId} in ${Date.now() - startTime}ms`);
+
+    res.json({
+      success: true,
+      data: {
+        success: true,
+        status: 'ACKNOWLEDGED',
+        referenceId: mockReferenceId,
+        timestamp: new Date().toISOString(),
+        message: 'TEST / DEMO — Mock SOS package successfully received by local demonstration endpoint. NO REAL EMERGENCY SERVICE RECEIVED THIS ALERT.',
+        partnerId: partnerId || 'test-partner-demo',
+        partnerName: 'TEST EMERGENCY PARTNER — DEMONSTRATION ONLY',
+        providerType: 'TEST'
+      }
+    });
+  });
+
   // Serve official logo directly with cache headers
   const logoPath = path.join(process.cwd(), 'public', 'file_00000000f3ec8211ba741b84f232a029.png');
   app.get(['/file_00000000f3ec8211ba741b84f232a029.png', '/logo.png', '/assets/logo.png', '/assets/file_00000000f3ec8211ba741b84f232a029.png'], (req, res) => {

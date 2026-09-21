@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   EmergencyAnalysisResult,
   VisualSOSCard,
-  StandardEmergencyCategory
+  StandardEmergencyCategory,
+  PendingSOSItem
 } from '../types.ts';
 import { SeverityGauge } from './SeverityGauge.tsx';
 import {
@@ -31,7 +32,8 @@ import {
   RefreshCw,
   Eye,
   Columns,
-  Share2
+  Share2,
+  Shield
 } from 'lucide-react';
 import { playPing } from '../lib/audio.ts';
 import {
@@ -40,6 +42,9 @@ import {
   getLanguageByCodeOrName
 } from '../lib/languages.ts';
 import { ShareAlertConfirmModal } from './ShareAlertConfirmModal.tsx';
+import { PartnerConsentModal } from './PartnerConsentModal.tsx';
+import { getTestProvider } from '../lib/emergencyPartnersData.ts';
+import { createSOSPackage, savePendingSOS, processPendingQueue } from '../lib/emergencyPartnerQueue.ts';
 
 interface SOSCardViewProps {
   result: EmergencyAnalysisResult;
@@ -72,6 +77,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
 
   // User confirmation dialog before sharing alert
   const [showShareConfirmModal, setShowShareConfirmModal] = useState(false);
+  const [showPartnerConsent, setShowPartnerConsent] = useState(false);
   const [shareToast, setShareToast] = useState<string | null>(null);
 
   // View mode for SOS card: 'translated' (if available) or 'original' or 'side-by-side'
@@ -318,6 +324,46 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     }
   };
 
+  const handleConfirmPartnerDispatch = async () => {
+    const testPartner = getTestProvider();
+    const sosPkg = createSOSPackage({
+      emergencyType: result.emergency_type,
+      category: result.emergency_category,
+      severity: result.severity,
+      message: showTranslated && result.translation ? result.translation.translated_message : result.message,
+      gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
+      source: result.source === 'nebius_nemotron' ? 'online' : 'offline'
+    });
+
+    const pendingItem: PendingSOSItem = {
+      sosPackage: sosPkg,
+      targetPartner: testPartner,
+      userApprovedForPartnerTransmission: true,
+      userConsentTimestamp: new Date().toISOString(),
+      status: 'PENDING_LOCAL',
+      attempts: 0
+    };
+
+    savePendingSOS(pendingItem);
+    setShowPartnerConsent(false);
+
+    if (!navigator.onLine) {
+      setShareToast('OFFLINE — SOS saved locally. It will be sent when a supported connection becomes available.');
+      return;
+    }
+
+    try {
+      const res = await processPendingQueue({ forceManual: true });
+      if (res.successCount > 0) {
+        setShareToast('TEST / DEMO SUCCESS — SOS transmitted to TEST Emergency Partner. Reference ID acknowledged.');
+      } else if (res.errors.length > 0) {
+        setShareToast(`Partner transmission error: ${res.errors.join('; ')}`);
+      }
+    } catch (err: any) {
+      setShareToast(`Transmission error: ${err.message}`);
+    }
+  };
+
   return (
     <div
       id="visual-sos-card"
@@ -392,6 +438,17 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             }`}
           >
             <Volume2 className="w-4 h-4" />
+          </button>
+
+          {/* Emergency Partner Demo button */}
+          <button
+            id="partner-demo-dispatch-btn"
+            onClick={() => setShowPartnerConsent(true)}
+            title="Review and dispatch to TEST Emergency Partner"
+            className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-700/80 flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+          >
+            <Shield className="w-3.5 h-3.5 text-red-400" />
+            <span className="hidden sm:inline">Partner Demo</span>
           </button>
 
           {/* Share Alert button with explicit privacy review */}
@@ -891,6 +948,25 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         result={result}
         onConfirmShare={handleConfirmedShare}
       />
+
+      {/* Emergency Partner Review & Consent Modal */}
+      {showPartnerConsent && (
+        <PartnerConsentModal
+          isOpen={showPartnerConsent}
+          provider={getTestProvider()}
+          sosPackage={createSOSPackage({
+            emergencyType: result.emergency_type,
+            category: result.emergency_category,
+            severity: result.severity,
+            message: showTranslated && result.translation ? result.translation.translated_message : result.message,
+            gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
+            source: result.source === 'nebius_nemotron' ? 'online' : 'offline'
+          })}
+          isOffline={!navigator.onLine}
+          onCancel={() => setShowPartnerConsent(false)}
+          onConfirm={handleConfirmPartnerDispatch}
+        />
+      )}
     </div>
   );
 };

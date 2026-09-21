@@ -106,3 +106,89 @@ export interface QuickPreset {
   icon: string;
   languageCode?: string;
 }
+
+// ==========================================
+// EMERGENCY PARTNER INTEGRATION FRAMEWORK
+// ==========================================
+
+export type PartnerProviderType = 'AUTHORIZED_API' | 'PUBLIC_CONTACT' | 'TEST';
+
+export type PartnerServiceType =
+  | 'POLICE'
+  | 'FIRE'
+  | 'AMBULANCE'
+  | 'RESCUE'
+  | 'GENERAL_EMERGENCY';
+
+export interface EmergencyPartnerProvider {
+  id: string;
+  country: string; // e.g. "US", "IN", "EU", "GB", "CA", "AU", "GLOBAL"
+  countryName: string;
+  providerName: string;
+  providerType: PartnerProviderType;
+  serviceType: PartnerServiceType;
+  phone?: string;
+  website?: string;
+  apiBaseUrl?: string;
+  apiEnabled: boolean;
+  requiresUserConfirmation: boolean;
+  supportsMediaUpload?: boolean;
+  description?: string;
+  verifiedOfficialSource?: string;
+}
+
+export interface MediaAttachmentInfo {
+  type: 'image' | 'video';
+  name: string;
+  mimeType: string;
+  sizeBytes?: number;
+  dataUrl?: string; // Base64 or metadata preview
+}
+
+export interface SOSPackage {
+  sosId: string;
+  timestamp: string;
+  emergencyType: string;
+  category?: StandardEmergencyCategory;
+  severity: SeverityLevel;
+  message: string;
+  gps?: {
+    latitude: number;
+    longitude: number;
+    accuracyMeters?: number;
+    timestamp?: number;
+  } | null;
+  photos?: MediaAttachmentInfo[];
+  video?: MediaAttachmentInfo | null;
+  source: 'online' | 'offline';
+  offlineCreated?: boolean;
+}
+
+export interface PartnerAcknowledgment {
+  success: boolean;
+  status: 'ACKNOWLEDGED' | 'FAILED' | 'REJECTED';
+  referenceId: string;
+  timestamp: string;
+  message: string;
+  partnerId: string;
+  partnerName: string;
+  providerType: PartnerProviderType;
+}
+
+export interface PendingSOSItem {
+  sosPackage: SOSPackage;
+  targetPartner: EmergencyPartnerProvider;
+  userApprovedForPartnerTransmission: boolean;
+  userConsentTimestamp: string;
+  status: 'PENDING_LOCAL' | 'TRANSMITTING' | 'SENT' | 'FAILED';
+  attempts: number;
+  lastAttemptTimestamp?: string;
+  errorMessage?: string;
+  acknowledgment?: PartnerAcknowledgment;
+}
+
+export interface CountryInfo {
+  code: string;
+  name: string;
+  flag: string;
+}

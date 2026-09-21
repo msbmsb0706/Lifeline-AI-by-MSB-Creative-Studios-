@@ -12,6 +12,7 @@ interface HeaderProps {
   onToggleSound: () => void;
   onShowSplash?: () => void;
   onOpenPrivacyModal?: () => void;
+  onOpenPartnersModal?: () => void;
   nebiusConnected?: boolean;
 }
 
@@ -25,6 +26,7 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleSound,
   onShowSplash,
   onOpenPrivacyModal,
+  onOpenPartnersModal,
   nebiusConnected = false
 }) => {
   const [showInfoModal, setShowInfoModal] = useState(false);
@@ -144,6 +146,19 @@ export const Header: React.FC<HeaderProps> = ({
           >
             {highContrast ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
+
+          {/* Emergency Partners Framework Link Button */}
+          {onOpenPartnersModal && (
+            <button
+              id="open-emergency-partners-btn"
+              onClick={onOpenPartnersModal}
+              title="Emergency Partners & Integration Framework"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-950/80 hover:bg-red-900 border border-red-700/80 text-red-300 transition-colors text-xs font-bold shadow-sm"
+            >
+              <Shield className="w-3.5 h-3.5 text-red-400" />
+              <span className="hidden sm:inline">Emergency Partners</span>
+            </button>
+          )}
 
           {/* Privacy & Safety Link Button */}
           {onOpenPrivacyModal && (

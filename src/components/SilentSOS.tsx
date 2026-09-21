@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, CheckCircle2, MapPin, Radio, ShieldAlert, Smartphone, Video, X } from 'lucide-react';
+import { Camera, CheckCircle2, MapPin, Radio, ShieldAlert, Smartphone, Video, X, Send, Save, Info } from 'lucide-react';
 import { classifyEmergencyOffline } from '../lib/offlineClassifier.ts';
-import { EmergencyAnalysisResult, SeverityLevel } from '../types.ts';
+import { EmergencyAnalysisResult, SeverityLevel, PendingSOSItem, EmergencyPartnerProvider } from '../types.ts';
+import { createSOSPackage, savePendingSOS, processPendingQueue } from '../lib/emergencyPartnerQueue.ts';
+import { getTestProvider } from '../lib/emergencyPartnersData.ts';
+import { PartnerConsentModal } from './PartnerConsentModal.tsx';
 
 interface SilentSOSProps {
   offlineMode: boolean;
   onClose: () => void;
   onSaveResult?: (result: EmergencyAnalysisResult) => void;
+  onQueueUpdated?: () => void;
 }
 
 type QuickEvent = { label: string; icon: string; text: string };
@@ -37,12 +41,12 @@ function gpsErrorMessage(code?: number): string {
   return 'GPS unavailable.';
 }
 
-export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSaveResult }) => {
+export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSaveResult, onQueueUpdated }) => {
   const [selectedEvent, setSelectedEvent] = useState<QuickEvent | null>(null);
   const [message, setMessage] = useState('');
   const [location, setLocation] = useState<{
     text: string;
-    coords?: { latitude: number; longitude: number };
+    coords?: { latitude: number; longitude: number; accuracyMeters?: number };
   }>({ text: 'Requesting current location once…' });
   const [locationRequested, setLocationRequested] = useState(false);
   const [images, setImages] = useState<File[]>([]);
@@ -52,6 +56,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   const [sensorSignal, setSensorSignal] = useState(false);
   const [sensorAvailable, setSensorAvailable] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
+  const [showPartnerConsentModal, setShowPartnerConsentModal] = useState(false);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreview, setVideoPreview] = useState<string | null>(null);
   const [videoNotice, setVideoNotice] = useState('');
@@ -295,6 +300,75 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     offline_notice: offlineMode ? 'Silent SOS classified locally. No cloud API was called.' : undefined,
     location_coordinates: location.coords || null
   });
+
+  const testPartner = getTestProvider();
+
+  const buildSOSPkg = () => {
+    const silentResult = createSilentResult();
+    return createSOSPackage({
+      emergencyType: possibleEvent,
+      category: silentResult.emergency_category,
+      severity: result.severity,
+      message: message.trim() || selectedEvent?.text || 'Possible emergency reported by silent user trigger.',
+      gps: location.coords ? { latitude: location.coords.latitude, longitude: location.coords.longitude } : null,
+      photos: images.map((f, i) => ({
+        type: 'image',
+        name: f.name,
+        mimeType: f.type,
+        sizeBytes: f.size
+      })),
+      video: videoFile
+        ? {
+            type: 'video',
+            name: videoFile.name,
+            mimeType: videoFile.type,
+            sizeBytes: videoFile.size
+          }
+        : null,
+      source: offlineMode || !navigator.onLine ? 'offline' : 'online'
+    });
+  };
+
+  const handleConfirmPartnerConsent = async () => {
+    const sosPkg = buildSOSPkg();
+    const silentResult = createSilentResult();
+    onSaveResult?.(silentResult);
+
+    const pendingItem: PendingSOSItem = {
+      sosPackage: sosPkg,
+      targetPartner: testPartner,
+      userApprovedForPartnerTransmission: true,
+      userConsentTimestamp: new Date().toISOString(),
+      status: 'PENDING_LOCAL',
+      attempts: 0
+    };
+
+    savePendingSOS(pendingItem);
+    onQueueUpdated?.();
+    setShowPartnerConsentModal(false);
+    setShowConfirmation(false);
+
+    if (offlineMode || !navigator.onLine) {
+      setShareNotice(
+        'OFFLINE — SOS saved locally. It will be sent when a supported connection becomes available.'
+      );
+      return;
+    }
+
+    try {
+      const res = await processPendingQueue({ forceManual: true });
+      onQueueUpdated?.();
+      if (res.successCount > 0) {
+        setShareNotice(
+          'TEST / DEMO SUCCESS — SOS transmitted to TEST Emergency Partner. Reference ID acknowledged.'
+        );
+      } else if (res.errors.length > 0) {
+        setShareNotice(`Partner transmission failed: ${res.errors.join('; ')}`);
+      }
+    } catch (err: any) {
+      setShareNotice(`Partner transmission error: ${err.message}`);
+    }
+  };
 
   const confirmShare = async () => {
     const silentResult = createSilentResult();
@@ -618,19 +692,40 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
                 <video src={videoPreview} controls playsInline className="w-full max-h-40 rounded-lg bg-black border border-neutral-700" />
               )}
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <button onClick={confirmShare} className="py-3 rounded-xl bg-red-600 font-black">
-                CONFIRM SHARE
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">
+              <button
+                onClick={() => {
+                  setShowConfirmation(false);
+                  setShowPartnerConsentModal(true);
+                }}
+                className="py-3 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow"
+              >
+                <Radio className="w-4 h-4" />
+                <span>SEND TO EMERGENCY PARTNER (DEMO)</span>
+              </button>
+              <button onClick={confirmShare} className="py-3 px-3 rounded-xl bg-red-600 hover:bg-red-500 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow">
+                <ShieldAlert className="w-4 h-4" />
+                <span>SHARE VIA DEVICE</span>
               </button>
               <button
                 onClick={() => setShowConfirmation(false)}
-                className="py-3 rounded-xl bg-neutral-800 border border-neutral-600 font-black"
+                className="py-3 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 font-bold text-xs sm:text-sm col-span-1 sm:col-span-2"
               >
                 GO BACK
               </button>
             </div>
           </div>
         </div>
+      )}
+      {showPartnerConsentModal && (
+        <PartnerConsentModal
+          isOpen={showPartnerConsentModal}
+          provider={testPartner}
+          sosPackage={buildSOSPkg()}
+          isOffline={offlineMode || !navigator.onLine}
+          onCancel={() => setShowPartnerConsentModal(false)}
+          onConfirm={handleConfirmPartnerConsent}
+        />
       )}
     </div>
   );
