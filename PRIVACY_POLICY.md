@@ -115,7 +115,7 @@ If you have questions, concerns, or feedback about this Privacy Policy, or wish 
 
 **How the submitted information is used**
 - The information you submit is used **only to respond to your request**. It is not used for marketing, profiling, or advertising, is not sold or shared with third parties for their own purposes, and is not sent to any AI model.
-- Your message is transmitted over HTTPS to the LifeLine AI server, which forwards it to the MSB Creative Studios privacy team by email. No email address is published in the app or website; the destination is configured privately on the server.
+- Your message is transmitted over HTTPS to the LifeLine AI server, which forwards it to the MSB Creative Studios privacy team by email. No email address is published in the app or website. The privacy contact destination is configured by the operator of the LifeLine AI service and is kept private on the server.
 - Because an email address is required in order to reply, submissions through the form are **not anonymous**.
 - The form is protected against automated abuse (input validation and rate limiting). The server does not log the contents of your message or your email address.
 
