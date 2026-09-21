@@ -22,15 +22,19 @@ const QUICK_EVENTS: QuickEvent[] = [
 
 const MAX_EVIDENCE_IMAGES = 2;
 
-const severityLabel = (severity: SeverityLevel | undefined) =>
-  severity === 5 ? 'Critical' : severity === 4 ? 'High' : severity === 3 ? 'Moderate' : 'Unknown';
+function severityLabel(severity: SeverityLevel | undefined): string {
+  if (severity === 5) return 'Critical';
+  if (severity === 4) return 'High';
+  if (severity === 3) return 'Moderate';
+  return 'Unknown';
+}
 
-const gpsErrorMessage = (code?: number) => {
+function gpsErrorMessage(code?: number): string {
   if (code === 1) return 'GPS unavailable: permission denied. Location was not included.';
   if (code === 2) return 'GPS unavailable: position could not be determined.';
   if (code === 3) return 'GPS unavailable: location request timed out.';
   return 'GPS unavailable.';
-};
+}
 
 export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSaveResult }) => {
   const [selectedEvent, setSelectedEvent] = useState<QuickEvent | null>(null);
@@ -57,7 +61,6 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     };
   }, []);
 
-  // One permission request and one position read per activation. No watcher/background tracking.
   useEffect(() => {
     if (locationRequested) return;
     setLocationRequested(true);
@@ -79,7 +82,6 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     );
   }, [locationRequested]);
 
-  // Motion is an optional, activation-scoped signal only. It never proves an emergency.
   useEffect(() => {
     if (!('DeviceMotionEvent' in window)) return;
     const onMotion = (event: DeviceMotionEvent) => {
@@ -172,9 +174,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
 
     let notice = '';
     const canAttachFiles =
-      images.length > 0 &&
-      typeof navigator.canShare === 'function' &&
-      navigator.canShare({ files: images });
+      images.length > 0 && typeof navigator.canShare === 'function' && navigator.canShare({ files: images });
 
     if (navigator.share) {
       try {
