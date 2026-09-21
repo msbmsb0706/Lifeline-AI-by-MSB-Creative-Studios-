@@ -94,13 +94,36 @@ Browser  →  Node/Express backend  →  NVIDIA Nemotron (Nebius Token Factory)
                  │     ├─ AUTHORIZED API Provider (Server-Side HTTPS Authentication)
                  │     └─ PUBLIC CONTACT Provider (Direct Phone/Website Info Only)
                  │
+                 ├─ Privacy Contact Form Endpoint (/api/privacy-contact)
+                 │     └─ Server-side SMTP relay → PRIVACY_CONTACT_EMAIL (env var only)
+                 │
                  └─ Offline / Resilience mode: local deterministic rules (no cloud AI)
 ```
 
 - Browser talks to the LifeLine backend over relative API routes.
 - Online analysis uses the server-side Nebius Token Factory configuration.
 - Emergency partner dispatch occurs via server-side endpoints with full payload validation and secret protection.
+- Privacy Contact Form submissions are relayed server-side; the destination mailbox exists only as a server environment variable.
 - Offline mode remains local and does not call cloud AI services.
+
+---
+
+## Privacy Contact Form
+
+Users contact MSB Creative Studios through the in-app **Privacy Contact Form** (Privacy & Safety → **Open Privacy Contact Form**, the **Contact Privacy Team** button, or the footer link). No personal or developer email address is published in the app, the website, this README, or the Privacy Policy.
+
+**Endpoint:** `POST /api/privacy-contact` (JSON: `name` optional, `email` required, `message` required)
+
+The server (`server/privacyContact.ts`):
+
+- validates the email address and message and rejects empty, malformed, or oversized submissions (name ≤ 100 chars, email ≤ 254 chars, message 10–4000 chars);
+- applies rate limiting (30 attempts and 5 accepted submissions per client per 15 minutes, 100 accepted submissions per hour server-wide) plus a hidden honeypot field for automated senders;
+- relays the message by SMTP to the mailbox in `PRIVACY_CONTACT_EMAIL`, with the user's address set as `Reply-To`;
+- never logs the submitted name, email address, or message — only a random reference id and a coarse outcome code;
+- returns only a generic success/failure JSON response (`{ success, message | error, reference }`) and never returns the destination address;
+- responds `503` when `PRIVACY_CONTACT_EMAIL` or the SMTP settings are missing, `429` when rate-limited, `400` for invalid input.
+
+The destination mailbox is **never hard-coded**. It is read only from the server-side environment variable `PRIVACY_CONTACT_EMAIL`, which must be configured in the hosting provider's environment/secrets settings (not in this repository and not in any `VITE_`-prefixed or otherwise public variable). The frontend only calls the relative URL `/api/privacy-contact`, so the form works identically on the production website and inside the Android app's WebView when it loads the same production origin.
 
 ---
 
@@ -116,8 +139,15 @@ Configure these in a local `.env` file (copy from `.env.example`). **`.env` is l
 | `NEBIUS_MODEL` | Configured NVIDIA Nemotron model identifier |
 | `AUTHORIZED_PARTNER_API_URL` | Optional server-side HTTPS URL for authorized partner API dispatch |
 | `AUTHORIZED_PARTNER_API_KEY` | Optional server-side API key for authorized partner API dispatch |
+| `PRIVACY_CONTACT_EMAIL` | **Server-side only.** Destination mailbox for Privacy Contact Form submissions. Configure it in the production environment; never commit it or expose it to the client. If empty, the form responds "temporarily unavailable". |
+| `SMTP_HOST` | SMTP server used to relay Privacy Contact Form messages (e.g. your mail provider's SMTP relay) |
+| `SMTP_PORT` | SMTP port (default `587` for STARTTLS; use `465` with `SMTP_SECURE=true`) |
+| `SMTP_SECURE` | `true` for implicit TLS (port 465); otherwise `false` (STARTTLS is used when the server offers it) |
+| `SMTP_USER` / `SMTP_PASS` | SMTP credentials (server-side only; for Gmail use an App Password) |
+| `PRIVACY_CONTACT_FROM` | Optional sender address for relayed messages (defaults to `SMTP_USER`) |
+| `TRUST_PROXY` | Optional Express `trust proxy` setting so per-client rate limiting sees real client IPs behind a hosting proxy. Defaults to `1` hop when `NODE_ENV=production`, otherwise disabled. |
 
-No API keys, secrets, credentials, or `.env` files are committed to Git.
+No API keys, secrets, credentials, mailbox addresses, or `.env` files are committed to Git.
 
 ---
 
@@ -154,21 +184,25 @@ See **[PRIVACY_POLICY.md](PRIVACY_POLICY.md)**.
 Implemented controls include:
 
 - Microphone only when the user starts voice input; no background listening.
-- One-time GPS for Silent SOS; no movement tracking.
-- Camera only for user-selected still evidence (maximum two images); no continuous camera.
-- Images are not sent to a vision model.
+- One-time GPS for Silent SOS; no background location tracking.
+- Camera only after user action: up to two still images plus an optional 10-second SOS video; no continuous camera.
+- Images and video are evidence only and are not sent to a vision model.
 - Sharing and partner transmission require explicit review and confirmation.
-- No automatic contact of government or rescue services without authorized API integration.
+- No automatic contact of government or rescue services.
 - History is opt-in local storage only; default is no retention.
-- No advertising SDKs or third-party telemetry.
+- Offline / Resilience mode does not send data to cloud AI.
+- No advertising SDKs, analytics, tracking pixels, or third-party telemetry.
+
+**Contact & privacy requests:** users can contact MSB Creative Studios through the **Privacy Contact Form** inside the app (Privacy & Safety → Contact Privacy Team). The form collects a name (optional), an email address (required so we can reply) and a message (required); the information is used only to respond to the request. Because an email address is required, submissions are not anonymous. No email address is published in the app or in this repository.
 
 ---
 
 ## Security
 
 - `NEBIUS_API_KEY` and partner API credentials remain server-side only.
+- `PRIVACY_CONTACT_EMAIL` and the SMTP credentials remain server-side only; they are never bundled into the frontend, returned by any API, or hard-coded in source.
 - `.env` is gitignored and must never be committed.
-- No secrets, credentials, keystores, or certificates are tracked in this repository.
+- No secrets, credentials, keystores, certificates, or mailbox addresses are tracked in this repository.
 
 ---
 

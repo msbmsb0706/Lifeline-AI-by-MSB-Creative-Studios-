@@ -3,6 +3,7 @@
 **Application Name:** LifeLine AI  
 **Developer:** MSB Creative Studios  
 **Effective Date:** 18 September 2026  
+**Last Updated:** 21 September 2026  
 
 ---
 
@@ -32,12 +33,20 @@ LifeLine AI accesses hardware features only when explicitly activated by the use
 
 ### 2.3 Location Data
 - **Explicit Activation Only:** Location data (GPS coordinates) is requested **only** when the user chooses to include location in an emergency report or activates location sharing.
+- **One-Time GPS for Silent SOS:** Silent SOS requests the device position **once** for the active session (a single `getCurrentPosition` call). There is no continuous `watchPosition` and no movement tracking.
 - **Pre-Sharing Notice:** A mandatory location privacy confirmation dialog is shown before coordinates are included or shared.
 - **No Background Tracking:** LifeLine AI does **not** track user movements or collect background location data.
 
-### 2.4 Camera & Images
-- **Usage:** Camera or image upload features (if accessed) occur only with explicit, immediate user action (e.g., attaching visual hazard evidence).
+### 2.4 Camera, Images & SOS Video
+- **User Action Only:** The camera is accessed only after an explicit, immediate user action (e.g., attaching visual hazard evidence in Silent SOS).
+- **Up to Two Still Images:** The user may capture or select a maximum of two still images as emergency evidence.
+- **Optional 10-Second SOS Video:** The user may tap **CAPTURE SOS VIDEO** to record an optional clip of up to 10 seconds. Recording starts only after that tap, stops automatically at 10 seconds (or sooner if cancelled), and camera tracks are released immediately afterward.
+- **Evidence Only:** Photos and video are attached as evidence for the user to review and share. They are **not** sent to a vision AI model and are not analyzed by Nemotron.
 - **No Continuous Surveillance:** There is no background camera access, facial recognition, or automatic scanning.
+
+### 2.5 Privacy Contact Form
+- **Usage:** If you choose to contact us through the Privacy Contact Form, we receive the name you optionally provide, the email address you provide, and your message. See **Section 9** for details.
+- **Purpose Limitation:** This information is used only to respond to your request.
 
 ---
 
@@ -62,7 +71,7 @@ LifeLine AI accesses hardware features only when explicitly activated by the use
 
 ## 5. Emergency Sharing & Third-Party Disclosure
 
-- **User-Initiated Sharing Only:** LifeLine AI does **not** automatically contact 911, government agencies, or emergency responders without user action. All sharing (via Web Share API, SMS, or clipboard copy) requires direct, intentional confirmation from the user.
+- **User-Initiated Sharing Only:** LifeLine AI does **not** automatically contact 911, government agencies, rescue services, or emergency responders without user action. All sharing (via Web Share API, SMS, or clipboard copy) requires direct, intentional review and confirmation from the user. Completing a photo or video capture does not share anything.
 - **No Commercial Monetization:** We do not sell, rent, lease, or monetize your emergency information, personal details, or location data.
 - **No Third-Party Advertising:** There are zero advertisement SDKs, tracking pixels, or cross-site analytics embedded within LifeLine AI.
 
@@ -72,6 +81,7 @@ LifeLine AI accesses hardware features only when explicitly activated by the use
 
 In Online Mode, the application communicates with the following infrastructure:
 - **Nebius Token Factory / NVIDIA Nemotron:** Used exclusively by the server backend to perform natural language triage classification and multilingual emergency translation. No personal identifiers are forwarded.
+- **Email Delivery (Privacy Contact Form only):** When you submit the Privacy Contact Form, the LifeLine AI server relays your message to the MSB Creative Studios privacy mailbox through a standard email (SMTP) delivery provider. Emergency transcripts, location data, photos and video are never sent through this channel.
 - All communications are secured using industry-standard Transport Layer Security (TLS/HTTPS).
 
 ---
@@ -86,15 +96,30 @@ LifeLine AI is designed as a general utility emergency tool. It is not directed 
 
 - All server communication occurs over HTTPS.
 - Third-party API keys (`NEBIUS_API_KEY`) remain strictly confidential on the server backend and are never bundled, transmitted, or revealed to the client browser or client code.
+- The destination mailbox and email delivery credentials used by the Privacy Contact Form are stored only as server-side environment variables. They are never included in the website, the app, API responses, or the public source code repository.
 - Cryptographic keys, secrets, and private configuration files are strictly excluded from public version control.
 
 ---
 
-## 9. Contact & Inquiries
+## 9. Contact & Privacy Requests
 
-If you have questions, concerns, or feedback regarding this Privacy Policy or data safety practices, please contact:
+If you have questions, concerns, or feedback about this Privacy Policy, or wish to make a privacy request (for example, a question about data handling or a request to access or delete information), you can contact **MSB Creative Studios** through the **Privacy Contact Form**.
 
-**MSB Creative Studios**  
-- **Email:** privacy@msbcreativestudios.com  
-- **Developer Inquiries:** msbmsb0706@gmail.com  
-- **Repository:** https://github.com/msbmsb0706/Lifeline-AI-by-MSB-Creative-Studios-
+**How to reach the form**
+- In the LifeLine AI website or app, open **Privacy & Safety** and tap **Open Privacy Contact Form** / **Contact Privacy Team**, or use the **Contact Privacy Team** link in the page footer.
+
+**What the form collects**
+- **Name** (optional)
+- **Email address** (required — so that we can reply to you)
+- **Message** (required)
+
+**How the submitted information is used**
+- The information you submit is used **only to respond to your request**. It is not used for marketing, profiling, or advertising, is not sold or shared with third parties for their own purposes, and is not sent to any AI model.
+- Your message is transmitted over HTTPS to the LifeLine AI server, which forwards it to the MSB Creative Studios privacy team by email. No email address is published in the app or website; the destination is configured privately on the server.
+- Because an email address is required in order to reply, submissions through the form are **not anonymous**.
+- The form is protected against automated abuse (input validation and rate limiting). The server does not log the contents of your message or your email address.
+
+**Please note**
+- The Privacy Contact Form is **not** an emergency channel. In an emergency, contact your local emergency services directly (for example 911, 112, or 108).
+
+**Repository:** https://github.com/msbmsb0706/Lifeline-AI-by-MSB-Creative-Studios-
