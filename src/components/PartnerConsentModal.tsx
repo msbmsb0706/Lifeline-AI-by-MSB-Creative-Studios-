@@ -1,0 +1,269 @@
+import React from 'react';
+import {
+  EmergencyPartnerProvider,
+  SOSPackage,
+  MediaAttachmentInfo
+} from '../types.ts';
+import {
+  ShieldAlert,
+  CheckCircle2,
+  X,
+  AlertTriangle,
+  FileText,
+  MapPin,
+  Image as ImageIcon,
+  Video,
+  Clock,
+  Send,
+  Save,
+  Info
+} from 'lucide-react';
+
+interface PartnerConsentModalProps {
+  isOpen: boolean;
+  provider: EmergencyPartnerProvider;
+  sosPackage: SOSPackage;
+  isOffline: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
+  isOpen,
+  provider,
+  sosPackage,
+  isOffline,
+  onCancel,
+  onConfirm
+}) => {
+  if (!isOpen) return null;
+
+  const isTestProvider = provider.providerType === 'TEST';
+  const isPublicContact = provider.providerType === 'PUBLIC_CONTACT';
+  const isAuthorizedApi = provider.providerType === 'AUTHORIZED_API';
+
+  const photosCount = sosPackage.photos ? sosPackage.photos.length : 0;
+  const hasVideo = Boolean(sosPackage.video);
+  const mediaSupported = Boolean(provider.supportsMediaUpload);
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-md overflow-y-auto p-3 sm:p-6 flex items-center justify-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="consent-modal-title"
+    >
+      <div className="w-full max-w-xl rounded-2xl border-2 border-red-600 bg-neutral-950 text-white shadow-2xl overflow-hidden my-4">
+        {/* Modal Header */}
+        <div className="p-4 sm:p-5 bg-neutral-900 border-b border-neutral-800 flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-red-950 text-red-400 border border-red-800">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="text-[10px] font-black tracking-widest text-red-400 uppercase">
+                USER REVIEW & CONSENT
+              </div>
+              <h2 id="consent-modal-title" className="text-lg sm:text-xl font-black">
+                EMERGENCY PARTNER
+              </h2>
+            </div>
+          </div>
+          <button
+            onClick={onCancel}
+            className="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white"
+            aria-label="Cancel partner consent"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 sm:p-5 space-y-4 text-xs sm:text-sm">
+          {/* Destination Provider Box */}
+          <div className="p-3.5 rounded-xl bg-neutral-900 border border-neutral-800 space-y-2">
+            <div className="text-[10px] font-bold tracking-wider text-neutral-400 uppercase">
+              Destination Provider
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-extrabold text-white text-base">
+                {provider.providerName}
+              </div>
+              <span
+                className={`text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${
+                  isTestProvider
+                    ? 'bg-purple-950 text-purple-300 border-purple-700'
+                    : isAuthorizedApi
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
+                    : 'bg-blue-950 text-blue-300 border-blue-700'
+                }`}
+              >
+                {isTestProvider
+                  ? 'TEST / DEMO'
+                  : isAuthorizedApi
+                  ? 'AUTHORIZED API'
+                  : 'PUBLIC CONTACT'}
+              </span>
+            </div>
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              {provider.description}
+            </p>
+          </div>
+
+          {/* Test or Public Contact Notice Banner */}
+          {isTestProvider && (
+            <div className="p-3 rounded-xl bg-purple-950/80 border-2 border-purple-600 text-purple-200 flex items-start gap-2.5">
+              <Info className="w-5 h-5 text-purple-400 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-black uppercase tracking-wider text-xs text-white">
+                  TEST / DEMO PROVIDER
+                </div>
+                <div className="text-xs mt-0.5 text-purple-200 font-semibold">
+                  TEST / DEMO — NO REAL EMERGENCY SERVICE WILL RECEIVE THIS ALERT.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isPublicContact && (
+            <div className="p-3 rounded-xl bg-blue-950/80 border-2 border-blue-600 text-blue-200 flex items-start gap-2.5">
+              <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-black uppercase tracking-wider text-xs text-white">
+                  PUBLIC EMERGENCY CONTACT ONLY
+                </div>
+                <div className="text-xs mt-0.5 text-blue-200">
+                  Public contact channels do not accept digital API payloads.
+                  Call official line <span className="font-extrabold text-white">{provider.phone || 'directly'}</span>.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Offline Notice Banner */}
+          {isOffline && (
+            <div className="p-3 rounded-xl bg-amber-950/80 border border-amber-700 text-amber-200 flex items-start gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-black uppercase text-xs">OFFLINE MODE ACTIVE</div>
+                <div className="text-xs mt-0.5">
+                  OFFLINE — SOS will be saved locally. It will be sent when a supported connection becomes available.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Data That May Be Sent Checklist */}
+          <div className="p-3.5 rounded-xl bg-neutral-900 border border-neutral-800 space-y-2.5">
+            <div className="text-[10px] font-bold tracking-wider text-neutral-400 uppercase">
+              Data that may be sent:
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div className="flex items-center gap-2 text-emerald-300">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  <b>Emergency type:</b> {sosPackage.emergencyType}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 text-emerald-300">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  <b>Severity:</b> Level {sosPackage.severity}/5
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 text-emerald-300 col-span-1 sm:col-span-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="truncate">
+                  <b>Message:</b> "{sosPackage.message}"
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 text-emerald-300">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  <b>GPS location:</b>{' '}
+                  {sosPackage.gps
+                    ? `${sosPackage.gps.latitude.toFixed(4)}, ${sosPackage.gps.longitude.toFixed(4)}`
+                    : 'Not available'}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 text-emerald-300">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  <b>Timestamp:</b>{' '}
+                  {new Date(sosPackage.timestamp).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 text-emerald-300">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  <b>Up to 2 photos:</b>{' '}
+                  {photosCount > 0
+                    ? `${photosCount} photo(s) attached`
+                    : 'No photos'}
+                  {!mediaSupported && photosCount > 0 && (
+                    <span className="text-amber-400 text-[10px] block">
+                      (Excluded: destination does not support photo uploads)
+                    </span>
+                  )}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 text-emerald-300">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  <b>10-second video:</b>{' '}
+                  {hasVideo ? 'Video recorded' : 'No video'}
+                  {!mediaSupported && hasVideo && (
+                    <span className="text-amber-400 text-[10px] block">
+                      (Excluded: destination does not support video uploads)
+                    </span>
+                  )}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Buttons */}
+          <div className="grid grid-cols-2 gap-3 pt-2">
+            <button
+              id="consent-cancel-btn"
+              type="button"
+              onClick={onCancel}
+              className="py-3 px-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 transition-colors"
+            >
+              <X className="w-4 h-4" />
+              <span>CANCEL</span>
+            </button>
+
+            <button
+              id="consent-confirm-send-btn"
+              type="button"
+              onClick={onConfirm}
+              className="py-3 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-red-950 transition-colors"
+            >
+              {isOffline ? (
+                <>
+                  <Save className="w-4 h-4" />
+                  <span>CONFIRM & SAVE LOCAL</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4" />
+                  <span>CONFIRM & SEND</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

@@ -6,6 +6,7 @@ import { SOSCardView } from './components/SOSCardView.tsx';
 import { SplashScreen } from './components/SplashScreen.tsx';
 import { PrivacySafetyModal } from './components/PrivacySafetyModal.tsx';
 import { SilentSOS } from './components/SilentSOS.tsx';
+import { EmergencyPartnersManagerModal } from './components/EmergencyPartnersManagerModal.tsx';
 import {
   EmergencyAnalysisResult,
   SystemStatus,
@@ -13,13 +14,16 @@ import {
 } from './types.ts';
 import { classifyEmergencyOffline } from './lib/offlineClassifier.ts';
 import { translateEmergencyOffline, detectLanguage } from './lib/languages.ts';
+import { getPendingQueue, processPendingQueue, getAutoSendSetting } from './lib/emergencyPartnerQueue.ts';
 import { playPing } from './lib/audio.ts';
-import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock } from 'lucide-react';
+import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send } from 'lucide-react';
 
 export default function App() {
   const [showSplash, setShowSplash] = useState<boolean>(true);
   const [showPrivacyModal, setShowPrivacyModal] = useState<boolean>(false);
+  const [showPartnersModal, setShowPartnersModal] = useState<boolean>(false);
   const [showSilentSOS, setShowSilentSOS] = useState<boolean>(false);
+  const [pendingQueueCount, setPendingQueueCount] = useState<number>(0);
   const [transcript, setTranscript] = useState('');
   const [locationInfo, setLocationInfo] = useState<string | null>(null);
   const [locationCoords, setLocationCoords] = useState<{ latitude: number; longitude: number; accuracyMeters?: number } | null>(null);
@@ -34,6 +38,28 @@ export default function App() {
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [nebiusConnected, setNebiusConnected] = useState<boolean>(false);
+
+  // Refresh pending queue count
+  const refreshPendingQueue = useCallback(() => {
+    const queue = getPendingQueue();
+    const unsent = queue.filter((i) => i.status !== 'SENT');
+    setPendingQueueCount(unsent.length);
+  }, []);
+
+  // Monitor network connectivity & auto-send pending queue when connection returns
+  useEffect(() => {
+    refreshPendingQueue();
+
+    const handleOnline = () => {
+      refreshPendingQueue();
+      if (getAutoSendSetting()) {
+        processPendingQueue({ forceManual: false }).then(() => refreshPendingQueue());
+      }
+    };
+
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [refreshPendingQueue]);
 
   // Privacy Rule: Do not store voice recordings or emergency information unless user explicitly enables storage feature
   const [historyStorageEnabled, setHistoryStorageEnabled] = useState<boolean>(() => {
@@ -324,11 +350,36 @@ export default function App() {
         onToggleSound={() => setSoundEnabled((prev) => !prev)}
         onShowSplash={() => setShowSplash(true)}
         onOpenPrivacyModal={() => setShowPrivacyModal(true)}
+        onOpenPartnersModal={() => setShowPartnersModal(true)}
         nebiusConnected={nebiusConnected}
       />
 
       {/* Main Container */}
       <main className="flex-1 w-full max-w-4xl mx-auto px-3.5 py-4 sm:px-6 sm:py-6 flex flex-col">
+        {/* Pending SOS Local Queue Banner */}
+        {pendingQueueCount > 0 && (
+          <div
+            id="pending-sos-queue-banner"
+            className="mb-3 p-3 rounded-xl bg-amber-950/90 border-2 border-amber-600 text-amber-200 text-xs font-bold flex flex-wrap items-center justify-between gap-2 shadow-lg"
+          >
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <b>OFFLINE / QUEUED:</b> {pendingQueueCount} pending SOS package(s) saved locally. It will be sent when a supported connection becomes available.
+              </span>
+            </div>
+            <div className="flex items-center gap-2 ml-auto">
+              <button
+                onClick={() => setShowPartnersModal(true)}
+                className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-black transition-colors flex items-center gap-1"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                <span>View Queue & Settings</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Rapid SOS Banner on top with Privacy link */}
         <div
           id="sos-call-reminder-banner"
@@ -581,8 +632,17 @@ export default function App() {
             setCurrentResult(result);
             saveReportToHistory(result);
           }}
+          onQueueUpdated={refreshPendingQueue}
         />
       )}
+
+      {/* Emergency Partners Configuration & Queue Manager Modal */}
+      <EmergencyPartnersManagerModal
+        isOpen={showPartnersModal}
+        onClose={() => setShowPartnersModal(false)}
+        isOffline={offlineForce || !navigator.onLine}
+        onQueueUpdated={refreshPendingQueue}
+      />
 
       {/* Footer */}
       <footer className="w-full border-t border-neutral-800/80 py-4 px-4 text-center text-[11px] text-neutral-400">

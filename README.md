@@ -2,7 +2,7 @@
 
 **BY MSB CREATIVE STUDIOS**
 
-LifeLine AI by MSB Creative Studios is an emergency triage application for voice and text distress reports. It classifies likely emergency type and severity, produces a locally generated SOS card, and lets the user review and share an alert package. It does not automatically contact government agencies, police, ambulance, fire service, or rescue organizations.
+LifeLine AI by MSB Creative Studios is an emergency triage application for voice and text distress reports. It classifies likely emergency type and severity, produces a locally generated SOS card, and lets the user review and share an alert package. LifeLine AI currently has no automatic government or rescue dispatch.
 
 ---
 
@@ -49,16 +49,57 @@ Motion sensors, when present, are an optional session signal only. Sensor data i
 
 ---
 
+## Emergency Partner Integration Framework
+
+LifeLine AI includes a country-aware Emergency Partner integration framework supporting three distinct provider types:
+
+### Provider Types
+
+1. **TEST / DEMO PROVIDER**
+   - Labeled clearly: `"TEST EMERGENCY PARTNER — DEMONSTRATION ONLY"`.
+   - Used exclusively for system demonstrations.
+   - Simulates receiving an SOS package and returns a mock acknowledgment with a reference ID (`DEMO-ACK-XXXXX`).
+   - Does NOT send alerts to any real government, police, fire, or rescue organization.
+
+2. **PUBLIC CONTACT PROVIDER**
+   - Displays officially published emergency contact numbers and websites (e.g., 911 in US, 112 in EU/India, 108 in India, 999 in UK, 000 in Australia).
+   - Only populates contacts from verified official government sources.
+   - Clearly states that no digital API exists for automated dispatch.
+   - Does NOT automatically upload GPS, photos, or video to public telephone lines or websites unless explicitly supported by documented submission methods.
+
+3. **AUTHORIZED API PROVIDER**
+   - Used only when an organization has provided an actual, documented API interface.
+   - Sends the structured SOS package over secure HTTPS to the authorized endpoint.
+   - Credentials remain server-side and are never exposed in browser or client code.
+   - Supports request validation, authentication, provider acknowledgment, error handling, and safe retries.
+
+### Offline-First & Pending Transmission Queue
+
+- **Offline SOS Generation**: Device GPS can be acquired offline if location hardware is available. Offline emergency classification, photo evidence (up to 2 images), and 10-second video recording continue to function without internet.
+- **Local Storage**: When offline, an SOS package (containing SOS ID, timestamp, emergency type, severity, message, GPS coordinates/accuracy, photo/video evidence metadata, and source status) is saved locally only after explicit user review and confirmation.
+- **Connectivity & Consent**: Cloud or API transmission cannot occur without an active communication path. Before any automatic transmission when connectivity returns, a privacy-preserving user setting ("Send pending SOS when connection returns") is provided.
+- **Privacy Default**: Automatic transmission on connection return defaults to `OFF`. If enabled and the user explicitly approved partner transmission, the queue detects network connectivity, transmits to the authorized/test endpoint, prevents duplicate submissions, and marks the SOS as `SENT` only after receiving a valid provider acknowledgment.
+- **Media Upload Limits**: Photos and video are only transmitted to a real provider if its documented API interface explicitly supports media uploads.
+- **User Review & Control**: Mandatory explicit consent modal is shown prior to any transmission. Users can view, manually transmit, or delete any unsent pending SOS from the queue at any time.
+
+---
+
 ## Architecture
 
 ```
 Browser  →  Node/Express backend  →  NVIDIA Nemotron (Nebius Token Factory)
+                 │
+                 ├─ Emergency Partner API Endpoint (/api/emergency-partner/dispatch)
+                 │     ├─ TEST Provider (Mock Acknowledgment & Reference ID)
+                 │     ├─ AUTHORIZED API Provider (Server-Side HTTPS Authentication)
+                 │     └─ PUBLIC CONTACT Provider (Direct Phone/Website Info Only)
                  │
                  └─ Offline / Resilience mode: local deterministic rules (no cloud AI)
 ```
 
 - Browser talks to the LifeLine backend over relative API routes.
 - Online analysis uses the server-side Nebius Token Factory configuration.
+- Emergency partner dispatch occurs via server-side endpoints with full payload validation and secret protection.
 - Offline mode remains local and does not call cloud AI services.
 
 ---
@@ -73,6 +114,8 @@ Configure these in a local `.env` file (copy from `.env.example`). **`.env` is l
 | `NEBIUS_API_KEY` | Server-side Nebius Token Factory key. If empty, online analysis is unavailable. |
 | `NEBIUS_BASE_URI` | Nebius Token Factory API base URI |
 | `NEBIUS_MODEL` | Configured NVIDIA Nemotron model identifier |
+| `AUTHORIZED_PARTNER_API_URL` | Optional server-side HTTPS URL for authorized partner API dispatch |
+| `AUTHORIZED_PARTNER_API_KEY` | Optional server-side API key for authorized partner API dispatch |
 
 No API keys, secrets, credentials, or `.env` files are committed to Git.
 
@@ -100,8 +143,6 @@ http://localhost:3000
 
 ## Production
 
-**LIVE DEMO:** [PUBLIC HTTPS URL TO BE ADDED AFTER DEPLOYMENT]
-
 Do not treat localhost as a public deployment.
 
 ---
@@ -116,8 +157,8 @@ Implemented controls include:
 - One-time GPS for Silent SOS; no movement tracking.
 - Camera only for user-selected still evidence (maximum two images); no continuous camera.
 - Images are not sent to a vision model.
-- Sharing requires explicit review and confirmation.
-- No automatic contact of government or rescue services.
+- Sharing and partner transmission require explicit review and confirmation.
+- No automatic contact of government or rescue services without authorized API integration.
 - History is opt-in local storage only; default is no retention.
 - No advertising SDKs or third-party telemetry.
 
@@ -125,7 +166,7 @@ Implemented controls include:
 
 ## Security
 
-- `NEBIUS_API_KEY` is server-side only.
+- `NEBIUS_API_KEY` and partner API credentials remain server-side only.
 - `.env` is gitignored and must never be committed.
 - No secrets, credentials, keystores, or certificates are tracked in this repository.
 
