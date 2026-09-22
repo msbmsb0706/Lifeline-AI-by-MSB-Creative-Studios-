@@ -84,6 +84,23 @@ LifeLine AI includes a country-aware Emergency Partner integration framework sup
 
 ---
 
+## Emergency Organization Integration
+
+LifeLine AI provides an integration framework for authorized emergency,
+rescue, public-safety, and government organizations.
+
+The framework supports TEST / DEMO, PUBLIC_CONTACT, and AUTHORIZED_API
+provider types.
+
+Organizations must provide and authorize their own API contract,
+authentication method, payload requirements, media rules, sandbox endpoint,
+and acknowledgment format before a real integration is enabled.
+
+See:
+[Emergency Organization Integration Guide](EMERGENCY_ORGANIZATION_INTEGRATION.md)
+
+---
+
 ## Architecture
 
 ```
