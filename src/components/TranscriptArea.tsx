@@ -21,7 +21,14 @@ import { LocationPrivacyModal } from './LocationPrivacyModal.tsx';
 interface TranscriptAreaProps {
   transcript: string;
   onTranscriptChange: (text: string) => void;
-  onSubmitEmergency: () => void;
+  /**
+   * Submits the current transcript for triage.
+   *
+   * The transcript is passed explicitly and must be a string. This prop carries
+   * DATA, not an event: never bind it raw (`onClick={onSubmitEmergency}`), because
+   * React would then invoke it with a SyntheticEvent instead of transcript text.
+   */
+  onSubmitEmergency: (transcriptText: string) => void;
   onTestNebiusConnection?: () => void;
   onOfflineTest?: (text: string) => void;
   isAnalyzing: boolean;
@@ -202,7 +209,8 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
     if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || (e.key === 'Enter' && !e.shiftKey)) {
       e.preventDefault();
       if (transcript.trim() && !isAnalyzing) {
-        onSubmitEmergency();
+        // Explicit string argument — never hand the keyboard event to the triage handler.
+        onSubmitEmergency(transcript);
       }
     }
   };
@@ -539,7 +547,9 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
       <div className="mt-4">
         <button
           id="submit-emergency-analysis-btn"
-          onClick={onSubmitEmergency}
+          // Wrapped deliberately: binding the prop directly would hand React's
+          // SyntheticEvent to the triage handler instead of the transcript string.
+          onClick={() => onSubmitEmergency(transcript)}
           disabled={!transcript.trim() || isAnalyzing}
           className={`w-full py-3.5 px-4 rounded-xl font-extrabold text-sm sm:text-base flex items-center justify-center gap-2 shadow-lg transition-all ${
             !transcript.trim() || isAnalyzing

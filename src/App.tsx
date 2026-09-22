@@ -254,8 +254,20 @@ export default function App() {
     if (coords) setLocationCoords(coords);
   };
 
+  /**
+   * Single triage entry point.
+   *
+   * `providedText` is DATA — the transcript to triage — never a DOM event. React
+   * invokes any handler bound directly to `onClick` with a SyntheticEvent, so this
+   * function must NEVER be passed as `onClick={handleAnalyzeEmergency}`: DOM
+   * handlers must wrap it explicitly, i.e. `onClick={() => handleAnalyzeEmergency(transcript)}`.
+   *
+   * Defense in depth: a non-string first argument is rejected (never coerced) and the
+   * authoritative transcript state is triaged instead, so a malformed caller can
+   * never crash triage or fabricate transcript text.
+   */
   const handleAnalyzeEmergency = async (providedText?: string) => {
-    const inputText = providedText ?? transcript;
+    const inputText = typeof providedText === 'string' ? providedText : transcript;
     if (!inputText.trim()) return;
 
     setIsAnalyzing(true);
@@ -674,7 +686,7 @@ export default function App() {
               </button>
               <button
                 id="error-retry-btn"
-                onClick={handleAnalyzeEmergency}
+                onClick={() => handleAnalyzeEmergency(transcript)}
                 className="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 text-white font-bold text-xs shadow transition-colors"
               >
                 Retry
