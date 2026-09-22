@@ -211,4 +211,10 @@ Implemented controls include:
 **LifeLine AI**  
 **BY MSB CREATIVE STUDIOS**
 
-Developed by MSB Creative Studios. All rights reserved.
+LifeLine AI and the LifeLine AI branding are trademarks of MSB Creative Studios. All other trademarks, logos, and brand names referenced in this project (including but not limited to NVIDIA, Nemotron, and Nebius) are the property of their respective owners.
+
+## License
+
+This project is licensed under the Apache License 2.0.
+
+See the [LICENSE](LICENSE) file for details.
