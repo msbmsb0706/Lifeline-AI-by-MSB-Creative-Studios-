@@ -240,6 +240,10 @@ export default function App() {
   const handleTranscriptVoiceChange = useCallback((newTranscript: string) => {
     setTranscript(newTranscript);
     setError(null);
+    // New browser-voice speech invalidates any previous bilingual server-ASR
+    // capture so stale metadata can never be attached to a new analysis.
+    setVoiceCapture(null);
+    setVoiceNotice(null);
   }, []);
 
   const handleLocationUpdate = (
@@ -586,11 +590,12 @@ export default function App() {
           transcript={transcript}
           onTranscriptChange={(text) => {
             setTranscript(text);
-            if (!text.trim()) {
-              // Clearing the transcript also clears the bilingual voice panel
-              setVoiceCapture(null);
-              setVoiceNotice(null);
-            }
+            // ANY manual transcript change (typing, presets, clearing)
+            // invalidates the previous bilingual voice capture so it can never
+            // be attached to an analysis it did not produce. The server voice
+            // path updates the transcript directly and is not affected.
+            setVoiceCapture(null);
+            setVoiceNotice(null);
           }}
           onSubmitEmergency={handleAnalyzeEmergency}
           onOfflineTest={(testText) => {

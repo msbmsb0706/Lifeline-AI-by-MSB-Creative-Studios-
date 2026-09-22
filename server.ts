@@ -104,8 +104,11 @@ async function startServer() {
   const app = express();
 
   app.set('trust proxy', resolveTrustProxy());
-  // Larger body limit accommodates transient base64-encoded speech audio for /api/transcribe-speech
-  app.use(express.json({ limit: '14mb' }));
+  // /api/transcribe-speech carries transient base64-encoded speech audio and
+  // needs the larger JSON body limit; every other endpoint keeps the original
+  // 1 MB limit. (express.json skips requests already parsed by a prior parser.)
+  app.use('/api/transcribe-speech', express.json({ limit: '14mb' }));
+  app.use(express.json({ limit: '1mb' }));
 
   console.log('[Nebius Diagnostics] LifeLine AI Backend Initialized');
   console.log('[Nebius Diagnostics] NEBIUS_BASE_URI:', NEBIUS_BASE_URI);
@@ -510,7 +513,34 @@ RULES:
             source: typeof rawVoiceCapture.detectedLanguage.source === 'string' ? rawVoiceCapture.detectedLanguage.source : undefined
           }
         : null;
-    const hasVoiceContext = Boolean(voiceOriginalTranscript);
+    // Explicit field whitelist — client-provided capture data is NEVER spread
+    // into the result. Only the documented bilingual metadata fields are kept;
+    // any unexpected client fields are ignored.
+    const sanitizedVoiceCapture =
+      rawVoiceCapture && voiceOriginalTranscript
+        ? {
+            asrProvider:
+              typeof rawVoiceCapture.asrProvider === 'string' && rawVoiceCapture.asrProvider.trim()
+                ? rawVoiceCapture.asrProvider.trim().slice(0, 100)
+                : 'unknown',
+            asrModel:
+              typeof rawVoiceCapture.asrModel === 'string' && rawVoiceCapture.asrModel.trim()
+                ? rawVoiceCapture.asrModel.trim().slice(0, 200)
+                : 'unknown',
+            detectedLanguage: voiceDetectedLanguage || detectLanguage(voiceOriginalTranscript),
+            originalTranscript: voiceOriginalTranscript,
+            ...(voiceEnglishTranslation ? { englishTranslation: voiceEnglishTranslation } : {}),
+            durationMs:
+              typeof rawVoiceCapture.durationMs === 'number' && Number.isFinite(rawVoiceCapture.durationMs)
+                ? Math.max(0, Math.round(rawVoiceCapture.durationMs))
+                : undefined,
+            timestamp:
+              typeof rawVoiceCapture.timestamp === 'string' && rawVoiceCapture.timestamp.trim()
+                ? rawVoiceCapture.timestamp.trim().slice(0, 40)
+                : new Date().toISOString()
+          }
+        : null;
+    const hasVoiceContext = Boolean(sanitizedVoiceCapture);
 
     if (!text || typeof text !== 'string' || text.trim() === '') {
       res.status(400).json({ error: 'Emergency transcript or text is required.' });
@@ -543,14 +573,7 @@ RULES:
         raw_transcript: trimmedText,
         location_coordinates: req.body.coordinates || null,
         detected_language: detectedSourceLang,
-        voice_capture: hasVoiceContext
-          ? {
-              ...rawVoiceCapture,
-              detectedLanguage: detectedSourceLang,
-              originalTranscript: voiceOriginalTranscript,
-              ...(voiceEnglishTranslation ? { englishTranslation: voiceEnglishTranslation } : {})
-            }
-          : undefined,
+        voice_capture: sanitizedVoiceCapture || undefined,
         nebius_connected: false
       }
       });
@@ -726,14 +749,7 @@ CONSTRAINTS:
         raw_transcript: validatedTranscript,
         location_coordinates: req.body.coordinates || null,
         detected_language: detectedSourceLang,
-        voice_capture: hasVoiceContext
-          ? {
-              ...rawVoiceCapture,
-              detectedLanguage: detectedSourceLang,
-              originalTranscript: voiceOriginalTranscript,
-              ...(voiceEnglishTranslation ? { englishTranslation: voiceEnglishTranslation } : {})
-            }
-          : undefined,
+        voice_capture: sanitizedVoiceCapture || undefined,
         nebius_connected: true
       };
 

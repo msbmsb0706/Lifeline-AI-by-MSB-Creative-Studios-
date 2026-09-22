@@ -43,6 +43,10 @@ const MAX_RECORDING_MS = 60_000; // safety cap — capture is always user-activa
 
 function pickSupportedAudioMimeType(): string {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  // Android/Chrome record audio/webm (Opus) — accepted by NVIDIA NIM whisper.
+  // iOS Safari falls back to audio/mp4 (AAC), which the NVIDIA-hosted
+  // whisper-large-v3 endpoint may reject (documented limitation; no large
+  // transcoding dependency is added for this).
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
   return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
 }
@@ -88,6 +92,14 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   const recordingStartRef = useRef<number>(0);
   const maxDurationTimerRef = useRef<number | null>(null);
   const activeModeRef = useRef<'server' | 'browser' | null>(null);
+  // Synchronous start-lock: acquired BEFORE any await in the start path so a
+  // rapid second tap can never spawn a second getUserMedia()/MediaRecorder.
+  // While a server recording is active the lock stays held by the recording
+  // itself and is released only when it ends (stop / error / cleanup).
+  const voiceStartLockRef = useRef(false);
+  // Ref mirror of isServerRecording so the async start path can trust capture
+  // state synchronously without waiting for a React re-render.
+  const isServerRecordingRef = useRef(false);
 
   const isBusyAsr = voicePhase === 'transcribing' || voicePhase === 'translating';
   const isVoiceActive = isListening || isServerRecording;
@@ -189,6 +201,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   // Cleanup transient MediaRecorder capture on unmount — never leave the mic open
   useEffect(() => {
     return () => {
+      // Unmount: release the start lock and ALWAYS stop every microphone track,
+      // even if a start was still in flight.
+      voiceStartLockRef.current = false;
+      isServerRecordingRef.current = false;
       clearMaxDurationTimer();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try {
@@ -202,10 +218,15 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     };
   }, []);
 
-  const startServerRecording = async () => {
+  // 'started'  → recorder active (owns the start lock until stop/error/cleanup)
+  // 'denied'   → microphone permission denied (message shown; no fallback — the
+  //              browser voice path would fail on the same permission anyway)
+  // 'failed'   → capture unavailable (MediaRecorder missing, hardware error);
+  //              caller may fall through to the browser voice path
+  const startServerRecording = async (): Promise<'started' | 'denied' | 'failed'> => {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       setMicError('Audio recording is not supported in this browser. Using browser voice or type the emergency below.');
-      return false;
+      return 'failed';
     }
 
     try {
@@ -225,6 +246,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       };
 
       recorder.onstop = () => {
+        // Recording session ended: release the start lock and the ref mirror
+        // FIRST, before any early return, so a new capture can begin immediately.
+        voiceStartLockRef.current = false;
+        isServerRecordingRef.current = false;
         const durationMs = Date.now() - recordingStartRef.current;
         clearMaxDurationTimer();
         stopServerRecordingTracks();
@@ -247,6 +272,8 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       };
 
       recorder.onerror = () => {
+        voiceStartLockRef.current = false;
+        isServerRecordingRef.current = false;
         clearMaxDurationTimer();
         stopServerRecordingTracks();
         setIsServerRecording(false);
@@ -256,9 +283,12 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       mediaRecorderRef.current = recorder;
       recordingStartRef.current = Date.now();
       recorder.start();
+      isServerRecordingRef.current = true;
       setIsServerRecording(true);
       setMicError(null);
       if (soundEnabled) playPing('start');
+
+      return 'started';
 
       // Hard safety cap: never record in the background beyond MAX_RECORDING_MS
       maxDurationTimerRef.current = window.setTimeout(() => {
@@ -270,17 +300,16 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           // ignore
         }
       }, MAX_RECORDING_MS);
-
-      return true;
     } catch (err: any) {
       console.warn('Server voice capture failed to start:', err);
+      isServerRecordingRef.current = false;
       stopServerRecordingTracks();
-      setMicError(
-        err?.name === 'NotAllowedError'
-          ? 'Microphone permission blocked. Please allow mic access, or type the emergency below.'
-          : 'Could not start the microphone. You can use browser voice or type the emergency below.'
-      );
-      return false;
+      if (err?.name === 'NotAllowedError') {
+        setMicError('Microphone permission blocked. Please allow mic access, or type the emergency below.');
+        return 'denied';
+      }
+      setMicError('Could not start the microphone. You can use browser voice or type the emergency below.');
+      return 'failed';
     }
   };
 
@@ -315,47 +344,73 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       return;
     }
 
+    // SYNCHRONOUS start-lock: acquired before any await below. A rapid second
+    // tap while startup (probe / getUserMedia) is still in flight is ignored,
+    // so only ONE MediaRecorder and ONE microphone stream can ever exist.
+    if (voiceStartLockRef.current) {
+      return;
+    }
+    voiceStartLockRef.current = true;
+
     setMicError(null);
 
-    // Resolve the capture mode at explicit activation time.
-    // Offline mode always resolves to 'browser' and never touches the network.
-    let mode: 'server' | 'browser' = 'browser';
-    if (onResolveVoiceMode) {
-      try {
-        mode = await onResolveVoiceMode();
-      } catch {
-        mode = 'browser';
-      }
-    }
-    activeModeRef.current = mode;
-
-    if (mode === 'server' && onVoiceRecordingStopped) {
-      const started = await startServerRecording();
-      if (started) return;
-      // fall through to browser path if recording could not start
-    }
-
-    if (offlineMode && !localSpeechSupported) {
-      setMicError('Offline voice recognition is not available on this device.');
-      return;
-    }
-
-    if (!speechSupported) {
-      setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
-      return;
-    }
-
     try {
-      latestTranscriptRef.current = '';
-      recognitionRef.current?.start();
-    } catch (err: any) {
-      console.warn('Mic start failed:', err);
-      // If already active or error, reset
+      // Resolve the capture mode at explicit activation time.
+      // Offline mode always resolves to 'browser' and never touches the network.
+      let mode: 'server' | 'browser' = 'browser';
+      if (onResolveVoiceMode) {
+        try {
+          mode = await onResolveVoiceMode();
+        } catch {
+          mode = 'browser';
+        }
+      }
+      activeModeRef.current = mode;
+
+      if (mode === 'server' && onVoiceRecordingStopped) {
+        const started = await startServerRecording();
+        if (started === 'started') {
+          // The active recording now OWNS the start lock; it is released in
+          // recorder.onstop / onerror / unmount cleanup — never left held.
+          return;
+        }
+        if (started === 'denied') {
+          // Permission was explicitly denied — keep the specific error and do
+          // not re-prompt through the browser voice path. Lock is released in
+          // the finally block below.
+          return;
+        }
+        // 'failed' → fall through to the browser voice path
+      }
+
+      if (offlineMode && !localSpeechSupported) {
+        setMicError('Offline voice recognition is not available on this device.');
+        return;
+      }
+
+      if (!speechSupported) {
+        setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
+        return;
+      }
+
       try {
-        recognitionRef.current?.abort();
+        latestTranscriptRef.current = '';
         recognitionRef.current?.start();
-      } catch {
-        setMicError('Could not start microphone. You can type distress details directly.');
+      } catch (err: any) {
+        console.warn('Mic start failed:', err);
+        // If already active or error, reset
+        try {
+          recognitionRef.current?.abort();
+          recognitionRef.current?.start();
+        } catch {
+          setMicError('Could not start microphone. You can type distress details directly.');
+        }
+      }
+    } finally {
+      // Release the lock for every start path that did not end up owning an
+      // active server recording (browser voice, permission denial, failures).
+      if (!isServerRecordingRef.current) {
+        voiceStartLockRef.current = false;
       }
     }
   };
