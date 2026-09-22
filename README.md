@@ -2,8 +2,6 @@
 
 **BY MSB CREATIVE STUDIOS**
 
-![LifeLine AI by MSB Creative Studios — Voice to Help, Signal to Rescue](public/assets/branding/lifeline-ai-feature-graphic-1024x500.png)
-
 LifeLine AI by MSB Creative Studios is an emergency triage application for voice and text distress reports. It classifies likely emergency type and severity, produces a locally generated SOS card, and lets the user review and share an alert package. LifeLine AI currently has no automatic government or rescue dispatch.
 
 ---
@@ -231,22 +229,6 @@ Implemented controls include:
 **BY MSB CREATIVE STUDIOS**
 
 LifeLine AI and the LifeLine AI branding are trademarks of MSB Creative Studios. All other trademarks, logos, and brand names referenced in this project (including but not limited to NVIDIA, Nemotron, and Nebius) are the property of their respective owners.
-
-### Official brand kit
-
-The supplied LifeLine AI artwork lives in `public/assets/branding/` and is integrated as follows:
-
-| Asset | Used for |
-| --- | --- |
-| `lifeline-ai-brand.png` (1536×1536) | Primary brand artwork — high-resolution source of the splash/welcome screen art (`srcSet` in `SplashScreen.tsx`). |
-| `lifeline-ai-brand-1200.png` (1200×1200) | Default splash/welcome screen artwork (`SplashScreen.tsx`). |
-| `lifeline-ai-icon-512.png` (512×512) | Platform/app icon — the 512×512 PNG `<link rel="icon">` in `index.html`. |
-| `lifeline-ai-pwa-icon-192.png` (192×192) | PWA manifest icon, `192x192` (`public/manifest.webmanifest`). |
-| `lifeline-ai-pwa-icon-512.png` (512×512) | PWA manifest icon, `512x512`, `any` + `maskable` (`public/manifest.webmanifest`). |
-| `lifeline-ai-promo.png` (1536×1536) | Promotional artwork — `og:image` / `twitter:image` social sharing preview (`index.html`). |
-| `lifeline-ai-feature-graphic-1024x500.png` (1024×500) | Promotional/feature presentation — repository banner (this README). Reserved as the Google Play feature graphic source for a future Android/Play Store build. |
-
-The manifest intentionally does **not** register a service worker: install metadata and icons are provided, while offline behavior remains the app's existing deterministic offline engine. Legacy small-size logos (`/favicon.svg`, `/favicon.ico`, `/apple-touch-icon.png`, `/logo.png`) are preserved for tiny placements; the promotional artwork is never used as a small favicon. The `lifeline-ai-*` files are source artwork supplied by MSB Creative Studios — this repository contains no Android/Gradle/Capacitor project, and no Play Store integration is performed here.
 
 ## License
 
