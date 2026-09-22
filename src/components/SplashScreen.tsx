@@ -50,15 +50,17 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onDismiss, nebiusCon
 
       {/* Center Branding Block */}
       <div className="relative z-10 flex flex-col items-center text-center max-w-md my-auto">
-        {/* Official LifeLine AI Logo */}
+        {/* Official LifeLine AI Brand Artwork (supplied by MSB Creative Studios) */}
         <div className="relative mb-6">
           <div className="absolute -inset-2 rounded-3xl bg-gradient-to-tr from-red-600/30 to-red-500/10 blur-md" />
-          <div className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-3xl overflow-hidden border-2 border-red-500/30 shadow-2xl bg-neutral-950 flex items-center justify-center p-1">
+          <div className="relative w-40 h-40 sm:w-56 sm:h-56 rounded-3xl overflow-hidden border-2 border-red-500/30 shadow-2xl bg-neutral-950 flex items-center justify-center">
             <img
-              src="/file_00000000f3ec8211ba741b84f232a029.png"
-              alt="LifeLine AI by MSB Creative Studios"
+              src="/assets/branding/lifeline-ai-brand-1200.png"
+              srcSet="/assets/branding/lifeline-ai-brand-1200.png 1200w, /assets/branding/lifeline-ai-brand.png 1536w"
+              sizes="(min-width: 640px) 224px, 160px"
+              alt="LifeLine AI by MSB Creative Studios — Voice to Help, Signal to Rescue"
               referrerPolicy="no-referrer"
-              className="w-full h-full object-cover rounded-2xl"
+              className="w-full h-full object-cover"
               onError={(e) => {
                 // Fallback to local asset path if needed
                 const target = e.currentTarget;
