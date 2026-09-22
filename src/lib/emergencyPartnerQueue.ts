@@ -31,6 +31,8 @@ export function createSOSPackage(params: {
   photos?: MediaAttachmentInfo[];
   video?: MediaAttachmentInfo | null;
   source?: 'online' | 'offline';
+  /** Optional bilingual voice context from multilingual voice ASR. */
+  voiceCapture?: { detectedLanguage?: { code: string; name: string } | null; originalTranscript?: string; englishTranslation?: string } | null;
 }): SOSPackage {
   return {
     sosId: generateSOSId(),
@@ -43,7 +45,10 @@ export function createSOSPackage(params: {
     photos: params.photos || [],
     video: params.video || null,
     source: params.source || (navigator.onLine ? 'online' : 'offline'),
-    offlineCreated: !navigator.onLine
+    offlineCreated: !navigator.onLine,
+    detectedLanguage: params.voiceCapture?.detectedLanguage || null,
+    originalTranscript: params.voiceCapture?.originalTranscript || null,
+    englishTranslation: params.voiceCapture?.englishTranslation || null
   };
 }
 
@@ -153,6 +158,10 @@ export async function sendSOSToPartner(
     photos: photosToSend,
     video: videoToSend,
     source: sosPackage.source,
+    // Bilingual voice context: original transcript is authoritative user speech.
+    detectedLanguage: sosPackage.detectedLanguage || null,
+    originalTranscript: sosPackage.originalTranscript || null,
+    englishTranslation: sosPackage.englishTranslation || null,
     partnerId: targetPartner.id,
     providerType: targetPartner.providerType,
     userConsentConfirmed: item.userApprovedForPartnerTransmission

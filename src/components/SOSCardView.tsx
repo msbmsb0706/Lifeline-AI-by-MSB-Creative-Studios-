@@ -332,7 +332,14 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
       severity: result.severity,
       message: showTranslated && result.translation ? result.translation.translated_message : result.message,
       gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
-      source: result.source === 'nebius_nemotron' ? 'online' : 'offline'
+      source: result.source === 'nebius_nemotron' ? 'online' : 'offline',
+      voiceCapture: result.voice_capture
+        ? {
+            detectedLanguage: result.voice_capture.detectedLanguage,
+            originalTranscript: result.voice_capture.originalTranscript,
+            englishTranslation: result.voice_capture.englishTranslation
+          }
+        : null
     });
 
     const pendingItem: PendingSOSItem = {
@@ -875,6 +882,44 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Original spoken transcript from multilingual voice ASR — preserved for verification.
+          The dispatch message above is generated; this is the authoritative user speech. */}
+      {result.voice_capture &&
+        result.voice_capture.detectedLanguage?.code !== 'en' &&
+        result.voice_capture.originalTranscript && (
+          <div
+            id="sos-original-speech-container"
+            className="mt-3 p-3 rounded-xl bg-neutral-950 border border-emerald-900/70"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+              <div className="text-xs font-bold uppercase tracking-wider text-emerald-300 flex items-center gap-1.5">
+                <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                <span>
+                  Original Speech ({result.voice_capture.detectedLanguage?.name || 'Detected language'}) — Authoritative
+                </span>
+              </div>
+              {result.voice_capture.englishTranslation && (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
+                  English Aid Translation Included
+                </span>
+              )}
+            </div>
+            <p dir="auto" className="text-xs sm:text-sm text-neutral-200 whitespace-pre-wrap break-words leading-relaxed p-2 rounded-lg bg-black/60 border border-neutral-900 select-all">
+              {result.voice_capture.originalTranscript}
+            </p>
+            {result.voice_capture.englishTranslation && (
+              <>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 mt-2 mb-0.5">
+                  English (machine translation — aid only)
+                </div>
+                <p dir="auto" className="text-xs sm:text-sm text-neutral-300 whitespace-pre-wrap break-words leading-relaxed p-2 rounded-lg bg-black/40 border border-neutral-900 select-all">
+                  {result.voice_capture.englishTranslation}
+                </p>
+              </>
+            )}
+          </div>
+        )}
 
       {/* Official LifeLine AI by MSB Creative Studios Badge */}
       <div className="mt-3 pt-2.5 border-t border-neutral-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-400">

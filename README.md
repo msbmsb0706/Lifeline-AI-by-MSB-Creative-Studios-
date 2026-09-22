@@ -19,6 +19,8 @@ The product is designed for explicit user control: microphone, GPS, camera, and 
 ### Emergency voice and text triage
 
 - Voice input uses the browser Web Speech API on the device; raw audio is not stored by LifeLine AI.
+- Optional multilingual voice ASR: when a server-side ASR provider is configured (`ASR_*` environment variables), recorded audio is transcribed server-side with automatic language detection (NVIDIA NIM `openai/whisper-large-v3` is the verified documented option). The original-language transcript is always preserved and an English translation is added as an aid only. Audio is processed transiently in memory and never persisted.
+- When server ASR is not configured, the browser Web Speech API path (English) is used unchanged.
 - Text or transcript is classified into emergency type, severity, needs, and a dispatch-style message.
 - Results appear as an on-screen SOS card the user can copy, translate (when available), or share after confirmation.
 
@@ -201,6 +203,7 @@ See **[PRIVACY_POLICY.md](PRIVACY_POLICY.md)**.
 Implemented controls include:
 
 - Microphone only when the user starts voice input; no background listening.
+- Optional server-side multilingual voice ASR processes audio transiently for transcription; recordings are never stored by LifeLine AI. Offline / Resilience mode never uses server ASR or any cloud service.
 - One-time GPS for Silent SOS; no background location tracking.
 - Camera only after user action: up to two still images plus an optional 10-second SOS video; no continuous camera.
 - Images and video are evidence only and are not sent to a vision model.
