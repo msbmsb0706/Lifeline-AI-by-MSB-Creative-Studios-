@@ -2,128 +2,195 @@
 
 **BY MSB CREATIVE STUDIOS**
 
-LifeLine AI by MSB Creative Studios is an emergency triage application for voice and text distress reports. It classifies likely emergency type and severity, produces a locally generated SOS card, and lets the user review and share an alert package. LifeLine AI currently has no automatic government or rescue dispatch.
+LifeLine AI by MSB Creative Studios is an emergency triage application for voice and text distress reports. It classifies likely emergency types and severity, produces a structured visual SOS card and dispatch alert, and lets the user review and share an emergency package.
+
+**Operational Notice:** LifeLine AI currently has no automatic government or rescue dispatch. Sharing or transmitting an alert requires explicit user review and confirmation.
 
 ---
 
-## Overview
+## System Architecture
 
-LifeLine AI helps a user describe an emergency by speaking or typing, then returns a structured triage result. When the server is configured for online analysis, the Node/Express backend sends the transcript to the configured NVIDIA Nemotron model through Nebius Token Factory. When the key is missing or the user chooses Resilience mode, classification stays on local deterministic rules and does not call cloud AI.
+LifeLine AI enforces a strict architectural separation between **Online AI** mode and **Offline / Resilience** mode.
 
-The product is designed for explicit user control: microphone, GPS, camera, and sharing are activated by the user. Location is requested once for the active Silent SOS session. Up to two still images and an optional 10-second SOS video may be attached as evidence. Photo and video evidence are not sent to a vision AI model.
+```
++-----------------------------------------------------------------------------------------+
+|                                    USER BROWSER / CLIENT                                |
+|                                                                                         |
+|   +-----------------------+     +-----------------------+     +---------------------+   |
+|   | Voice / Audio Input   |     | Text Input            |     | Silent SOS Flow     |   |
+|   | • Configurable ASR    |     | • 10 Languages        |     | • One-time GPS      |   |
+|   | • Web Speech Fallback |     | • Script Detection    |     | • 2 Images + 10s Vid|   |
+|   +-----------------------+     +-----------------------+     +---------------------+   |
+|               │                             │                            │              |
++───────────────┼─────────────────────────────┼────────────────────────────┼──────────────+
+                │ (Relative API Routes)       │                            │
+   +────────────┴─────────────+               │                            │
+   │                          ▼               ▼                            ▼
+   │                +───────────────────────────────────+         +───────────────────+
+   │                |      NODE / EXPRESS BACKEND       |         | BROWSER / CLIENT  |
+   │                |  • Server-Side Secrets Protection |         | LOCAL STORAGE     |
+   │                |  • Rate Limiting & Proxy Trust    |         | • Pending Queue   |
+   │                +───────────────────────────────────+         | • User Consent    |
+   │                         │                 │                  +───────────────────+
+   │                         ▼                 ▼                            │
+   │               +------------------+  +---------------------+            │
+   │               | Nebius Factory   |  | Optional ASR Proxy  |            │
+   │               | NVIDIA Nemotron  |  | NVIDIA Whisper NIM  |            │
+   │               | (Online AI Mode) |  | (Configurable Only) |            │
+   │               +------------------+  +---------------------+            │
+   │                                                                        │
+   └─────────────► [ OFFLINE / RESILIENCE MODE: ZERO CLOUD CALLS ] ◄────────┘
+                   • Local Deterministic Emergency Engine
+                   • 8 Standard Emergency Categories
+                   • Dynamic Severity & Needs Detection
+                   • Multilingual Translation Dictionary
+```
+
+- **Browser to Backend:** The browser communicates exclusively via relative API routes (`/api/*`).
+- **Online AI Mode:** The backend routes structured prompts to the configured NVIDIA Nemotron model via Nebius Token Factory.
+- **Offline / Resilience Mode:** Executes entirely within the local client via deterministic classification rules—zero internet access or cloud API dependencies required.
+- **Credential Protection:** Secrets and API keys remain strictly on the backend and are never sent to or bundled into client code.
 
 ---
 
-## Features
+## Implemented Features & Capabilities
 
-### Emergency voice and text triage
+### 1. AI Emergency Triage (Online AI Mode)
 
-- Voice input uses the browser Web Speech API on the device; raw audio is not stored by LifeLine AI.
-- Optional multilingual voice ASR: when a server-side ASR provider is configured (`ASR_*` environment variables), recorded audio is transcribed server-side with automatic language detection (NVIDIA NIM `openai/whisper-large-v3` is the verified documented option). The original-language transcript is always preserved and an English translation is added as an aid only. Audio is processed transiently in memory and never persisted.
-- When server ASR is not configured, the browser Web Speech API path (English) is used unchanged.
-- Text or transcript is classified into emergency type, severity, needs, and a dispatch-style message.
-- Results appear as an on-screen SOS card the user can copy, translate (when available), or share after confirmation.
+When `NEBIUS_API_KEY` is configured on the backend, LifeLine AI operates in **Online AI** mode:
 
-### Online analysis (Nebius Token Factory / NVIDIA Nemotron)
+- **Nebius Token Factory:** Provides managed API routing and token processing to run state-of-the-art inference.
+- **NVIDIA Nemotron:** Employs configured NVIDIA Nemotron models (such as `nvidia/nemotron-3-super-120b-a12b` or `nvidia/llama-3.1-nemotron-70b-instruct`) for structured reasoning and emergency classification.
+- **Structured Extraction:** Transforms raw distress reports into typed JSON schemas containing standard emergency category, specific incident classification, numeric severity rating (1–5), essential needs and responder assets, clear civilian action steps, first-aid measures, and radio-ready responder instructions.
+- **Credential Isolation:** The Nebius API key is stored server-side only and is never exposed to the frontend.
 
-When `NEBIUS_API_KEY` is set on the server, the backend calls the configured NVIDIA Nemotron model through Nebius Token Factory. The API key stays on the server and is not exposed to the browser.
+### 2. Offline / Resilience Mode
 
-### Offline / Resilience mode
+When offline, during network infrastructure disruptions, or when server API keys are unavailable, LifeLine AI operates seamlessly in **Offline / Resilience** mode (which users can also explicitly select at any time):
 
-When the user enables offline mode, or the API key is not configured, LifeLine AI uses local deterministic triage rules. No cloud AI request is made.
+- **Local Deterministic Emergency Classification:** Evaluates input text through a robust deterministic keyword and regex-matching engine requiring no cloud API calls and no active internet connection.
+- **8 Standard Emergency Categories:**
+  1. `MEDICAL`: Acute trauma, cardiac event, stroke, respiratory crisis, severe hemorrhage, anaphylaxis, unconscious patient.
+  2. `FIRE`: Structural fires, smoke entrapment, industrial blazes, wildland fire, chemical detonations.
+  3. `RESCUE`: Vehicle collisions, extrication, structural collapse, flood entrapment, trench or swift water rescue.
+  4. `FOOD`: Disaster starvation risk, isolated communities cut off from supply lines, infant nutrition crisis.
+  5. `WATER`: Potable water failure, acute dehydration threat, contaminated municipal supplies.
+  6. `SHELTER`: Displaced families, destroyed residential structures, severe hypothermia or storm refuge needs.
+  7. `MISSING_PERSON`: Missing or abducted children, lost vulnerable elders, wilderness disappearances.
+  8. `OTHER`: General civil hazards, toxic chemical spills, combustible gas leaks, active threats.
+- **Severity Detection (Priority Levels 1–5):**
+  - **Level 5 (Critical):** Immediate life threat (e.g., cardiac arrest, airway obstruction, arterial bleeding, active structure fire entrapment).
+  - **Level 4 (Severe):** Major trauma, vehicle rollover extrication, toxic gas release, urgent shelter/food emergency.
+  - **Level 3 (Moderate):** Urgent medical conditions or non-life-threatening incidents requiring prompt responder verification.
+  - **Level 1–2 (Low/Stable):** Minor or stabilized situations.
+- **Emergency Needs Detection:** Automatically identifies and maps critical responder assets, including:
+  - Advanced Life Support (ALS) Paramedic Ambulance
+  - Automated External Defibrillator (AED)
+  - Fire Engine & Structural Suppression Units
+  - Heavy Hydraulic Rescue / Extrication Equipment
+  - Potable Drinking Water Supply Units
+  - Emergency Rations Squad & Pediatric Formula Kits
+  - Emergency Shelter Units & Thermal Survival Blankets
+  - Canine (K9) Search & Scent-Tracking Squads
+  - Hazardous Material (Hazmat) Specialized Units
+- **Deterministic Multilingual Translation:** Translates triage classifications, priority directives, action steps, and responder instructions across all 10 supported languages without cloud APIs.
 
-### Silent SOS
+### 3. Multilingual Emergency Communication
 
-Silent SOS is a user-activated alert flow:
+LifeLine AI supports multilingual distress communication across **10 languages**:
 
-1. The user opens Silent SOS and selects an emergency type (optional message).
-2. The app requests **current device GPS once** (`getCurrentPosition`). There is **no background GPS tracking** and **no `watchPosition`**. GPS is device geolocation, not inferred from video.
-3. The user may capture or select **up to two images** as emergency evidence. There is **no continuous camera**.
-4. The user may tap **CAPTURE SOS VIDEO** to record an optional **10-second** clip. Recording starts only after that tap and stops automatically at 10 seconds (or sooner if the user stops or cancels). Camera tracks are released immediately afterward.
-5. Photo and video files are **evidence only**. They are **not** sent to a vision AI model and are **not** analyzed by Nemotron.
-6. A review screen shows emergency type, severity, location or GPS-unavailable reason, timestamp, optional message, selected images, and video if present.
-7. Sharing happens only after explicit confirmation (`navigator.share` with files when the browser supports file sharing, otherwise clipboard/text). If files cannot be attached, the UI states that photo/video attachments could not be included.
-8. LifeLine AI **never automatically contacts** government or rescue services. Completing video capture does not share anything.
+- **English** (`en`)
+- **Tamil** (`ta` - தமிழ்)
+- **Hindi** (`hi` - हिन्दी)
+- **Telugu** (`te` - తెలుగు)
+- **Kannada** (`kn` - ಕನ್ನಡ)
+- **Malayalam** (`ml` - മലയാളം)
+- **Bengali** (`bn` - বাংলা)
+- **Marathi** (`mr` - मराठी)
+- **Spanish** (`es` - Español)
+- **French** (`fr` - Français)
 
-GPS errors are shown separately: permission denied, position unavailable, timeout, or geolocation unsupported.
+#### Language Detection
+- **Script-Based Unicode Detection:** Instantaneous client-side recognition of native scripts (Tamil, Devanagari for Hindi and Marathi, Telugu, Kannada, Malayalam, Bengali).
+- **Phonetic & Romanized Marker Heuristics:** Detects transliterated emergency distress markers (e.g., *kapathunga*, *madad*, *sahayam*, *bachao*, *vachva*, *kapaadi*).
+- **Western Language Lexical Markers:** Identifies Spanish and French distress vocabulary, accents, and punctuation markers.
 
-Motion sensors, when present, are an optional session signal only. Sensor data is not proof of an emergency.
+#### Transcript Preservation & Translation Aid
+- **Original Transcript Preservation:** Original spoken or typed distress transcripts are preserved verbatim in their source language to maintain ground-truth context for arriving responders.
+- **English Translation as an Interpretation Aid:** An English translation is generated alongside the original transcript to facilitate cross-jurisdictional triage, disaster coordination, and mutual-aid responses.
+
+#### Speech-to-Text (ASR) Capabilities
+- **Optional Multilingual ASR (NVIDIA Whisper NIM):**
+  - When server-side ASR credentials are explicitly configured (`ASR_PROVIDER=nvidia_nim`, `ASR_BASE_URL`, `ASR_API_KEY`/`NVIDIA_API_KEY`, and `ASR_MODEL=openai/whisper-large-v3`), browser audio recordings are transmitted to the backend proxy (`POST /api/asr/transcribe`) for transcription with automatic multilingual detection (`language=multi`).
+  - Audio is processed transiently in memory: audio buffers are **never written to disk** and are **never persisted**.
+  - Nebius Token Factory does not host speech or audio endpoints; therefore, multilingual ASR connects to dedicated NVIDIA NIM infrastructure when configured.
+  - *ASR Accuracy Notice:* Server-side NVIDIA Whisper ASR is an optional/configurable capability. It is active **only** when the required ASR credentials are configured on the server.
+- **Browser Speech-Recognition Fallback:**
+  - When server-side ASR is not configured or unavailable, the client automatically falls back to the browser's built-in Web Speech API (where supported by the user's browser).
+  - Users can also type distress reports directly in any of the 10 supported languages at any time.
+
+### 4. Silent SOS & Evidence Capture
+
+Silent SOS provides a non-verbal emergency workflow for active threats, entrapment, or severe respiratory distress:
+
+1. **Explicit User Activation:** Activated solely upon user selection; there is no passive monitoring or background audio capture.
+2. **One-Time GPS Geolocation:** The application queries device GPS once (`navigator.geolocation.getCurrentPosition`) only upon user initiation. There is **no continuous tracking**, **no `watchPosition`**, and **no background GPS monitoring**. Geolocation errors (Permission Denied, Position Unavailable, Timeout) are diagnosed and displayed clearly.
+3. **Optional Evidence Capture:**
+   - **Up to 2 Still Photos:** Captured via device camera or local file selection.
+   - **Optional 10-Second SOS Video:** Dedicated recording that stops automatically at 10 seconds (or upon manual stop). Camera and microphone hardware tracks are immediately closed and released upon completion.
+   - **Evidence Only:** Attached media files serve strictly as visual evidence for human first responders. They are **not** analyzed by Nemotron, **not** processed by AI vision models, and **not** uploaded without explicit confirmation.
+4. **User Review and Explicit Confirmation:**
+   - A comprehensive summary screen presents emergency category, severity, one-time GPS coordinates, accuracy, attached evidence previews, and timestamp.
+   - Alert transmission requires explicit user confirmation via the Web Share API (`navigator.share`) or clipboard export.
+   - LifeLine AI **never automatically contacts** police, fire, or rescue services without user action.
+5. **SOS / Emergency Information Generation:**
+   - Generates an on-screen visual SOS card featuring color-coded severity badges, international priority icons, immediate action steps, first-aid directives, and responder instructions.
+   - Formats a concise, standardized radio-dispatch alert ready for rapid copying or sharing.
 
 ---
 
-## Emergency Partner Integration Framework
+## Emergency Organization Integration Framework
 
-LifeLine AI includes a country-aware Emergency Partner integration framework supporting three distinct provider types:
+LifeLine AI includes an extensible, country-aware integration framework for coordination with authorized emergency, rescue, and public safety organizations.
 
-### Provider Types
+### Three Provider Types
 
 1. **TEST / DEMO PROVIDER**
-   - Labeled clearly: `"TEST EMERGENCY PARTNER — DEMONSTRATION ONLY"`.
-   - Used exclusively for system demonstrations.
-   - Simulates receiving an SOS package and returns a mock acknowledgment with a reference ID (`DEMO-ACK-XXXXX`).
-   - Does NOT send alerts to any real government, police, fire, or rescue organization.
+   - Explicitly labeled: `"TEST EMERGENCY PARTNER — DEMONSTRATION ONLY"`.
+   - Used for system evaluation, live demonstrations, and responder training.
+   - Generates mock provider acknowledgments with unique tracking IDs (`DEMO-ACK-XXXXX`).
+   - Does **not** alert actual public safety answering points.
 
 2. **PUBLIC CONTACT PROVIDER**
-   - Displays officially published emergency contact numbers and websites (e.g., 911 in US, 112 in EU/India, 108 in India, 999 in UK, 000 in Australia).
-   - Only populates contacts from verified official government sources.
-   - Clearly states that no digital API exists for automated dispatch.
-   - Does NOT automatically upload GPS, photos, or video to public telephone lines or websites unless explicitly supported by documented submission methods.
+   - Presents verified public emergency numbers and portals across countries (e.g., 911 in North America, 112 in the European Union and India, 108 in India, 999 in the United Kingdom, 000 in Australia).
+   - Informational only: clarifies that standard public telephone networks require voice interaction and do not support automated digital API ingestion.
+   - Does not upload media or location data to public telephone lines.
 
 3. **AUTHORIZED API PROVIDER**
-   - Used only when an organization has provided an actual, documented API interface.
-   - Sends the structured SOS package over secure HTTPS to the authorized endpoint.
-   - Credentials remain server-side and are never exposed in browser or client code.
-   - Supports request validation, authentication, provider acknowledgment, error handling, and safe retries.
+   - Enabled only when an emergency response agency implements a formal, documented HTTPS API interface.
+   - Transmits structured SOS payloads server-to-server over encrypted HTTPS with server-side authentication.
+   - Supports schema validation, provider acknowledgment logging, error handling, and retry semantics.
 
-### Offline-First & Pending Transmission Queue
+### Offline-First Pending Transmission Queue
 
-- **Offline SOS Generation**: Device GPS can be acquired offline if location hardware is available. Offline emergency classification, photo evidence (up to 2 images), and 10-second video recording continue to function without internet.
-- **Local Storage**: When offline, an SOS package (containing SOS ID, timestamp, emergency type, severity, message, GPS coordinates/accuracy, photo/video evidence metadata, and source status) is saved locally only after explicit user review and confirmation.
-- **Connectivity & Consent**: Cloud or API transmission cannot occur without an active communication path. Before any automatic transmission when connectivity returns, a privacy-preserving user setting ("Send pending SOS when connection returns") is provided.
-- **Privacy Default**: Automatic transmission on connection return defaults to `OFF`. If enabled and the user explicitly approved partner transmission, the queue detects network connectivity, transmits to the authorized/test endpoint, prevents duplicate submissions, and marks the SOS as `SENT` only after receiving a valid provider acknowledgment.
-- **Media Upload Limits**: Photos and video are only transmitted to a real provider if its documented API interface explicitly supports media uploads.
-- **User Review & Control**: Mandatory explicit consent modal is shown prior to any transmission. Users can view, manually transmit, or delete any unsent pending SOS from the queue at any time.
+- **Local Storage:** When an alert is confirmed offline, the structured SOS package is saved to client-side storage.
+- **Privacy-Preserving User Consent:** Automatic transmission on reconnection defaults to `OFF`. It activates only if the user explicitly turns on *"Send pending SOS when connection returns"* and approves partner transmission.
+- **User Control:** Users can inspect pending alerts, trigger manual transmission, or delete records from the queue at any time.
+- **Media Upload Guardrails:** Photo and video evidence are transmitted only if the authorized provider's documented API specifications explicitly authorize media ingestion.
 
----
-
-## Emergency Organization Integration
-
-LifeLine AI provides an integration framework for authorized emergency,
-rescue, public-safety, and government organizations.
-
-The framework supports TEST / DEMO, PUBLIC_CONTACT, and AUTHORIZED_API
-provider types.
-
-Organizations must provide and authorize their own API contract,
-authentication method, payload requirements, media rules, sandbox endpoint,
-and acknowledgment format before a real integration is enabled.
-
-See:
-[Emergency Organization Integration Guide](EMERGENCY_ORGANIZATION_INTEGRATION.md)
+For integration specifications and onboarding instructions for emergency response agencies, see [EMERGENCY_ORGANIZATION_INTEGRATION.md](EMERGENCY_ORGANIZATION_INTEGRATION.md).
 
 ---
 
-## Architecture
+## Technical & Operational Boundaries
 
-```
-Browser  →  Node/Express backend  →  NVIDIA Nemotron (Nebius Token Factory)
-                 │
-                 ├─ Emergency Partner API Endpoint (/api/emergency-partner/dispatch)
-                 │     ├─ TEST Provider (Mock Acknowledgment & Reference ID)
-                 │     ├─ AUTHORIZED API Provider (Server-Side HTTPS Authentication)
-                 │     └─ PUBLIC CONTACT Provider (Direct Phone/Website Info Only)
-                 │
-                 ├─ Privacy Contact Form Endpoint (/api/privacy-contact)
-                 │     └─ Server-side SMTP relay → PRIVACY_CONTACT_EMAIL (env var only)
-                 │
-                 └─ Offline / Resilience mode: local deterministic rules (no cloud AI)
-```
+To maintain technical integrity and user safety, LifeLine AI enforces the following operational boundaries:
 
-- Browser talks to the LifeLine backend over relative API routes.
-- Online analysis uses the server-side Nebius Token Factory configuration.
-- Emergency partner dispatch occurs via server-side endpoints with full payload validation and secret protection.
-- Privacy Contact Form submissions are relayed server-side; the destination mailbox exists only as a server environment variable.
-- Offline mode remains local and does not call cloud AI services.
+- **No Automatic Dispatch:** LifeLine AI is a triage and alert-formulation tool. It does not automatically dispatch first responders or contact government agencies.
+- **No Government Endorsement:** LifeLine AI does not claim official government approval, certification, or affiliation.
+- **No Continuous Tracking:** Location is polled once upon explicit user action; continuous background GPS is not supported.
+- **No Automated Media Classification:** Photos and videos are attached as visual evidence for human responders and are not processed via computer vision.
+- **Configurable ASR Only:** Server-side NVIDIA Whisper ASR operates only when valid server credentials are provisioned. In all other cases, browser-native speech recognition or text input is used.
 
 ---
 
@@ -135,106 +202,88 @@ Users contact MSB Creative Studios through the in-app **Privacy Contact Form** (
 
 The server (`server/privacyContact.ts`):
 
-- validates the email address and message and rejects empty, malformed, or oversized submissions (name ≤ 100 chars, email ≤ 254 chars, message 10–4000 chars);
-- applies rate limiting (30 attempts and 5 accepted submissions per client per 15 minutes, 100 accepted submissions per hour server-wide) plus a hidden honeypot field for automated senders;
-- relays the message by SMTP to the mailbox in `PRIVACY_CONTACT_EMAIL`, with the user's address set as `Reply-To`;
-- never logs the submitted name, email address, or message — only a random reference id and a coarse outcome code;
-- returns only a generic success/failure JSON response (`{ success, message | error, reference }`) and never returns the destination address;
-- responds `503` when `PRIVACY_CONTACT_EMAIL` or the SMTP settings are missing, `429` when rate-limited, `400` for invalid input.
+- Validates email address format and message length; rejects empty, malformed, or oversized submissions (name ≤ 100 chars, email ≤ 254 chars, message 10–4000 chars).
+- Applies rate limiting (30 attempts and 5 accepted submissions per client per 15 minutes, 100 accepted submissions per hour server-wide) plus a hidden honeypot field for automated senders.
+- Relays the message by SMTP to the mailbox in `PRIVACY_CONTACT_EMAIL`, with the user's address set as `Reply-To`.
+- Never logs submitted names, email addresses, or messages — only a random reference ID and coarse outcome codes.
+- Returns only a generic success/failure JSON response (`{ success, message | error, reference }`) and never exposes the destination address.
+- Responds `503` when `PRIVACY_CONTACT_EMAIL` or SMTP settings are missing, `429` when rate-limited, and `400` for invalid input.
 
-The destination mailbox is **never hard-coded**. It is read only from the server-side environment variable `PRIVACY_CONTACT_EMAIL`, which must be configured in the hosting provider's environment/secrets settings (not in this repository and not in any `VITE_`-prefixed or otherwise public variable). The frontend only calls the relative URL `/api/privacy-contact`, so the form works identically on the production website and inside the Android app's WebView when it loads the same production origin.
-
----
-
-## Environment variables
-
-Configure these in a local `.env` file (copy from `.env.example`). **`.env` is local only and must never be committed.**
-
-| Variable | Purpose |
-|---|---|
-| `PORT` | HTTP listen port (default `3000`) |
-| `NEBIUS_API_KEY` | Server-side Nebius Token Factory key. If empty, online analysis is unavailable. |
-| `NEBIUS_BASE_URI` | Nebius Token Factory API base URI |
-| `NEBIUS_MODEL` | Configured NVIDIA Nemotron model identifier |
-| `AUTHORIZED_PARTNER_API_URL` | Optional server-side HTTPS URL for authorized partner API dispatch |
-| `AUTHORIZED_PARTNER_API_KEY` | Optional server-side API key for authorized partner API dispatch |
-| `PRIVACY_CONTACT_EMAIL` | **Server-side only.** Destination mailbox for Privacy Contact Form submissions. Configure it in the production environment; never commit it or expose it to the client. If empty, the form responds "temporarily unavailable". |
-| `SMTP_HOST` | SMTP server used to relay Privacy Contact Form messages (e.g. your mail provider's SMTP relay) |
-| `SMTP_PORT` | SMTP port (default `587` for STARTTLS; use `465` with `SMTP_SECURE=true`) |
-| `SMTP_SECURE` | `true` for implicit TLS (port 465); otherwise `false` (STARTTLS is used when the server offers it) |
-| `SMTP_USER` / `SMTP_PASS` | SMTP credentials (server-side only; for Gmail use an App Password) |
-| `PRIVACY_CONTACT_FROM` | Optional sender address for relayed messages (defaults to `SMTP_USER`) |
-| `TRUST_PROXY` | Optional Express `trust proxy` setting so per-client rate limiting sees real client IPs behind a hosting proxy. Defaults to `1` hop when `NODE_ENV=production`, otherwise disabled. |
-
-No API keys, secrets, credentials, mailbox addresses, or `.env` files are committed to Git.
+The destination mailbox is **never hard-coded**. It is read only from the server-side environment variable `PRIVACY_CONTACT_EMAIL`, which must be configured in hosting environment secrets. The frontend communicates exclusively via the relative URL `/api/privacy-contact`.
 
 ---
 
-## Local development
+## Security & Server-Side Credential Protection
 
-**Development / testing only.** `http://localhost:3000` is not a production URL.
+- `NEBIUS_API_KEY` and emergency partner credentials remain server-side only.
+- `ASR_API_KEY` / `NVIDIA_API_KEY` remain server-side only.
+- `PRIVACY_CONTACT_EMAIL` and SMTP credentials remain server-side only; they are never bundled into frontend assets, returned by API responses, or hard-coded in source files.
+- `.env` is gitignored and must never be committed.
+- No secrets, credentials, certificates, or mailbox addresses are tracked in this repository.
+
+---
+
+## Configuration & Environment Variables
+
+Server-side settings are configured via environment variables (copy from `.env.example`). **Never commit `.env` to source control.**
+
+| Variable | Requirement | Description |
+|---|---|---|
+| `PORT` | Optional | HTTP listen port for Express server (default: `3000`). |
+| `NEBIUS_API_KEY` | Optional | Server-side key for Nebius Token Factory. If empty, Online AI is disabled and the system operates in Offline / Resilience mode. |
+| `NEBIUS_BASE_URI` / `NEBIUS_BASE_URL` | Optional | API base URI for Nebius Token Factory (default: `https://api.studio.nebius.ai/v1`). |
+| `NEBIUS_MODEL` | Optional | NVIDIA Nemotron model identifier (e.g., `nvidia/llama-3.1-nemotron-70b-instruct`). |
+| `ASR_PROVIDER` | Optional | ASR provider (`nvidia_nim` or `none`). Default: `nvidia_nim`. |
+| `ASR_BASE_URL` | Optional | Base URL for ASR completions (default: `https://ai.api.nvidia.com/v1`). |
+| `ASR_API_KEY` / `NVIDIA_API_KEY` | Optional | Server-side key for NVIDIA NIM Whisper ASR (`nvapi-...`). If unset, server ASR is disabled and browser Web Speech fallback is used. |
+| `ASR_MODEL` | Optional | Multilingual ASR model served at base URL (default: `openai/whisper-large-v3`). |
+| `ASR_LANGUAGE` | Optional | Language hint (`multi` for automatic multilingual detection). |
+| `AUTHORIZED_PARTNER_API_URL` | Optional | Destination HTTPS endpoint for authorized emergency partner integrations. |
+| `AUTHORIZED_PARTNER_API_KEY` | Optional | Authentication key for authorized partner dispatch (server-side only). |
+| `PRIVACY_CONTACT_EMAIL` | Optional | Server-side destination mailbox for Privacy Contact Form submissions. |
+| `SMTP_HOST` / `SMTP_PORT` | Optional | SMTP relay configuration for Privacy Contact Form delivery. |
+| `SMTP_SECURE` | Optional | `true` for port 465 (TLS); `false` for port 587 (STARTTLS). |
+| `SMTP_USER` / `SMTP_PASS` | Optional | SMTP authentication credentials. |
+| `PRIVACY_CONTACT_FROM` | Optional | Outgoing sender address for relayed privacy messages. |
+| `TRUST_PROXY` | Optional | Express proxy trust setting (`1` in production for correct client IP rate-limiting). |
+
+---
+
+## Local Development & Testing
 
 ```bash
+# Install dependencies
 npm install
+
+# Typecheck and production build
 npm run build
+
+# Start production server
 npm run start
 ```
 
-Then open:
-
+The application will be accessible at:
 ```
 http://localhost:3000
 ```
 
-(`npm run start` serves the production build. For live reload during development, `npm run dev` is also available.)
+*(For interactive development with live reload, run `npm run dev`.)*
 
 ---
 
-## Production
+## Privacy Policy
 
-Do not treat localhost as a public deployment.
-
----
-
-## Privacy
-
-See **[PRIVACY_POLICY.md](PRIVACY_POLICY.md)**.
-
-Implemented controls include:
-
-- Microphone only when the user starts voice input; no background listening.
-- Optional server-side multilingual voice ASR processes audio transiently for transcription; recordings are never stored by LifeLine AI. Offline / Resilience mode never uses server ASR or any cloud service.
-- One-time GPS for Silent SOS; no background location tracking.
-- Camera only after user action: up to two still images plus an optional 10-second SOS video; no continuous camera.
-- Images and video are evidence only and are not sent to a vision model.
-- Sharing and partner transmission require explicit review and confirmation.
-- No automatic contact of government or rescue services.
-- History is opt-in local storage only; default is no retention.
-- Offline / Resilience mode does not send data to cloud AI.
-- No advertising SDKs, analytics, tracking pixels, or third-party telemetry.
-
-**Contact & privacy requests:** users can contact MSB Creative Studios through the **Privacy Contact Form** inside the app (Privacy & Safety → Contact Privacy Team). The form collects a name (optional), an email address (required so we can reply) and a message (required); the information is used only to respond to the request. Because an email address is required, submissions are not anonymous. No email address is published in the app or in this repository.
+See **[PRIVACY_POLICY.md](PRIVACY_POLICY.md)** for complete details on privacy practices, data handling, and user controls.
 
 ---
 
-## Security
-
-- `NEBIUS_API_KEY` and partner API credentials remain server-side only.
-- `PRIVACY_CONTACT_EMAIL` and the SMTP credentials remain server-side only; they are never bundled into the frontend, returned by any API, or hard-coded in source.
-- `.env` is gitignored and must never be committed.
-- No secrets, credentials, keystores, certificates, or mailbox addresses are tracked in this repository.
-
----
-
-## Branding
+## Legal & Branding Notice
 
 **LifeLine AI**  
 **BY MSB CREATIVE STUDIOS**
 
-LifeLine AI and the LifeLine AI branding are trademarks of MSB Creative Studios. All other trademarks, logos, and brand names referenced in this project (including but not limited to NVIDIA, Nemotron, and Nebius) are the property of their respective owners.
+LifeLine AI and LifeLine AI branding assets are trademarks of MSB Creative Studios. All other product names, logos, and brands (including NVIDIA, Nemotron, and Nebius) are property of their respective owners.
 
 ## License
 
-This project is licensed under the Apache License 2.0.
-
-See the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for complete details.

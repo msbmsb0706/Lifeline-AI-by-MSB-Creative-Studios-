@@ -570,7 +570,7 @@ export default function App() {
 
         {/* Explicit mode status */}
         <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${offlineForce ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
-          {offlineForce ? 'OFFLINE — No API Key Required • Local deterministic rules • No cloud calls' : 'ONLINE / HACKATHON — Nebius Token Factory • Configured Nemotron model • API key required'}
+          {offlineForce ? 'OFFLINE — No API Key Required • Local deterministic rules • No cloud calls' : 'ONLINE AI — Nebius Token Factory • Configured Nemotron model • API key required'}
         </div>
 
         {/* Silent SOS activation: location is requested only after this explicit user action */}
