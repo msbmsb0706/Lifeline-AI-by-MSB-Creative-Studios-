@@ -99,7 +99,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Clearly separated Online / Offline mode selector */}
           <div className="hidden lg:flex flex-col items-end leading-tight mr-1" aria-label="Current analysis mode">
-            <span className="text-[9px] font-black tracking-widest text-neutral-500">{offlineForce ? 'OFFLINE / RESILIENCE' : 'ONLINE / HACKATHON'}</span>
+            <span className="text-[9px] font-black tracking-widest text-neutral-500">{offlineForce ? 'OFFLINE / RESILIENCE' : 'ONLINE AI'}</span>
             <span className={`text-[9px] font-semibold ${offlineForce ? 'text-amber-400' : 'text-emerald-400'}`}>{offlineForce ? 'No Internet • No API Key' : 'Nebius • Nemotron'}</span>
           </div>
           <button
