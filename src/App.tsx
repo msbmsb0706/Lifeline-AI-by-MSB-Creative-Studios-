@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header.tsx';
 import { EmergencyVoiceButton } from './components/EmergencyVoiceButton.tsx';
 import { TranscriptArea } from './components/TranscriptArea.tsx';
@@ -11,7 +11,9 @@ import { EmergencyPartnersManagerModal } from './components/EmergencyPartnersMan
 import {
   EmergencyAnalysisResult,
   SystemStatus,
-  TranslatedSOS
+  TranslatedSOS,
+  VoiceCaptureMetadata,
+  DetectedLanguage
 } from './types.ts';
 import { classifyEmergencyOffline } from './lib/offlineClassifier.ts';
 import { translateEmergencyOffline, detectLanguage } from './lib/languages.ts';
@@ -40,6 +42,115 @@ export default function App() {
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [nebiusConnected, setNebiusConnected] = useState<boolean>(false);
+
+  // Multilingual fast voice (server ASR) state. Audio is captured only after the
+  // user explicitly activates the voice button and is held transiently in memory.
+  const [asrPhase, setAsrPhase] = useState<'idle' | 'listening' | 'transcribing' | 'translating'>('idle');
+  const [voiceCapture, setVoiceCapture] = useState<VoiceCaptureMetadata | null>(null);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [asrConfigured, setAsrConfigured] = useState<boolean | null>(null);
+  const asrProbeRef = useRef<{ at: number; configured: boolean } | null>(null);
+
+  /**
+   * Resolved at explicit voice-button activation so Offline/Resilience mode stays
+   * completely network-silent (offline always returns 'browser' without any fetch).
+   */
+  const resolveVoiceMode = useCallback(async (): Promise<'server' | 'browser'> => {
+    if (offlineForce) return 'browser';
+    const now = Date.now();
+    if (asrProbeRef.current && now - asrProbeRef.current.at < 5 * 60 * 1000) {
+      return asrProbeRef.current.configured ? 'server' : 'browser';
+    }
+    try {
+      const res = await fetch('/api/status');
+      const json = await res.json().catch(() => ({}));
+      const configured = Boolean(json?.asr?.configured);
+      asrProbeRef.current = { at: now, configured };
+      setAsrConfigured(configured);
+      return configured ? 'server' : 'browser';
+    } catch {
+      asrProbeRef.current = { at: now, configured: false };
+      setAsrConfigured(false);
+      return 'browser';
+    }
+  }, [offlineForce]);
+
+  const voiceModeNotice = !offlineForce && asrConfigured === false
+    ? 'Multilingual server voice not configured — browser voice (English) active. Typed text is detected in any language.'
+    : null;
+
+  /**
+   * Server multilingual ASR pipeline: transcribe → preserve original transcript →
+   * English aid translation via Nemotron. Failures never fabricate results and
+   * never discard the original transcript.
+   */
+  const handleVoiceRecordingStopped = useCallback(async (audioBase64: string, mimeType: string, durationMs: number) => {
+    setError(null);
+    setVoiceNotice(null);
+    setAsrPhase('transcribing');
+    try {
+      const res = await fetch('/api/transcribe-speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64, mimeType, durationMs })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success || !json.data?.transcript) {
+        throw new Error(json.error || `Speech transcription failed (HTTP ${res.status}).`);
+      }
+
+      const data = json.data;
+      const detected: DetectedLanguage = data.detected_language || detectLanguage(data.transcript);
+      const capture: VoiceCaptureMetadata = {
+        asrProvider: data.asr_provider || 'server',
+        asrModel: data.asr_model || 'unknown',
+        detectedLanguage: detected,
+        originalTranscript: data.transcript,
+        durationMs: typeof data.duration_ms === 'number' ? data.duration_ms : durationMs,
+        timestamp: new Date().toISOString()
+      };
+
+      // Original-language transcript is loaded into the editable transcript box
+      // and preserved verbatim in the voice capture metadata.
+      setTranscript(data.transcript);
+      setVoiceCapture(capture);
+
+      if (detected.code === 'en') {
+        // English speech needs no English aid translation.
+        setAsrPhase('idle');
+        return;
+      }
+
+      setAsrPhase('translating');
+      try {
+        const tRes = await fetch('/api/translate-to-english', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: data.transcript, sourceLanguage: detected.name })
+        });
+        const tJson = await tRes.json().catch(() => ({}));
+        if (!tRes.ok || !tJson.success || !tJson.data?.english_translation) {
+          throw new Error(tJson.error || `English translation failed (HTTP ${tRes.status}).`);
+        }
+        setVoiceCapture({
+          ...capture,
+          englishTranslation: tJson.data.english_translation,
+          translationFailed: false
+        });
+      } catch (tErr: any) {
+        console.warn('English translation failed; preserving original transcript:', tErr);
+        setVoiceCapture({ ...capture, translationFailed: true });
+        setVoiceNotice('English translation unavailable — the original-language transcript is preserved and can still be triaged.');
+      } finally {
+        setAsrPhase('idle');
+      }
+    } catch (err: any) {
+      console.error('Voice transcription failed:', err);
+      setAsrPhase('idle');
+      setVoiceNotice(err?.message || 'Speech transcription failed. Tap the microphone to retry, use browser voice, or type the emergency.');
+      // Any previously captured transcript is intentionally preserved.
+    }
+  }, []);
 
   // Refresh pending queue count
   const refreshPendingQueue = useCallback(() => {
@@ -149,13 +260,25 @@ export default function App() {
     const textToAnalyze = inputText.trim();
     const detectedLang = detectLanguage(textToAnalyze);
 
+    // Bilingual voice context (detected language + original transcript + optional
+    // English translation) travels with the triage request when voice was used.
+    const voiceCapturePayload = voiceCapture
+      ? {
+          asrProvider: voiceCapture.asrProvider,
+          asrModel: voiceCapture.asrModel,
+          detectedLanguage: voiceCapture.detectedLanguage,
+          originalTranscript: voiceCapture.originalTranscript,
+          ...(voiceCapture.englishTranslation ? { englishTranslation: voiceCapture.englishTranslation } : {})
+        }
+      : undefined;
+
     // TRUE OFFLINE MODE: classification happens in this browser only. No fetch, no server,
     // no API key, and no remote logging/storage are involved.
     if (offlineForce) {
       const offlineClassified = classifyEmergencyOffline(
         textToAnalyze,
         locationInfo || undefined,
-        detectedLang.name,
+        voiceCapture?.detectedLanguage?.name || detectedLang.name,
         selectedLanguage
       );
       const fallbackResult: EmergencyAnalysisResult = {
@@ -166,7 +289,8 @@ export default function App() {
         offline_notice: 'OFFLINE — classified locally in this browser. No cloud API was called.',
         latency_ms: 1,
         raw_transcript: textToAnalyze,
-        location_coordinates: locationCoords
+        location_coordinates: locationCoords,
+        voice_capture: voiceCapture ?? undefined
       };
       setNebiusConnected(false);
       setCurrentResult(fallbackResult);
@@ -186,8 +310,9 @@ export default function App() {
           location: locationInfo,
           coordinates: locationCoords,
           offlineModeForce: false,
-          language: detectedLang.name,
-          targetLanguage: selectedLanguage
+          language: voiceCapture?.detectedLanguage?.name || detectedLang.name,
+          targetLanguage: selectedLanguage,
+          voiceCapture: voiceCapturePayload
         })
       });
 
@@ -213,6 +338,9 @@ export default function App() {
         // Verify actual completed Nebius response
         if (result.source === 'nebius_nemotron' || result.nebius_connected) {
           setNebiusConnected(true);
+        }
+        if (voiceCapture && !result.voice_capture) {
+          result.voice_capture = voiceCapture;
         }
         setCurrentResult(result);
         saveReportToHistory(result);
@@ -447,12 +575,23 @@ export default function App() {
           offlineMode={offlineForce}
           soundEnabled={soundEnabled}
           highContrast={highContrast}
+          onResolveVoiceMode={resolveVoiceMode}
+          onVoiceRecordingStopped={handleVoiceRecordingStopped}
+          voicePhase={asrPhase}
+          voiceModeNotice={voiceNotice || voiceModeNotice}
         />
 
         {/* Speech-to-Text Transcript Area & Presets */}
         <TranscriptArea
           transcript={transcript}
-          onTranscriptChange={setTranscript}
+          onTranscriptChange={(text) => {
+            setTranscript(text);
+            if (!text.trim()) {
+              // Clearing the transcript also clears the bilingual voice panel
+              setVoiceCapture(null);
+              setVoiceNotice(null);
+            }
+          }}
           onSubmitEmergency={handleAnalyzeEmergency}
           onOfflineTest={(testText) => {
             setTranscript(testText);
@@ -466,6 +605,13 @@ export default function App() {
           selectedLanguage={selectedLanguage}
           onLanguageChange={setSelectedLanguage}
           nebiusConnected={nebiusConnected}
+          voiceCapture={voiceCapture}
+          onDismissVoiceCapture={() => {
+            setVoiceCapture(null);
+            setVoiceNotice(null);
+          }}
+          voiceNotice={voiceNotice}
+          isVoiceProcessing={asrPhase === 'transcribing' || asrPhase === 'translating'}
         />
 
         {/* Dedicated Error State Banner with Direct Actions */}
@@ -510,7 +656,8 @@ export default function App() {
                     offline_notice: 'Switched to on-device deterministic triage. Zero network connection required.',
                     latency_ms: 10,
                     raw_transcript: transcript,
-                    location_coordinates: locationCoords
+                    location_coordinates: locationCoords,
+                    voice_capture: voiceCapture ?? undefined
                   };
                   setCurrentResult(fallbackResult);
                   saveReportToHistory(fallbackResult);

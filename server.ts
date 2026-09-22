@@ -11,7 +11,7 @@ import {
   SUPPORTED_LANGUAGES,
   STANDARDIZED_CATEGORIES
 } from './src/lib/languages.ts';
-import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory } from './src/types.ts';
+import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, DetectedLanguage } from './src/types.ts';
 import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
 
 dotenv.config();
@@ -19,6 +19,34 @@ dotenv.config();
 const PORT = Number(process.env.PORT || 3000);
 const NEBIUS_BASE_URI = (process.env.NEBIUS_BASE_URI || process.env.NEBIUS_BASE_URL || 'https://api.tokenfactory.us-central1.nebius.com/v1').replace(/\/+$/, '');
 const NEBIUS_MODEL = process.env.NEBIUS_MODEL || 'nvidia/nemotron-3-super-120b-a12b';
+
+/**
+ * Multilingual voice ASR (speech-to-text) configuration — SERVER-SIDE ONLY.
+ *
+ * Verified landscape (2026-09):
+ * - Nebius Token Factory exposes NO speech/audio endpoints (LLM chat/completions,
+ *   embeddings, rerank, image generation only). ASR therefore cannot ride the
+ *   existing Nebius infrastructure.
+ * - NVIDIA's multilingual ASR option is the `openai/whisper-large-v3` NIM
+ *   (batch, auto language detection via `language=multi`, OpenAI-style multipart
+ *   POST {base}/v1/audio/transcriptions). NVIDIA-hosted access requires an
+ *   NVIDIA_API_KEY (nvapi-...) from build.nvidia.com; self-hosted NIM containers
+ *   use the same request shape at their own base URL. NVIDIA Riva offers
+ *   streaming ASR over gRPC but requires separate credentials/infrastructure.
+ *
+ * The endpoint below is disabled unless ASR_PROVIDER !== 'none' AND an API key
+ * AND a base URL are configured. The client falls back to the existing browser
+ * Web Speech API voice path when ASR is not configured. No credentials are ever
+ * exposed to the frontend and no audio is persisted on the server.
+ */
+const ASR_PROVIDER = (process.env.ASR_PROVIDER || 'nvidia_nim').trim();
+const ASR_BASE_URL = (process.env.ASR_BASE_URL || 'https://ai.api.nvidia.com/v1').replace(/\/+$/, '');
+const ASR_API_KEY = (process.env.ASR_API_KEY || process.env.NVIDIA_API_KEY || '').trim();
+const ASR_MODEL = (process.env.ASR_MODEL || 'openai/whisper-large-v3').trim();
+// 'multi' enables provider-side automatic language detection (NVIDIA NIM Whisper).
+// Set an ISO code to pin a language, or '' to omit the field entirely.
+const ASR_LANGUAGE = process.env.ASR_LANGUAGE !== undefined ? process.env.ASR_LANGUAGE.trim() : 'multi';
+const ASR_CONFIGURED = ASR_PROVIDER !== 'none' && Boolean(ASR_API_KEY) && Boolean(ASR_BASE_URL);
 
 /**
  * Express "trust proxy" setting. Behind a hosting proxy (Render, Cloud Run, etc.)
@@ -36,16 +64,55 @@ function resolveTrustProxy(): boolean | number | string {
   return raw;
 }
 
+/**
+ * Combine the ASR provider's reported language with LifeLine's deterministic
+ * script-based detection. Unicode-script detection is authoritative for Indic
+ * scripts; the ASR-reported language is used otherwise. Unknown ASR labels fall
+ * back to script detection rather than being silently mapped to English.
+ */
+function normalizeAsrLanguage(rawLanguage: unknown, transcript: string): DetectedLanguage {
+  const scriptDetected = detectLanguage(transcript);
+
+  if (scriptDetected.code !== 'en') {
+    return { ...scriptDetected, source: 'script' };
+  }
+
+  if (typeof rawLanguage === 'string' && rawLanguage.trim()) {
+    const clean = rawLanguage.trim().toLowerCase();
+    const explicit = SUPPORTED_LANGUAGES.find(
+      (l) => l.code.toLowerCase() === clean || l.name.toLowerCase() === clean || l.nativeName.toLowerCase() === clean
+    );
+    if (explicit) {
+      return { code: explicit.code, name: explicit.name, confidence: 0.9, source: 'asr' };
+    }
+  }
+
+  return { ...scriptDetected, source: 'script' };
+}
+
+/** Best-effort file extension for a browser audio MIME type (cosmetic only). */
+function audioExtensionFromMime(mimeType: string): string {
+  if (mimeType.includes('webm')) return 'webm';
+  if (mimeType.includes('mp4') || mimeType.includes('aac') || mimeType.includes('m4a')) return 'm4a';
+  if (mimeType.includes('ogg') || mimeType.includes('opus')) return 'ogg';
+  if (mimeType.includes('wav')) return 'wav';
+  if (mimeType.includes('mpeg')) return 'mp3';
+  return 'webm';
+}
+
 async function startServer() {
   const app = express();
 
   app.set('trust proxy', resolveTrustProxy());
-  app.use(express.json({ limit: '1mb' }));
+  // Larger body limit accommodates transient base64-encoded speech audio for /api/transcribe-speech
+  app.use(express.json({ limit: '14mb' }));
 
   console.log('[Nebius Diagnostics] LifeLine AI Backend Initialized');
   console.log('[Nebius Diagnostics] NEBIUS_BASE_URI:', NEBIUS_BASE_URI);
   console.log('[Nebius Diagnostics] NEBIUS_MODEL:', NEBIUS_MODEL);
   console.log('[Nebius Diagnostics] NEBIUS_API_KEY configured:', Boolean(process.env.NEBIUS_API_KEY));
+  console.log('[ASR Diagnostics] Provider:', ASR_PROVIDER, '| Model:', ASR_MODEL, '| Base URL:', ASR_BASE_URL);
+  console.log('[ASR Diagnostics] Multilingual voice ASR configured:', ASR_CONFIGURED);
 
   // Privacy Contact Form — destination mailbox and SMTP credentials are server-side only.
   // Only booleans are logged; the address itself is never printed or exposed.
@@ -64,8 +131,246 @@ async function startServer() {
       status: isConfigured ? 'online' : 'offline_ready',
       server_time: new Date().toISOString(),
       supported_languages: SUPPORTED_LANGUAGES.map(l => l.code),
-      standardized_categories: STANDARDIZED_CATEGORIES.map(c => c.id)
+      standardized_categories: STANDARDIZED_CATEGORIES.map(c => c.id),
+      // Multilingual voice ASR availability. Only booleans/model names — never keys.
+      asr: {
+        configured: ASR_CONFIGURED,
+        provider: ASR_PROVIDER,
+        model: ASR_MODEL
+      }
     });
+  });
+
+  // ============================================================================
+  // Multilingual voice ASR (speech-to-text) — transient server-side proxy.
+  //
+  // Audio arrives as base64 in a JSON body, is held only in memory for the
+  // duration of the upstream ASR call, and is NEVER written to disk or logged.
+  // When no ASR provider is configured this endpoint returns a structured
+  // error and the client automatically falls back to the existing browser
+  // Web Speech API voice path. Results are never fabricated.
+  // ============================================================================
+  app.post('/api/transcribe-speech', async (req, res) => {
+    const startTime = Date.now();
+    const { audioBase64, mimeType, durationMs } = req.body || {};
+
+    if (!ASR_CONFIGURED) {
+      res.status(400).json({
+        success: false,
+        code: 'ASR_NOT_CONFIGURED',
+        error: 'Multilingual voice ASR is not configured on this server. Set ASR_PROVIDER / ASR_BASE_URL / ASR_API_KEY / ASR_MODEL (server-side only — see .env.example). Browser voice fallback remains available.'
+      });
+      return;
+    }
+
+    if (!audioBase64 || typeof audioBase64 !== 'string' || audioBase64.length === 0) {
+      res.status(400).json({ success: false, code: 'ASR_INVALID_AUDIO', error: 'Audio payload is required for transcription.' });
+      return;
+    }
+
+    if (typeof durationMs === 'number' && durationMs > 90_000) {
+      res.status(413).json({ success: false, code: 'ASR_TOO_LONG', error: 'Recording exceeds the 90-second limit for emergency voice capture.' });
+      return;
+    }
+
+    const audioBuffer = Buffer.from(audioBase64, 'base64');
+    if (audioBuffer.length === 0) {
+      res.status(400).json({ success: false, code: 'ASR_INVALID_AUDIO', error: 'Audio payload could not be decoded.' });
+      return;
+    }
+    if (audioBuffer.length > 10 * 1024 * 1024) {
+      res.status(413).json({ success: false, code: 'ASR_TOO_LARGE', error: 'Audio payload exceeds the 10 MB limit.' });
+      return;
+    }
+
+    const audioMime = typeof mimeType === 'string' && /^audio\//.test(mimeType) ? mimeType : 'audio/webm';
+
+    try {
+      // OpenAI-compatible multipart request shape (NVIDIA NIM / self-hosted NIM compatible).
+      const form = new FormData();
+      form.append('file', new Blob([new Uint8Array(audioBuffer)], { type: audioMime }), `speech.${audioExtensionFromMime(audioMime)}`);
+      if (ASR_MODEL) form.append('model', ASR_MODEL);
+      if (ASR_LANGUAGE) form.append('language', ASR_LANGUAGE);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20_000);
+
+      console.log(`[ASR Request] Transcribing ${(audioBuffer.length / 1024).toFixed(1)} KB ${audioMime} via ${ASR_PROVIDER} (${ASR_MODEL})`);
+
+      const asrResponse = await fetch(`${ASR_BASE_URL}/audio/transcriptions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${ASR_API_KEY}`,
+          'Accept': 'application/json'
+        },
+        body: form,
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!asrResponse.ok) {
+        const errBody = await asrResponse.text();
+        console.error('[ASR Response] Upstream error:', asrResponse.status, errBody.slice(0, 300));
+        res.status(502).json({
+          success: false,
+          code: 'ASR_UPSTREAM_ERROR',
+          error: `Speech recognition provider returned HTTP ${asrResponse.status}. Your transcript was not changed — tap the microphone to retry, use browser voice, or type the emergency.`
+        });
+        return;
+      }
+
+      const rawJson: any = await asrResponse.json();
+      const transcript = typeof rawJson?.text === 'string' ? rawJson.text.trim() : '';
+
+      if (!transcript) {
+        res.status(502).json({
+          success: false,
+          code: 'ASR_EMPTY_RESULT',
+          error: 'No speech was recognized in the recording. Tap the microphone and try again, or type the emergency.'
+        });
+        return;
+      }
+
+      const detectedLanguage = normalizeAsrLanguage(rawJson?.language, transcript);
+      const latencyMs = Date.now() - startTime;
+      console.log(`[ASR Response] OK in ${latencyMs}ms — detected ${detectedLanguage.name} (${detectedLanguage.code}), ${transcript.length} chars`);
+
+      res.json({
+        success: true,
+        data: {
+          transcript,
+          detected_language: detectedLanguage,
+          asr_provider: ASR_PROVIDER,
+          asr_model: ASR_MODEL,
+          duration_ms: typeof durationMs === 'number' ? Math.round(durationMs) : null,
+          latency_ms: latencyMs
+        }
+      });
+    } catch (err: any) {
+      const aborted = err?.name === 'AbortError';
+      console.error('[ASR Request] Failed:', err?.message || err);
+      res.status(502).json({
+        success: false,
+        code: aborted ? 'ASR_TIMEOUT' : 'ASR_REQUEST_FAILED',
+        error: aborted
+          ? 'Speech recognition timed out. Tap the microphone to retry, use browser voice, or type the emergency.'
+          : `Speech recognition request failed: ${err?.message || 'network error'}. Your transcript was not changed — you can retry or type the emergency.`
+      });
+    }
+  });
+
+  // ============================================================================
+  // English translation of an original-language emergency transcript.
+  // Uses the existing Nebius Token Factory / NVIDIA Nemotron chat integration.
+  // On failure this returns success:false — the client keeps the original
+  // transcript and never displays a fabricated English translation.
+  // ============================================================================
+  app.post('/api/translate-to-english', async (req, res) => {
+    const startTime = Date.now();
+    const { text, sourceLanguage } = req.body || {};
+
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      res.status(400).json({ success: false, code: 'TRANSLATION_INVALID_INPUT', error: 'Transcript text is required for translation.' });
+      return;
+    }
+
+    const sourceText = text.trim().slice(0, 5000);
+    const apiKey = process.env.NEBIUS_API_KEY ? process.env.NEBIUS_API_KEY.trim() : '';
+
+    if (!apiKey) {
+      res.status(400).json({
+        success: false,
+        code: 'TRANSLATION_UNAVAILABLE',
+        error: 'Nebius Token Factory is not configured (NEBIUS_API_KEY missing). The original transcript is preserved and triage can proceed in the original language.'
+      });
+      return;
+    }
+
+    try {
+      const systemPrompt = `You are LifeLine AI's emergency speech translation engine.
+Translate the spoken emergency transcript into clear, literal English.
+RULES:
+1. Preserve urgency, symptoms, locations, numbers, names, and instructions exactly.
+2. Do NOT answer, advise, summarize, or add any information that is not in the transcript.
+3. The transcript may contain speech recognition artifacts; translate the intended spoken meaning.
+4. Output ONLY valid JSON: {"english_translation": string}. No markdown fences, no preamble.`;
+
+      const userPrompt = `DETECTED SOURCE LANGUAGE: ${typeof sourceLanguage === 'string' && sourceLanguage.trim() ? sourceLanguage.trim() : 'auto-detect'}\nTRANSCRIPT:\n"${sourceText}"`;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12_000);
+
+      const nebiusResponse = await fetch(`${NEBIUS_BASE_URI}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: NEBIUS_MODEL,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.1,
+          response_format: { type: 'json_object' },
+          max_tokens: 800
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!nebiusResponse.ok) {
+        const errText = await nebiusResponse.text();
+        console.error('[Translate-to-EN] Nebius error:', nebiusResponse.status, errText.slice(0, 300));
+        res.status(502).json({
+          success: false,
+          code: 'TRANSLATION_FAILED',
+          error: `Nebius Token Factory returned HTTP ${nebiusResponse.status} while translating. The original transcript is preserved and triage can proceed in the original language.`
+        });
+        return;
+      }
+
+      const rawJson = await nebiusResponse.json();
+      const assistantText = rawJson?.choices?.[0]?.message?.content;
+      if (!assistantText) {
+        throw new Error('Empty translation response from Nebius Token Factory');
+      }
+
+      const cleaned = assistantText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+      const parsed = JSON.parse(cleaned);
+      const englishTranslation = typeof parsed?.english_translation === 'string' ? parsed.english_translation.trim() : '';
+
+      if (!englishTranslation) {
+        res.status(502).json({
+          success: false,
+          code: 'TRANSLATION_FAILED',
+          error: 'The translation engine returned no usable English text. The original transcript is preserved and triage can proceed in the original language.'
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: {
+          english_translation: englishTranslation,
+          source_language: typeof sourceLanguage === 'string' ? sourceLanguage : null,
+          original_message: sourceText,
+          model_used: NEBIUS_MODEL,
+          source: 'nebius_nemotron',
+          latency_ms: Date.now() - startTime
+        }
+      });
+    } catch (err: any) {
+      console.error('[Translate-to-EN] Failed:', err?.message || err);
+      res.status(502).json({
+        success: false,
+        code: err?.name === 'AbortError' ? 'TRANSLATION_TIMEOUT' : 'TRANSLATION_FAILED',
+        error: `English translation failed: ${err?.message || 'network error'}. The original transcript is preserved and triage can proceed in the original language.`
+      });
+    }
   });
 
   // Dedicated Test Nebius Connection endpoint (Requirement 12)
@@ -181,6 +486,32 @@ async function startServer() {
     const startTime = Date.now();
     const { text, location, offlineModeForce, language, targetLanguage } = req.body || {};
 
+    // Optional bilingual voice context from /api/transcribe-speech + /api/translate-to-english.
+    // The original transcript is the authoritative record of user speech; the English
+    // translation (when present) is an aid for interoperability only.
+    const rawVoiceCapture = (req.body || {}).voiceCapture || null;
+    const voiceOriginalTranscript =
+      rawVoiceCapture && typeof rawVoiceCapture.originalTranscript === 'string'
+        ? rawVoiceCapture.originalTranscript.trim().slice(0, 5000)
+        : '';
+    const voiceEnglishTranslation =
+      rawVoiceCapture && typeof rawVoiceCapture.englishTranslation === 'string'
+        ? rawVoiceCapture.englishTranslation.trim().slice(0, 5000)
+        : '';
+    const voiceDetectedLanguage =
+      rawVoiceCapture &&
+      rawVoiceCapture.detectedLanguage &&
+      typeof rawVoiceCapture.detectedLanguage.code === 'string' &&
+      typeof rawVoiceCapture.detectedLanguage.name === 'string'
+        ? {
+            code: rawVoiceCapture.detectedLanguage.code,
+            name: rawVoiceCapture.detectedLanguage.name,
+            confidence: typeof rawVoiceCapture.detectedLanguage.confidence === 'number' ? rawVoiceCapture.detectedLanguage.confidence : undefined,
+            source: typeof rawVoiceCapture.detectedLanguage.source === 'string' ? rawVoiceCapture.detectedLanguage.source : undefined
+          }
+        : null;
+    const hasVoiceContext = Boolean(voiceOriginalTranscript);
+
     if (!text || typeof text !== 'string' || text.trim() === '') {
       res.status(400).json({ error: 'Emergency transcript or text is required.' });
       return;
@@ -188,7 +519,7 @@ async function startServer() {
 
     const trimmedText = text.trim();
     const locationString = typeof location === 'string' ? location : (location ? JSON.stringify(location) : '');
-    const detectedSourceLang = detectLanguage(trimmedText);
+    const detectedSourceLang = voiceDetectedLanguage || detectLanguage(trimmedText);
     const preferredLang = language || detectedSourceLang.name;
 
     console.log(`[LifeLine API] /api/analyze-emergency called with text: "${trimmedText.slice(0, 50)}..." (len: ${trimmedText.length}, offlineModeForce: ${Boolean(offlineModeForce)})`);
@@ -209,11 +540,19 @@ async function startServer() {
           timestamp: new Date().toISOString(),
           offline_notice: 'Manual offline triage mode active.',
           latency_ms: latencyMs,
-          raw_transcript: trimmedText,
-          location_coordinates: req.body.coordinates || null,
-          detected_language: detectedSourceLang,
-          nebius_connected: false
-        }
+        raw_transcript: trimmedText,
+        location_coordinates: req.body.coordinates || null,
+        detected_language: detectedSourceLang,
+        voice_capture: hasVoiceContext
+          ? {
+              ...rawVoiceCapture,
+              detectedLanguage: detectedSourceLang,
+              originalTranscript: voiceOriginalTranscript,
+              ...(voiceEnglishTranslation ? { englishTranslation: voiceEnglishTranslation } : {})
+            }
+          : undefined,
+        nebius_connected: false
+      }
       });
       return;
     }
@@ -245,9 +584,18 @@ CONSTRAINTS:
 1. "emergency_type" MUST be strictly one of: "MEDICAL", "FIRE", "RESCUE", "FOOD", "WATER", "SHELTER", "MISSING_PERSON", "OTHER".
 2. "severity" MUST be an integer from 1 to 5 (1=Minor, 2=Moderate, 3=Urgent, 4=Severe, 5=Critical).
 3. "needs" MUST be an array of strings.
-4. Output ONLY valid, parseable JSON matching the schema. No markdown fences (\`\`\`json) and no preamble.`;
+4. Output ONLY valid, parseable JSON matching the schema. No markdown fences (\`\`\`json) and no preamble.
+5. When an ORIGINAL TRANSCRIPT and an ENGLISH TRANSLATION are provided, the original transcript is the AUTHORITATIVE record of the user's speech; the English translation is a machine-generated aid only. If they appear to conflict, prioritize the original transcript. Write "message" and "visual_card" in English for responder interoperability.`;
 
-      const userMessageContent = `EMERGENCY DISTRESS TRANSCRIPT:\n"${trimmedText}"${locationString ? `\nREPORTED LOCATION: ${locationString}` : ''}\nLanguage hint: ${preferredLang}`;
+      const voiceContextBlock = hasVoiceContext
+        ? `\nDETECTED LANGUAGE: ${detectedSourceLang.name} (${detectedSourceLang.code})\nORIGINAL TRANSCRIPT (AUTHORITATIVE USER SPEECH — ${detectedSourceLang.name}):\n"${voiceOriginalTranscript}"${
+            voiceEnglishTranslation
+              ? `\nENGLISH TRANSLATION (MACHINE-GENERATED AID ONLY):\n"${voiceEnglishTranslation}"`
+              : `\nENGLISH TRANSLATION: unavailable — rely on the original transcript${locationString ? ' and reported location' : ''}.`
+          }`
+        : '';
+
+      const userMessageContent = `EMERGENCY DISTRESS TRANSCRIPT:\n"${trimmedText}"${voiceContextBlock}${locationString ? `\nREPORTED LOCATION: ${locationString}` : ''}\nLanguage hint: ${preferredLang}`;
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 12000); // 12-second timeout
@@ -345,8 +693,9 @@ CONSTRAINTS:
       const latencyMs = Date.now() - startTime;
 
       const resultData: any = {
-        // Exact schema fields
-        language: validatedLang,
+        // Exact schema fields. When voice context is present, the ASR-detected
+        // language is more reliable than the model's own language guess.
+        language: hasVoiceContext ? detectedSourceLang.name : validatedLang,
         transcript: validatedTranscript,
         emergency_type: emergencyType,
         severity: validatedSeverity,
@@ -377,6 +726,14 @@ CONSTRAINTS:
         raw_transcript: validatedTranscript,
         location_coordinates: req.body.coordinates || null,
         detected_language: detectedSourceLang,
+        voice_capture: hasVoiceContext
+          ? {
+              ...rawVoiceCapture,
+              detectedLanguage: detectedSourceLang,
+              originalTranscript: voiceOriginalTranscript,
+              ...(voiceEnglishTranslation ? { englishTranslation: voiceEnglishTranslation } : {})
+            }
+          : undefined,
         nebius_connected: true
       };
 
@@ -632,7 +989,10 @@ Source Language: ${detectedSource.name}`;
       video,
       partnerId,
       providerType,
-      userConsentConfirmed
+      userConsentConfirmed,
+      detectedLanguage,
+      originalTranscript,
+      englishTranslation
     } = req.body || {};
 
     if (!userConsentConfirmed) {
@@ -694,6 +1054,11 @@ Source Language: ${detectedSource.name}`;
             gps,
             photos,
             video,
+            // Bilingual voice context: original-language transcript is authoritative,
+            // English translation (when present) is an interoperability aid.
+            detectedLanguage: typeof detectedLanguage === 'object' && detectedLanguage ? detectedLanguage : null,
+            originalTranscript: typeof originalTranscript === 'string' ? originalTranscript : null,
+            englishTranslation: typeof englishTranslation === 'string' ? englishTranslation : null,
             source: 'LifeLine AI Framework'
           }),
           signal: controller.signal

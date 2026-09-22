@@ -10,6 +10,19 @@ interface EmergencyVoiceButtonProps {
   offlineMode?: boolean;
   soundEnabled: boolean;
   highContrast: boolean;
+  /**
+   * Multilingual fast voice path. Resolved at activation time (explicit user
+   * action) so offline mode stays network-silent. Returns 'server' when the
+   * server-side multilingual ASR is configured, otherwise 'browser' to use the
+   * existing Web Speech API path unchanged.
+   */
+  onResolveVoiceMode?: () => Promise<'server' | 'browser'>;
+  /** Called with base64 audio after a server-ASR recording stops. */
+  onVoiceRecordingStopped?: (audioBase64: string, mimeType: string, durationMs: number) => void;
+  /** Server ASR pipeline phase for UI feedback ('transcribing'/'translating'). */
+  voicePhase?: 'idle' | 'listening' | 'transcribing' | 'translating';
+  /** One-line explanation of why the multilingual path is (un)available. */
+  voiceModeNotice?: string | null;
 }
 
 // Browser SpeechRecognition polyfill interface
@@ -26,21 +39,70 @@ interface SpeechRecognitionEvent {
   };
 }
 
+const MAX_RECORDING_MS = 60_000; // safety cap — capture is always user-activated
+
+function pickSupportedAudioMimeType(): string {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = String(reader.result || '');
+      const commaIdx = result.indexOf(',');
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('Could not read recorded audio'));
+    reader.readAsDataURL(blob);
+  });
+}
+
 export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   onTranscriptChange,
   onSubmitEmergency,
   isAnalyzing,
   offlineMode = false,
   soundEnabled,
-  highContrast
+  highContrast,
+  onResolveVoiceMode,
+  onVoiceRecordingStopped,
+  voicePhase = 'idle',
+  voiceModeNotice
 }) => {
   const [isListening, setIsListening] = useState(false);
+  const [isServerRecording, setIsServerRecording] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(true);
   const [localSpeechSupported, setLocalSpeechSupported] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const latestTranscriptRef = useRef<string>('');
+
+  // Server ASR (MediaRecorder) capture refs — audio is held transiently in memory only
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingStartRef = useRef<number>(0);
+  const maxDurationTimerRef = useRef<number | null>(null);
+  const activeModeRef = useRef<'server' | 'browser' | null>(null);
+
+  const isBusyAsr = voicePhase === 'transcribing' || voicePhase === 'translating';
+  const isVoiceActive = isListening || isServerRecording;
+
+  const stopServerRecordingTracks = () => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  };
+
+  const clearMaxDurationTimer = () => {
+    if (maxDurationTimerRef.current !== null) {
+      window.clearTimeout(maxDurationTimerRef.current);
+      maxDurationTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     const SpeechRecognitionClass =
@@ -124,20 +186,118 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     };
   }, [soundEnabled, onTranscriptChange, onSubmitEmergency]);
 
-  const toggleRecording = () => {
-    if (offlineMode && !localSpeechSupported) {
-      setMicError('Offline voice recognition is not available on this device.');
-      return;
+  // Cleanup transient MediaRecorder capture on unmount — never leave the mic open
+  useEffect(() => {
+    return () => {
+      clearMaxDurationTimer();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch {
+          // ignore
+        }
+      }
+      stopServerRecordingTracks();
+      recordedChunksRef.current = [];
+    };
+  }, []);
+
+  const startServerRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setMicError('Audio recording is not supported in this browser. Using browser voice or type the emergency below.');
+      return false;
     }
-    if (isAnalyzing) return;
 
-    if (!speechSupported) {
-      setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
-      return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+
+      const mimeType = pickSupportedAudioMimeType();
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType, audioBitsPerSecond: 32000 } : { audioBitsPerSecond: 32000 }
+      );
+
+      recordedChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const durationMs = Date.now() - recordingStartRef.current;
+        clearMaxDurationTimer();
+        stopServerRecordingTracks();
+        setIsServerRecording(false);
+        if (soundEnabled) playPing('stop');
+
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        recordedChunksRef.current = [];
+
+        if (!onVoiceRecordingStopped) return;
+
+        if (durationMs < 500 || blob.size === 0) {
+          setMicError('No speech captured. Tap the microphone and speak again.');
+          return;
+        }
+
+        blobToBase64(blob)
+          .then((base64) => onVoiceRecordingStopped(base64, blob.type, durationMs))
+          .catch(() => setMicError('Could not process the recording. Tap to try again or type the emergency.'));
+      };
+
+      recorder.onerror = () => {
+        clearMaxDurationTimer();
+        stopServerRecordingTracks();
+        setIsServerRecording(false);
+        setMicError('Recording failed. Tap to try again or type the emergency below.');
+      };
+
+      mediaRecorderRef.current = recorder;
+      recordingStartRef.current = Date.now();
+      recorder.start();
+      setIsServerRecording(true);
+      setMicError(null);
+      if (soundEnabled) playPing('start');
+
+      // Hard safety cap: never record in the background beyond MAX_RECORDING_MS
+      maxDurationTimerRef.current = window.setTimeout(() => {
+        try {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop();
+          }
+        } catch {
+          // ignore
+        }
+      }, MAX_RECORDING_MS);
+
+      return true;
+    } catch (err: any) {
+      console.warn('Server voice capture failed to start:', err);
+      stopServerRecordingTracks();
+      setMicError(
+        err?.name === 'NotAllowedError'
+          ? 'Microphone permission blocked. Please allow mic access, or type the emergency below.'
+          : 'Could not start the microphone. You can use browser voice or type the emergency below.'
+      );
+      return false;
     }
+  };
 
-    setMicError(null);
+  const stopServerRecording = () => {
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+    } catch {
+      // ignore
+    }
+  };
 
+  const toggleRecording = async () => {
+    if (isAnalyzing || isBusyAsr) return;
+
+    // Active capture → stop it (both paths)
     if (isListening) {
       try {
         recognitionRef.current?.stop();
@@ -148,22 +308,62 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       if (latestTranscriptRef.current.trim() && onSubmitEmergency) {
         onSubmitEmergency(latestTranscriptRef.current.trim());
       }
-    } else {
+      return;
+    }
+    if (isServerRecording) {
+      stopServerRecording();
+      return;
+    }
+
+    setMicError(null);
+
+    // Resolve the capture mode at explicit activation time.
+    // Offline mode always resolves to 'browser' and never touches the network.
+    let mode: 'server' | 'browser' = 'browser';
+    if (onResolveVoiceMode) {
       try {
-        latestTranscriptRef.current = '';
+        mode = await onResolveVoiceMode();
+      } catch {
+        mode = 'browser';
+      }
+    }
+    activeModeRef.current = mode;
+
+    if (mode === 'server' && onVoiceRecordingStopped) {
+      const started = await startServerRecording();
+      if (started) return;
+      // fall through to browser path if recording could not start
+    }
+
+    if (offlineMode && !localSpeechSupported) {
+      setMicError('Offline voice recognition is not available on this device.');
+      return;
+    }
+
+    if (!speechSupported) {
+      setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
+      return;
+    }
+
+    try {
+      latestTranscriptRef.current = '';
+      recognitionRef.current?.start();
+    } catch (err: any) {
+      console.warn('Mic start failed:', err);
+      // If already active or error, reset
+      try {
+        recognitionRef.current?.abort();
         recognitionRef.current?.start();
-      } catch (err: any) {
-        console.warn('Mic start failed:', err);
-        // If already active or error, reset
-        try {
-          recognitionRef.current?.abort();
-          recognitionRef.current?.start();
-        } catch {
-          setMicError('Could not start microphone. You can type distress details directly.');
-        }
+      } catch {
+        setMicError('Could not start microphone. You can type distress details directly.');
       }
     }
   };
+
+  const busyLabel = voicePhase === 'translating' ? 'Translating…' : 'Transcribing…';
+  const busySubLabel = voicePhase === 'translating'
+    ? 'English aid translation via Nemotron'
+    : 'Multilingual speech recognition';
 
   return (
     <div id="emergency-voice-section" className="flex flex-col items-center justify-center my-4 sm:my-6">
@@ -171,7 +371,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       <div className="relative flex items-center justify-center">
         {/* Animated Soundwave Pulse Rings when Listening */}
         <AnimatePresence>
-          {isListening && (
+          {isVoiceActive && (
             <>
               <motion.div
                 initial={{ scale: 0.9, opacity: 0.8 }}
@@ -195,43 +395,76 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           whileHover={{ scale: 1.03 }}
           whileTap={{ scale: 0.95 }}
           onClick={toggleRecording}
-          disabled={isAnalyzing}
-          aria-label={isListening ? 'Stop recording voice' : 'Start emergency voice input'}
+          disabled={isAnalyzing || isBusyAsr}
+          aria-label={isVoiceActive ? 'Stop recording voice' : 'Start emergency voice input'}
           className={`relative z-10 w-32 h-32 sm:w-36 sm:h-36 rounded-full flex flex-col items-center justify-center text-white shadow-2xl transition-all select-none ${
-            isListening
+            isVoiceActive
               ? 'bg-red-600 shadow-red-600/60 ring-4 ring-white ring-offset-4 ring-offset-black'
               : highContrast
               ? 'bg-red-600 border-4 border-white shadow-white/20'
               : 'bg-gradient-to-b from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 shadow-red-900/50 ring-2 ring-red-400/40'
-          } ${isAnalyzing ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
+          } ${isAnalyzing || isBusyAsr ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
         >
           {isAnalyzing ? (
             <Loader2 className="w-10 h-10 animate-spin mb-1 text-white" />
-          ) : isListening ? (
+          ) : isBusyAsr ? (
+            <Loader2 className="w-10 h-10 animate-spin mb-1 text-white" />
+          ) : isVoiceActive ? (
             <Mic className="w-12 h-12 mb-1 animate-pulse text-white drop-shadow-md" />
           ) : (
             <Mic className="w-11 h-11 mb-1 text-white drop-shadow-md" />
           )}
 
           <span className="text-xs sm:text-sm font-black uppercase tracking-wider text-white drop-shadow">
-            {offlineMode && !localSpeechSupported ? 'Voice unavailable' : isAnalyzing ? 'Analyzing emergency...' : isListening ? 'Listening' : 'Tap to Speak'}
+            {offlineMode && !localSpeechSupported
+              ? 'Voice unavailable'
+              : isAnalyzing
+              ? 'Analyzing emergency...'
+              : isBusyAsr
+              ? busyLabel
+              : isVoiceActive
+              ? 'Listening'
+              : 'Tap to Speak'}
           </span>
           <span className="text-[10px] text-white/80 font-medium">
-            {offlineMode && !localSpeechSupported ? 'Type emergency text below' : isAnalyzing ? 'Nebius Nemotron' : isListening ? 'Tap when finished' : 'Emergency Voice'}
+            {offlineMode && !localSpeechSupported
+              ? 'Type emergency text below'
+              : isAnalyzing
+              ? 'Nebius Nemotron'
+              : isBusyAsr
+              ? busySubLabel
+              : isVoiceActive
+              ? activeModeRef.current === 'server'
+                ? 'Tap when finished • auto language detect'
+                : 'Tap when finished'
+              : 'Emergency Voice'}
           </span>
         </motion.button>
       </div>
 
       {/* Status indicator line */}
       <div className="mt-3 text-center">
-        {isListening ? (
+        {isBusyAsr ? (
+          <div className="flex items-center gap-2 text-xs text-amber-300 font-semibold animate-pulse justify-center">
+            <span className="w-2 h-2 rounded-full bg-amber-400" />
+            {voicePhase === 'translating'
+              ? 'Translating your speech to English (original transcript preserved)...'
+              : 'Transcribing your speech — detecting language automatically...'}
+          </div>
+        ) : isVoiceActive ? (
           <div className="flex items-center gap-2 text-xs text-red-400 font-semibold animate-pulse">
             <span className="w-2 h-2 rounded-full bg-red-500" />
             Transcribing speech live... Describe location, symptoms, or danger
           </div>
         ) : (
           <div className="text-xs text-neutral-400">
-            {offlineMode && !localSpeechSupported ? 'Offline voice recognition is not available on this device.' : speechSupported ? 'Tap the button to speak your emergency aloud' : 'Type your emergency details in the box below'}
+            {offlineMode && !localSpeechSupported
+              ? 'Offline voice recognition is not available on this device.'
+              : voiceModeNotice
+              ? voiceModeNotice
+              : speechSupported
+              ? 'Tap the button to speak your emergency aloud'
+              : 'Type your emergency details in the box below'}
           </div>
         )}
 

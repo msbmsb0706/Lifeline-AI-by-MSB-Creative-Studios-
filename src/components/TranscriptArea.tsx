@@ -11,9 +11,10 @@ import {
   ArrowRight,
   ShieldCheck,
   Activity,
+  AlertCircle,
   Loader2
 } from 'lucide-react';
-import { QuickPreset, SupportedLanguageInfo } from '../types.ts';
+import { QuickPreset, SupportedLanguageInfo, VoiceCaptureMetadata } from '../types.ts';
 import { SUPPORTED_LANGUAGES, detectLanguage } from '../lib/languages.ts';
 import { LocationPrivacyModal } from './LocationPrivacyModal.tsx';
 
@@ -31,6 +32,13 @@ interface TranscriptAreaProps {
   selectedLanguage: string;
   onLanguageChange: (lang: string) => void;
   nebiusConnected?: boolean;
+  /** Bilingual voice capture metadata (detected language + original transcript + English translation). */
+  voiceCapture?: VoiceCaptureMetadata | null;
+  onDismissVoiceCapture?: () => void;
+  /** Non-fatal voice pipeline notice (e.g. translation unavailable). */
+  voiceNotice?: string | null;
+  /** True while server ASR transcription/translation is in progress. */
+  isVoiceProcessing?: boolean;
 }
 
 const EMERGENCY_PRESETS: QuickPreset[] = [
@@ -113,7 +121,11 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
   onLocationUpdate,
   selectedLanguage,
   onLanguageChange,
-  nebiusConnected = false
+  nebiusConnected = false,
+  voiceCapture = null,
+  onDismissVoiceCapture,
+  voiceNotice = null,
+  isVoiceProcessing = false
 }) => {
   const [isLocating, setIsLocating] = useState(false);
   const [locationSuccess, setLocationSuccess] = useState(false);
@@ -267,6 +279,97 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
         />
       </div>
 
+      {/* Bilingual voice capture panel — original transcript is authoritative */}
+      {voiceCapture && (
+        <div
+          id="bilingual-transcript-panel"
+          className="mt-3 rounded-xl border border-emerald-800/70 bg-emerald-950/30 p-3 space-y-2.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div
+              id="voice-detected-language-label"
+              className="flex flex-wrap items-center gap-1.5 text-xs font-bold text-emerald-300"
+            >
+              <Globe className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>
+                Detected language: <span className="text-white">{voiceCapture.detectedLanguage.name}</span>{' '}
+                <span className="font-mono text-[10px] text-emerald-400">
+                  ({voiceCapture.detectedLanguage.code.toUpperCase()})
+                  {typeof voiceCapture.detectedLanguage.confidence === 'number'
+                    ? ` • ${Math.round(voiceCapture.detectedLanguage.confidence * 100)}%`
+                    : ''}
+                </span>
+              </span>
+              <span
+                className="text-[9px] font-mono text-emerald-300/90 px-1.5 py-0.5 rounded bg-emerald-900/60 border border-emerald-800"
+                title="Speech recognition source"
+              >
+                {voiceCapture.asrProvider === 'browser' ? 'Browser voice' : voiceCapture.asrModel}
+              </span>
+            </div>
+            {onDismissVoiceCapture && (
+              <button
+                id="dismiss-voice-capture-btn"
+                onClick={onDismissVoiceCapture}
+                className="text-[10px] text-neutral-400 hover:text-neutral-200 underline underline-offset-2 shrink-0"
+                title="Dismiss bilingual transcript panel"
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 mb-0.5">
+              Original ({voiceCapture.detectedLanguage.name})
+            </div>
+            <p
+              id="voice-original-transcript"
+              dir="auto"
+              className="text-sm text-neutral-100 whitespace-pre-wrap break-words leading-relaxed"
+            >
+              {voiceCapture.originalTranscript}
+            </p>
+          </div>
+
+          {voiceCapture.englishTranslation && (
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 mb-0.5">
+                English <span className="normal-case font-medium text-neutral-500">(machine translation — aid only)</span>
+              </div>
+              <p
+                id="voice-english-translation"
+                dir="auto"
+                className="text-sm text-neutral-200 whitespace-pre-wrap break-words leading-relaxed"
+              >
+                {voiceCapture.englishTranslation}
+              </p>
+            </div>
+          )}
+
+          {voiceCapture.translationFailed && voiceCapture.detectedLanguage.code !== 'en' && (
+            <div
+              id="voice-translation-unavailable-note"
+              className="text-[11px] text-amber-300 bg-amber-950/50 border border-amber-800/70 rounded-lg px-2.5 py-1.5"
+            >
+              English translation unavailable — the original-language transcript above is preserved and can still be
+              triaged.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Voice pipeline notice (retry / fallback guidance) */}
+      {voiceNotice && !voiceCapture?.translationFailed && (
+        <div
+          id="voice-pipeline-notice"
+          className="mt-2.5 text-[11px] text-amber-300 bg-amber-950/40 border border-amber-800/70 rounded-lg px-2.5 py-1.5 flex items-start gap-1.5"
+        >
+          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span>{voiceNotice}</span>
+        </div>
+      )}
+
       {/* Location tagger & Target Language Selection Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 mt-2.5 pt-2 border-t border-neutral-800/80 text-xs">
         {/* GPS location button */}
@@ -402,7 +505,7 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
       </div>
 
       {/* Active Analysis Loading State Bar */}
-      {isAnalyzing && (
+      {(isAnalyzing || isVoiceProcessing) && (
         <div
           id="nebius-triage-loading-indicator"
           className="mt-3 p-3 rounded-xl bg-neutral-900 border border-red-500/60 flex items-center gap-3 animate-pulse"
@@ -410,13 +513,21 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
           <div className="w-5 h-5 border-2 border-red-500 border-t-transparent rounded-full animate-spin shrink-0" />
           <div className="flex-1 min-w-0">
             <div className="text-xs font-bold text-white flex items-center gap-2">
-              <span>{offlineForce ? 'Deterministic Local Engine Processing...' : 'Nebius Token Factory Analysis In Progress...'}</span>
+              <span>
+                {isVoiceProcessing && !isAnalyzing
+                  ? 'Multilingual Voice Transcription In Progress...'
+                  : offlineForce
+                  ? 'Deterministic Local Engine Processing...'
+                  : 'Nebius Token Factory Analysis In Progress...'}
+              </span>
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-950 text-red-300 border border-red-800">
-                {offlineForce ? 'OFFLINE' : 'LIVE API'}
+                {isVoiceProcessing && !isAnalyzing ? 'ASR' : offlineForce ? 'OFFLINE' : 'LIVE API'}
               </span>
             </div>
             <div className="text-[11px] text-neutral-400 truncate">
-              {offlineForce
+              {isVoiceProcessing && !isAnalyzing
+                ? 'Transcribing speech and detecting the spoken language — the original transcript will be preserved...'
+                : offlineForce
                 ? 'Processing distress transcript with zero-network deterministic triage rules...'
                 : 'Streaming transcript to Nemotron backend for structured JSON triage & needs extraction...'}
             </div>

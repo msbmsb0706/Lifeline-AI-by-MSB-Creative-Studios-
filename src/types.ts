@@ -24,6 +24,34 @@ export interface DetectedLanguage {
   name: string;
   nativeName?: string;
   confidence?: number;
+  /**
+   * How the language was determined:
+   * - 'asr': reported by the speech recognition provider (e.g. NVIDIA NIM Whisper large-v3)
+   * - 'script': deterministic Unicode-script/keyword detection on the transcript text
+   */
+  source?: 'asr' | 'script';
+}
+
+/**
+ * Metadata for a voice capture that went through server-side multilingual ASR.
+ * The original-language transcript is always preserved; the English translation
+ * is an aid for interoperability and may be absent (failed or unnecessary).
+ */
+export interface VoiceCaptureMetadata {
+  /** Provider identifier, e.g. 'nvidia_nim'. 'browser' when the Web Speech API path was used. */
+  asrProvider: string;
+  /** ASR model identifier, e.g. 'openai/whisper-large-v3'. */
+  asrModel: string;
+  detectedLanguage: DetectedLanguage;
+  /** Authoritative transcript in the language the user actually spoke. */
+  originalTranscript: string;
+  /** English translation of originalTranscript, or undefined when unavailable. */
+  englishTranslation?: string;
+  /** true when the English translation step failed — original transcript remains usable. */
+  translationFailed?: boolean;
+  /** Approximate captured speech duration in milliseconds. */
+  durationMs?: number;
+  timestamp: string;
 }
 
 export interface SupportedLanguageInfo {
@@ -86,6 +114,8 @@ export interface EmergencyAnalysisResult extends NemotronEmergencyResponse {
   translation?: TranslatedSOS;
   active_view_language?: 'original' | 'translated';
   nebius_connected?: boolean;
+  /** Present when the emergency was captured via multilingual voice ASR. */
+  voice_capture?: VoiceCaptureMetadata;
 }
 
 export interface SystemStatus {
@@ -96,6 +126,12 @@ export interface SystemStatus {
   server_time: string;
   supported_languages?: string[];
   standardized_categories?: string[];
+  /** Server-side multilingual voice ASR availability (names only — never keys). */
+  asr?: {
+    configured: boolean;
+    provider: string;
+    model: string;
+  };
 }
 
 export interface QuickPreset {
@@ -162,6 +198,12 @@ export interface SOSPackage {
   video?: MediaAttachmentInfo | null;
   source: 'online' | 'offline';
   offlineCreated?: boolean;
+  /** Bilingual voice context — present when the emergency was captured via multilingual voice ASR. */
+  detectedLanguage?: { code: string; name: string } | null;
+  /** Original-language transcript (authoritative user speech), never overwritten by translation. */
+  originalTranscript?: string | null;
+  /** English aid translation, when available. */
+  englishTranslation?: string | null;
 }
 
 export interface PartnerAcknowledgment {
