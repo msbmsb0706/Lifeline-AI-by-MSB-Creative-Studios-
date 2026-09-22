@@ -661,6 +661,7 @@ export default function App() {
             />
             <span>
               <span className="font-bold text-white">LifeLine AI</span> — Emergency Communication Assistant <span className="uppercase font-bold tracking-wider text-neutral-300">BY MSB CREATIVE STUDIOS</span>
+              <span className="block text-[10px] text-neutral-400 mt-0.5">© 2026 MSB Creative Studios · Apache License 2.0</span>
             </span>
           </div>
 

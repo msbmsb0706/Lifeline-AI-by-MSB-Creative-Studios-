@@ -84,6 +84,23 @@ LifeLine AI includes a country-aware Emergency Partner integration framework sup
 
 ---
 
+## Emergency Organization Integration
+
+LifeLine AI provides an integration framework for authorized emergency,
+rescue, public-safety, and government organizations.
+
+The framework supports TEST / DEMO, PUBLIC_CONTACT, and AUTHORIZED_API
+provider types.
+
+Organizations must provide and authorize their own API contract,
+authentication method, payload requirements, media rules, sandbox endpoint,
+and acknowledgment format before a real integration is enabled.
+
+See:
+[Emergency Organization Integration Guide](EMERGENCY_ORGANIZATION_INTEGRATION.md)
+
+---
+
 ## Architecture
 
 ```
@@ -211,4 +228,10 @@ Implemented controls include:
 **LifeLine AI**  
 **BY MSB CREATIVE STUDIOS**
 
-Developed by MSB Creative Studios. All rights reserved.
+LifeLine AI and the LifeLine AI branding are trademarks of MSB Creative Studios. All other trademarks, logos, and brand names referenced in this project (including but not limited to NVIDIA, Nemotron, and Nebius) are the property of their respective owners.
+
+## License
+
+This project is licensed under the Apache License 2.0.
+
+See the [LICENSE](LICENSE) file for details.
