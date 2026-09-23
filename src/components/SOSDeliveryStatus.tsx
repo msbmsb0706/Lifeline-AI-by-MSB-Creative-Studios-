@@ -22,6 +22,12 @@ import {
   retrySingleSOS,
   simulateDemoLifecycleAdvance,
   isDemoSimulatableItem,
+  isSimulatedFinalStatus,
+  getDeliveryDisplayLabel,
+  SIMULATED_DELIVERED_LABEL,
+  SIMULATED_ACKNOWLEDGED_LABEL,
+  SIMULATED_DELIVERY_EXPLANATION,
+  SIMULATED_ACK_EXPLANATION,
   subscribeToQueue
 } from '../lib/emergencyPartnerQueue.ts';
 
@@ -90,6 +96,11 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
   const effectiveStatus: SOSDeliveryStatus | null =
     status && sosId && isSOSInFlight(sosId) && status !== 'FAILED' ? 'SENDING' : status;
 
+  // A simulated final state must NEVER appear to be a real emergency-service
+  // acknowledgement. The flag lives in the persisted status history, so the
+  // SIMULATED label survives refresh. Real confirmations are unaffected.
+  const simulatedFinal = isSimulatedFinalStatus(item);
+
   const visual = useMemo(() => {
     switch (effectiveStatus) {
       case 'PENDING_LOCAL':
@@ -119,18 +130,22 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
         };
       case 'DELIVERED':
         return {
-          dot: '🟢',
-          heading: 'DELIVERED',
-          container: 'border-emerald-600/80 bg-emerald-950/60',
-          headingClass: 'text-emerald-300',
+          dot: simulatedFinal ? '🟣' : '🟢',
+          heading: simulatedFinal ? SIMULATED_DELIVERED_LABEL : 'DELIVERED',
+          container: simulatedFinal
+            ? 'border-purple-600/80 bg-purple-950/60'
+            : 'border-emerald-600/80 bg-emerald-950/60',
+          headingClass: simulatedFinal ? 'text-purple-200' : 'text-emerald-300',
           pulse: false
         };
       case 'ACKNOWLEDGED':
         return {
-          dot: '🟢',
-          heading: 'RESPONDER ACKNOWLEDGED',
-          container: 'border-emerald-500/80 bg-emerald-950/70',
-          headingClass: 'text-emerald-200',
+          dot: simulatedFinal ? '🟣' : '🟢',
+          heading: simulatedFinal ? SIMULATED_ACKNOWLEDGED_LABEL : 'RESPONDER ACKNOWLEDGED',
+          container: simulatedFinal
+            ? 'border-purple-500/80 bg-purple-950/70'
+            : 'border-emerald-500/80 bg-emerald-950/70',
+          headingClass: simulatedFinal ? 'text-purple-200' : 'text-emerald-200',
           pulse: false
         };
       case 'FAILED':
@@ -144,7 +159,7 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
       default:
         return null;
     }
-  }, [effectiveStatus]);
+  }, [effectiveStatus, simulatedFinal]);
 
   if (!item || !effectiveStatus || !visual) return null;
 
@@ -203,18 +218,18 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
     item.statusHistory?.some((t) => t.status === 'ACKNOWLEDGED' && t.simulated)
   );
 
-  const deliveryLabel = item.deliveredAt
-    ? `Confirmed by receiving system — ${formatTime(item.deliveredAt)}${
-        simulatedDelivery ? ' (TEST / DEMO ONLY simulation)' : ''
-      }`
+  const deliveryLabel = simulatedDelivery
+    ? `${SIMULATED_DELIVERED_LABEL} — ${formatTime(item.deliveredAt)}. ${SIMULATED_DELIVERY_EXPLANATION}`
+    : item.deliveredAt
+    ? `Confirmed by receiving system — ${formatTime(item.deliveredAt)}`
     : effectiveStatus === 'FAILED' || effectiveStatus === 'SENDING' || effectiveStatus === 'PENDING_LOCAL' || effectiveStatus === 'WAITING_FOR_CONNECTION'
     ? 'Not available'
     : 'Not confirmed by receiving system';
 
-  const acknowledgementLabel = item.acknowledgedAt
-    ? `Acknowledged — ${formatTime(item.acknowledgedAt)}${
-        simulatedAcknowledged ? ' (TEST / DEMO ONLY simulation)' : ''
-      }`
+  const acknowledgementLabel = simulatedAcknowledged
+    ? `${SIMULATED_ACKNOWLEDGED_LABEL} — ${formatTime(item.acknowledgedAt)}. ${SIMULATED_ACK_EXPLANATION}`
+    : item.acknowledgedAt
+    ? `Acknowledged — ${formatTime(item.acknowledgedAt)}`
     : 'Not available';
 
   // TEST / DEMO ONLY simulator availability: a TEST record that has already been
@@ -242,9 +257,13 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-300" aria-hidden="true" />
               )}
             </div>
-            <div className="mt-1 text-xs font-bold text-white">{meta!.label}</div>
+            <div className="mt-1 text-xs font-bold text-white">{getDeliveryDisplayLabel(item)}</div>
             <div className="text-[11px] text-neutral-300 leading-snug">
-              {effectiveStatus === 'WAITING_FOR_CONNECTION'
+              {simulatedFinal && effectiveStatus === 'DELIVERED'
+                ? SIMULATED_DELIVERY_EXPLANATION
+                : simulatedFinal && effectiveStatus === 'ACKNOWLEDGED'
+                ? SIMULATED_ACK_EXPLANATION
+                : effectiveStatus === 'WAITING_FOR_CONNECTION'
                 ? 'Waiting for connection'
                 : effectiveStatus === 'FAILED'
                 ? item.errorMessage || 'Retry available'

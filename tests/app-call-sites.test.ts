@@ -16,6 +16,7 @@ import { installBrowserStub } from './browser-stub.ts';
 import { section, assert, assertEqual } from './helpers.ts';
 import { classifyEmergencyOffline } from '../src/lib/offlineClassifier.ts';
 import { translateEmergencyOffline } from '../src/lib/languages.ts';
+import { selectTranslationSource, looksLikeGeneratedDispatch } from '../src/lib/translationSafety.ts';
 
 installBrowserStub({ online: true });
 
@@ -46,6 +47,8 @@ function isDispatchText(text: string): boolean {
 
 // ---------------------------------------------------------------------------
 // FIX 1 — App.handleTranslateSOS translates the USER'S ORIGINAL TRANSMISSION
+// (PR #16 contract: raw_transcript -> original_message -> legacy transcript;
+// NEVER the generated dispatch message; deterministic output validation).
 // ---------------------------------------------------------------------------
 section("FIX 1 — handleTranslateSOS call-site contract (source = user's original transmission)");
 
@@ -53,13 +56,12 @@ const appSource = readRepoSource('../src/App.tsx');
 const translateFn = extractFunction(appSource, 'handleTranslateSOS', '\n  return (');
 
 assert(
-  translateFn.includes('currentResult.raw_transcript || currentResult.message'),
-  "handleTranslateSOS derives its translation source from raw_transcript (the user's original transmission)"
+  translateFn.includes('selectTranslationSource'),
+  "handleTranslateSOS derives its translation source via selectTranslationSource (raw_transcript -> original_message -> legacy transcript)"
 );
-assertEqual(
-  countOccurrences(translateFn, 'currentResult.message'),
-  1,
-  'the generated dispatch message appears ONLY as the legacy fallback operand — never as a translation source'
+assert(
+  !translateFn.includes('currentResult.raw_transcript || currentResult.message'),
+  'the legacy generated-dispatch-message fallback is gone — message is never a translation source'
 );
 assert(
   !translateFn.includes('text: currentResult.message'),
@@ -69,10 +71,17 @@ assert(
   translateFn.includes('currentSOS: currentResult'),
   'currentSOS context is still forwarded (locked triage fields + server fallback preserved)'
 );
-const sourceUses = countOccurrences(translateFn, 'sourceTranscript');
 assert(
-  sourceUses >= 4,
-  `the authoritative translation source is used at every call-site (definition + offline + online + catch fallback): ${sourceUses} uses`
+  translateFn.includes('validateTranslatedMessage') || translateFn.includes('acceptTranslation'),
+  'incoming translated_message is deterministically validated before display'
+);
+assert(
+  translateFn.includes('TRANSLATION_VALIDATION_FAILED'),
+  'validation failures take an explicit terminal error path (never a silent substitution)'
+);
+assert(
+  translateFn.includes('Translation unavailable'),
+  'an explicit translation-unavailable error state is shown when validation fails'
 );
 
 // ---------------------------------------------------------------------------
@@ -94,12 +103,19 @@ const currentResult: any = {
 assert(/DISPATCH ALERT/i.test(currentResult.message), 'fixture: result.message is the generated dispatch report');
 assertEqual(currentResult.raw_transcript, userText, "fixture: raw_transcript is the user's original transmission");
 
-// The fixed call-site source selection:
-const sourceTranscript = currentResult.raw_transcript || currentResult.message;
+// The fixed call-site source selection (PR #16 priority):
+const sourceTranscript = selectTranslationSource({
+  raw_transcript: currentResult.raw_transcript,
+  transcript: currentResult.transcript,
+  translation: currentResult.translation
+    ? { original_message: currentResult.translation.original_message }
+    : null
+});
+assert(sourceTranscript !== null, 'selector resolves a source for a normal result');
 
 // Offline translation branch (exactly what handleTranslateSOS now calls):
 const localTrans = translateEmergencyOffline(
-  sourceTranscript,
+  sourceTranscript!,
   'ta',
   currentResult.emergency_category || 'MEDICAL',
   currentResult.severity,
@@ -129,11 +145,36 @@ assertEqual(localTrans.severity, currentResult.severity, 'severity locked (trans
 const esTrans = translateEmergencyOffline('call an ambulance', 'es', 'MEDICAL', 5, 'Medical', 'en');
 assertEqual(esTrans.translated_message, 'llame a una ambulancia', "en→es translates the user's sentence itself");
 
-// Legacy result without raw_transcript keeps the existing .message fallback:
-const legacyResult: any = { message: 'chest pain, help now', severity: 3, emergency_category: 'MEDICAL', emergency_type: 'Medical' };
-const legacySource = legacyResult.raw_transcript || legacyResult.message;
-const legacyTrans = translateEmergencyOffline(legacySource, 'ta', 'MEDICAL', 3, 'Medical', 'en');
-assertEqual(legacyTrans.original_message, legacyResult.message, 'legacy results (no raw_transcript) still translate via the message fallback');
+// Legacy result with ONLY a generated dispatch message: no legitimate original
+// transmission exists, so the selector yields null (explicit unavailable state).
+const legacyDispatchOnly: any = {
+  message: 'DISPATCH ALERT: Priority 4/5 - [MEDICAL] Medical. Required Assets: Ambulance. Action: Dispatch now.',
+  severity: 3,
+  emergency_category: 'MEDICAL',
+  emergency_type: 'Medical'
+};
+assertEqual(
+  selectTranslationSource(legacyDispatchOnly),
+  null,
+  'dispatch-only legacy results yield no translation source (explicit unavailable state, never dispatch-as-source)'
+);
+
+// Legacy result with a genuine original transcript still translates via it.
+const legacyTranscript: any = {
+  transcript: 'chest pain, help now',
+  message: 'DISPATCH ALERT: Priority 4/5 - [MEDICAL] Medical. Required Assets: Ambulance. Action: Dispatch now.',
+  severity: 3,
+  emergency_category: 'MEDICAL',
+  emergency_type: 'Medical'
+};
+const legacySource = selectTranslationSource(legacyTranscript);
+assertEqual(legacySource, 'chest pain, help now', 'legacy transcript used when no newer original field exists');
+const legacyTrans = translateEmergencyOffline(legacySource!, 'ta', 'MEDICAL', 3, 'Medical', 'en');
+assertEqual(legacyTrans.original_message, 'chest pain, help now', 'legacy transcript preserved as original_message');
+assert(
+  !looksLikeGeneratedDispatch(legacyTrans.translated_message),
+  'legacy translation output is not dispatch text'
+);
 
 // ---------------------------------------------------------------------------
 // FIX 2 — MAX_RECORDING_MS safety timer is registered before returning

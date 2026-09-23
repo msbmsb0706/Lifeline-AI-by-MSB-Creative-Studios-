@@ -336,7 +336,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'CRITICAL MEDICAL EMERGENCY - IMMEDIATE EMS DISPATCH',
         actionSteps: [
-          'Call local emergency services immediately',
+          'Contact your local emergency services immediately.',
           'Keep patient resting in a safe, monitored position',
           'Do not administer unprescribed oral medication',
           'Monitor breathing continually until ambulance arrives'
@@ -479,7 +479,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'அவசர மருத்துவ எச்சரிக்கை - உடனடி ஆம்புலன்ஸ் தேவை',
         actionSteps: [
-          'உடனடியாக 108 / 112 அவசர எண்ணை அழைக்கவும்',
+          'உங்கள் உள்ளூர் அவசர சேவைகளை உடனடியாக தொடர்பு கொள்ளுங்கள் (Contact your local emergency services immediately.)',
           'நோயாளியை அமைதியாக உட்கார வைக்கவும், இறுக்கமான ஆடைகளைத் தளர்த்தவும்',
           'மருத்துவர் ஆலோசனையின்றி எந்த மாத்திரையும் உணவும் கொடுக்க வேண்டாம்',
           'ஆம்புலன்ஸ் வரும் வரை நோயாளியின் சுவாசத்தைக் கவனித்துக்கொண்டிருக்கவும்'
@@ -622,7 +622,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'गंभीर चिकित्सा आपातकाल - तुरंत एम्बुलेंस भेजें',
         actionSteps: [
-          'तुरंत 108 / 112 आपातकालीन नंबर पर कॉल करें',
+          'तुरंत अपनी स्थानीय आपातकालीन सेवाओं से संपर्क करें (Contact your local emergency services immediately.)',
           'रोगी को आराम से आधी बैठी स्थिति में रखें, तंग कपड़े ढीले करें',
           'डॉक्टर की सलाह के बिना कोई दवा या पेय न दें',
           'एम्बुलेंस आने तक सांस और नाड़ी की निगरानी जारी रखें'
@@ -765,7 +765,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'తీవ్ర వైద్య అత్యవసర పరిస్థితి - వెంటనే అంబులెన్స్ పంపండి',
         actionSteps: [
-          'వెంటనే 108 లేదా 112 నంబర్‌కు కాల్ చేయండి',
+          'వెంటనే మీ స్థానిక అత్యవసర సేవలను సంప్రదించండి (Contact your local emergency services immediately.)',
           'రోగిని నిశ్శబ్దంగా సౌకర్యవంతమైన స్థితిలో ఉంచండి',
           'వైద్యుల సలహా లేకుండా ఎటువంటి మందులు ఇవ్వవద్దు',
           'అంబులెన్స్ వచ్చే వరకు శ్వాసక్రియను గమనించండి'
@@ -908,7 +908,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'ಗಂಭೀರ ವೈದ್ಯಕೀಯ ತುರ್ತುಸ್ಥಿತಿ - ತಕ್ಷಣ ಆಂಬ್ಯುಲೆನ್ಸ್ ಕಳುಹಿಸಿ',
         actionSteps: [
-          'ತಕ್ಷಣವೇ 108 ಅಥವಾ 112 ಗೆ ಕರೆ ಮಾಡಿ',
+          'ತಕ್ಷಣ ನಿಮ್ಮ ಸ್ಥಳೀಯ ತುರ್ತು ಸೇವೆಗಳನ್ನು ಸಂಪರ್ಕಿಸಿ (Contact your local emergency services immediately.)',
           'ರೋಗಿಯನ್ನು ಆರಾಮದಾಯಕ ಭಂಗಿಯಲ್ಲಿ ಕುಳ್ಳಿರಿಸಿ, ಬಿಗಿಯಾದ ಬಟ್ಟೆಗಳನ್ನು ಸಡಿಲಗೊಳಿಸಿ',
           'ವೈದ್ಯರ ಸಲಹೆಯಿಲ್ಲದೆ ಯಾವುದೇ ಮಾತ್ರೆ ಅಥವಾ ದ್ರವ ನೀಡಬೇಡಿ',
           'ಆಂಬ್ಯುಲೆನ್ಸ್ ಬರುವವರೆಗೆ ಉಸಿರಾಟವನ್ನು ಗಮನಿಸುತ್ತಿರಿ'
@@ -1051,7 +1051,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'ഗുരുതരമായ മെഡിക്കൽ എമർജൻസി - ആംബുലൻസ് ഉടൻ അയക്കുക',
         actionSteps: [
-          'ഉടൻ തന്നെ 108 അല്ലെങ്കിൽ 112 നമ്പറിലേക്ക് വിളിക്കുക',
+          'ഉടൻ നിങ്ങളുടെ പ്രാദേശിക അടിയന്തര സേവനങ്ങളുമായി ബന്ധപ്പെടുക (Contact your local emergency services immediately.)',
           'രോഗിയെ ശാന്തമായി ഇരുത്തുക, ഇറുകിയ വസ്ത്രങ്ങൾ അയക്കുക',
           'ഡോക്ടറുടെ നിർദ്ദേശമില്ലാതെ മരുന്നുകളോ വെള്ളമോ നൽകരുത്',
           'ആംബുലൻസ് എത്തുന്നതുവരെ ശ്വാസോച്ഛ്വാസം ശ്രദ്ധിക്കുക'
@@ -1194,7 +1194,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'গুরুতর চিকিৎসা জরুরি অবস্থা - অবিলম্বে অ্যাম্বুলেন্স পাঠান',
         actionSteps: [
-          'অবিলম্বে ১০৮ বা ১১২ নম্বরে ফোন করুন',
+          'অবিলম্বে আপনার স্থানীয় জরুরি পরিষেবার সাথে যোগাযোগ করুন (Contact your local emergency services immediately.)',
           'রোগীকে শান্তভাবে বসিয়ে রাখুন, আঁটসাঁট পোশাক ঢিলে করুন',
           'চিকিৎসকের পরামর্শ ছাড়া কোনো ওষুধ বা খাবার দেবেন না',
           'অ্যাম্বুলেন্স না আসা পর্যন্ত শ্বাসপ্রশ্বাস লক্ষ্য রাখুন'
@@ -1337,7 +1337,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'गंभीर वैद्यकीय आणीबाणी - तातडीने रुग्णवाहिका पाठवा',
         actionSteps: [
-          'तातडीने १०८ किंवा ११२ वर संपर्क साधा',
+          'त्वरित आपल्या स्थानिक आपत्कालीन सेवांशी संपर्क साधा (Contact your local emergency services immediately.)',
           'रुग्णाला शांतपणे बसवून ठेवा, घट्ट कपडे सैल करा',
           'डॉक्टरांच्या सल्ल्याशिवाय कोणतीही गोळी किंवा पाणी देऊ नका',
           'रुग्णवाहिका येईपर्यंत श्वासोच्छ्वासावर लक्ष ठेवा'
@@ -1494,7 +1494,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'EMERGENCIA MÉDICA CRÍTICA - DESPACHO INMEDIATO DE AMBULANCIA',
         actionSteps: [
-          'Llame a los servicios de emergencia de inmediato (911 / 112)',
+          'Póngase en contacto con los servicios de emergencia locales de inmediato (Contact your local emergency services immediately.)',
           'Mantenga al paciente en posición de reposo semi-incorporado',
           'No administre medicamentos orales sin orden médica',
           'Monitoree la respiración continuamente hasta la llegada del equipo médico'
@@ -1651,7 +1651,7 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       MEDICAL: {
         headline: 'URGENCE MÉDICALE CRITIQUE - ENVOI IMMÉDIAT DU SMUR',
         actionSteps: [
-          'Appelez immédiatement les secours d\'urgence (15 / 112)',
+          'Contactez immédiatement les services d’urgence locaux (Contact your local emergency services immediately.)',
           'Maintenez le patient au repos en position demi-assise',
           'N\'administrez aucun médicament par voie orale sans avis médical',
           'Surveillez continuellement la respiration jusqu\'à l\'arrivée des secours'

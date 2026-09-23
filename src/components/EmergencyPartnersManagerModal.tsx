@@ -19,12 +19,23 @@ import {
   getAutoSendSetting,
   setAutoSendSetting,
   isSOSInFlight,
+  isSimulatedFinalStatus,
+  getDeliveryDisplayLabel,
+  SIMULATED_DELIVERY_EXPLANATION,
+  SIMULATED_ACK_EXPLANATION,
   markWaitingForConnection,
   processPendingQueue,
   retrySingleSOS,
   createSOSPackage,
   savePendingSOS
 } from '../lib/emergencyPartnerQueue.ts';
+import {
+  fetchPartnerConfigState,
+  getPartnerConfigDisplayText,
+  PARTNER_STATUS_UNAVAILABLE_TEXT,
+  type PartnerConfigResult
+} from '../lib/partnerConfig.ts';
+import { getSelectedCountry, setSelectedCountry } from '../lib/emergencyNumbers.ts';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
 import {
   ShieldAlert,
@@ -56,8 +67,17 @@ interface EmergencyPartnersManagerModalProps {
 export const EmergencyPartnersManagerModal: React.FC<
   EmergencyPartnersManagerModalProps
 > = ({ isOpen, onClose, isOffline, onQueueUpdated }) => {
-  const [selectedCountry, setSelectedCountry] = useState<string>('GLOBAL');
+  const [selectedCountry, setSelectedCountryState] = useState<string>(() => getSelectedCountry() || 'GLOBAL');
   const [activeTab, setActiveTab] = useState<'providers' | 'queue'>('providers');
+  // Authorized-API configuration status for the selected country. Resolved only
+  // while online; offline the lookup cannot run (no fetch, explicit notice).
+  const [authConfig, setAuthConfig] = useState<PartnerConfigResult | null>(null);
+  const [authConfigLoading, setAuthConfigLoading] = useState<boolean>(false);
+
+  const handleSelectedCountryChange = (code: string) => {
+    setSelectedCountryState(code);
+    setSelectedCountry(code);
+  };
   const [pendingItems, setPendingItems] = useState<PendingSOSItem[]>([]);
   const [autoSendEnabled, setAutoSendEnabled] = useState<boolean>(getAutoSendSetting());
   const [isProcessingQueue, setIsProcessingQueue] = useState<boolean>(false);
@@ -73,6 +93,31 @@ export const EmergencyPartnersManagerModal: React.FC<
       setAutoSendEnabled(getAutoSendSetting());
     }
   }, [isOpen]);
+
+  // Resolve the authorized-API configuration status for the selected country
+  // whenever the directory is visible and online. Failures (503, timeout,
+  // malformed) surface as "unavailable" — never as "not configured".
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'providers' || isOffline) {
+      if (isOffline) setAuthConfigLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAuthConfigLoading(true);
+    fetchPartnerConfigState(selectedCountry)
+      .then((result) => {
+        if (!cancelled) setAuthConfig(result);
+      })
+      .catch(() => {
+        if (!cancelled) setAuthConfig({ state: 'CONFIGURATION_UNAVAILABLE', country: selectedCountry });
+      })
+      .finally(() => {
+        if (!cancelled) setAuthConfigLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, activeTab, selectedCountry, isOffline]);
 
   const refreshQueue = () => {
     const queue = getPendingQueue();
@@ -335,7 +380,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                   {SUPPORTED_COUNTRIES.map((c) => (
                     <button
                       key={c.code}
-                      onClick={() => setSelectedCountry(c.code)}
+                      onClick={() => handleSelectedCountryChange(c.code)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
                         selectedCountry === c.code
                           ? 'bg-neutral-100 text-black ring-2 ring-red-500 font-extrabold'
@@ -347,7 +392,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                     </button>
                   ))}
                   <button
-                    onClick={() => setSelectedCountry('ALL')}
+                    onClick={() => handleSelectedCountryChange('ALL')}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                       selectedCountry === 'ALL'
                         ? 'bg-neutral-100 text-black ring-2 ring-red-500'
@@ -471,6 +516,32 @@ export const EmergencyPartnersManagerModal: React.FC<
                             Requires server-side API integration configuration.
                           </div>
                         )}
+
+                        {isAuth && (
+                          <div
+                            id={`partner-config-status-${provider.id}`}
+                            className="text-[11px] font-bold"
+                            role="status"
+                          >
+                            {isOffline ? (
+                              <span className="text-amber-300">{PARTNER_STATUS_UNAVAILABLE_TEXT}</span>
+                            ) : authConfigLoading ? (
+                              <span className="text-neutral-400">Checking Emergency API configuration…</span>
+                            ) : authConfig ? (
+                              <span
+                                className={
+                                  authConfig.state === 'CONFIGURED'
+                                    ? 'text-emerald-300'
+                                    : authConfig.state === 'NOT_CONFIGURED'
+                                    ? 'text-neutral-300'
+                                    : 'text-amber-300'
+                                }
+                              >
+                                {getPartnerConfigDisplayText(authConfig)}
+                              </span>
+                            ) : null}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -588,14 +659,13 @@ export const EmergencyPartnersManagerModal: React.FC<
                     // TEST / DEMO ONLY lifecycle simulator (never real partner
                     // integration). Rendered so a simulated DELIVERED/ACKNOWLEDGED
                     // can never be mistaken for a real emergency-service receipt.
-                    const isSimulatedFinal =
-                      item.status === 'DELIVERED' || item.status === 'ACKNOWLEDGED'
-                        ? Boolean(
-                            item.statusHistory?.some(
-                              (t) => t.status === item.status && t.simulated
-                            )
-                          )
-                        : false;
+                    const isSimulatedFinal = isSimulatedFinalStatus(item);
+                    const simulatedDeliveryLine = Boolean(
+                      item.statusHistory?.some((t) => t.status === 'DELIVERED' && t.simulated)
+                    );
+                    const simulatedAckLine = Boolean(
+                      item.statusHistory?.some((t) => t.status === 'ACKNOWLEDGED' && t.simulated)
+                    );
 
                     return (
                       <div
@@ -631,7 +701,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                               }`}
                               title={statusMeta.detail}
                             >
-                              {statusMeta.label}
+                              {getDeliveryDisplayLabel(item)}
                             </span>
 
                             {isSimulatedFinal && (
@@ -688,7 +758,9 @@ export const EmergencyPartnersManagerModal: React.FC<
                           )}
                           <div>
                             <b>Delivery:</b>{' '}
-                            {item.deliveredAt ? (
+                            {simulatedDeliveryLine ? (
+                              <span className="text-purple-300">{SIMULATED_DELIVERY_EXPLANATION}</span>
+                            ) : item.deliveredAt ? (
                               <span className="text-emerald-300">Confirmed — {new Date(item.deliveredAt).toLocaleString()}</span>
                             ) : (
                               <span className="text-neutral-500">Not available</span>
@@ -696,7 +768,9 @@ export const EmergencyPartnersManagerModal: React.FC<
                           </div>
                           <div>
                             <b>Acknowledgement:</b>{' '}
-                            {item.acknowledgedAt ? (
+                            {simulatedAckLine ? (
+                              <span className="text-purple-300">{SIMULATED_ACK_EXPLANATION}</span>
+                            ) : item.acknowledgedAt ? (
                               <span className="text-emerald-300">Confirmed — {new Date(item.acknowledgedAt).toLocaleString()}</span>
                             ) : (
                               <span className="text-neutral-500">Not available</span>

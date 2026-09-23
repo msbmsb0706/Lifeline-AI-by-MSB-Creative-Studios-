@@ -17,6 +17,8 @@ await import('./languages.test.ts');
 await import('./translation.test.ts');
 await import('./sos-lifecycle.test.ts');
 await import('./app-call-sites.test.ts');
+await import('./pr16-corrective.test.ts');
+await import('./pr16-country-selection.test.ts');
 
 const failures = summarize();
 process.exit(failures > 0 ? 1 : 0);

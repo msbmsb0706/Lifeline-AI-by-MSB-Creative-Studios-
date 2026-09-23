@@ -282,7 +282,7 @@ export const PrivacySafetyModal: React.FC<PrivacySafetyModalProps> = ({
                     LifeLine AI does not automatically contact authorities or emergency services.
                   </p>
                   <p className="text-neutral-400 text-[11px] mt-0.5">
-                    Always dial 911, 112, or 108 directly when in life-threatening distress.
+                    Contact your local emergency services immediately when in life-threatening distress.
                   </p>
                 </div>
               </div>

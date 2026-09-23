@@ -17,6 +17,7 @@ import {
 } from './types.ts';
 import { classifyEmergencyOffline } from './lib/offlineClassifier.ts';
 import { translateEmergencyOffline, detectLanguage } from './lib/languages.ts';
+import { selectTranslationSource, validateTranslatedMessage } from './lib/translationSafety.ts';
 import {
   getPendingQueue,
   processPendingQueue,
@@ -410,12 +411,34 @@ export default function App() {
     setIsTranslating(true);
     setError(null);
 
-    // Translation source contract: what gets translated is the USER'S ORIGINAL
-    // TRANSMISSION (raw_transcript) — NEVER the generated responder/dispatch
-    // message. The generated message stays available (and unchanged) for the
-    // structured responder fields. Legacy results without raw_transcript keep
-    // the previous message fallback.
-    const sourceTranscript = currentResult.raw_transcript || currentResult.message;
+    // Translation source contract (PR #16): what gets translated is the USER'S
+    // ORIGINAL TRANSMISSION selected as raw_transcript -> original_message ->
+    // legacy transcript — NEVER the generated responder/dispatch message, a
+    // responder instruction, action steps, required units, an AI summary, or a
+    // structured emergency directive. When no legitimate original transmission
+    // exists, translation is unavailable: the original record is preserved and
+    // an explicit error is shown (never a silent dispatch-text substitution).
+    const sourceTranscript = selectTranslationSource({
+      raw_transcript: currentResult.raw_transcript,
+      transcript: currentResult.transcript,
+      translation: currentResult.translation
+        ? { original_message: currentResult.translation.original_message }
+        : null
+    });
+
+    if (!sourceTranscript) {
+      setError('Translation unavailable — the original transmission is not available for this record. The original emergency record is preserved.');
+      setIsTranslating(false);
+      return;
+    }
+
+    // Deterministic guard: a translated_message that looks like generated
+    // dispatch/triage boilerplate is rejected — it is never displayed as the
+    // user's translated transmission.
+    const acceptTranslation = (candidate: TranslatedSOS | null | undefined): candidate is TranslatedSOS => {
+      if (!candidate) return false;
+      return validateTranslatedMessage(candidate.translated_message).ok;
+    };
 
     // Offline translation is deliberately local and limited to bundled emergency phrases.
     if (offlineForce) {
@@ -428,6 +451,11 @@ export default function App() {
         currentResult.detected_language?.code,
         locationInfo || undefined
       );
+      if (!acceptTranslation(localTrans as TranslatedSOS)) {
+        setError('Translation unavailable — the translation failed safety validation. The original transmission is preserved.');
+        setIsTranslating(false);
+        return;
+      }
       const updatedResult: EmergencyAnalysisResult = {
         ...currentResult,
         translation: { ...localTrans, source: 'offline_fallback', model_used: 'Bundled emergency phrasebook' }
@@ -452,13 +480,25 @@ export default function App() {
         })
       });
 
-      if (!response.ok) {
-        throw new Error(`Translation API returned HTTP ${response.status}`);
+      const json: any = await response.json().catch(() => ({}));
+
+      // Safety-validation failures are explicit and terminal: the original is
+      // preserved and NO silent offline substitution is performed for them.
+      if (json?.code === 'TRANSLATION_INVALID_SOURCE' || json?.code === 'TRANSLATION_VALIDATION_FAILED') {
+        throw new Error(
+          `TRANSLATION_VALIDATION_FAILED: ${json.error || 'Translation unavailable — safety validation failed. The original transmission is preserved.'}`
+        );
       }
 
-      const json = await response.json();
+      if (!response.ok) {
+        throw new Error(json?.error || `Translation API returned HTTP ${response.status}`);
+      }
+
       if (json.success && json.data) {
         const transData: TranslatedSOS = json.data;
+        if (!acceptTranslation(transData)) {
+          throw new Error('TRANSLATION_VALIDATION_FAILED: Translation unavailable — the translation failed safety validation. The original transmission is preserved.');
+        }
         const updatedResult: EmergencyAnalysisResult = {
           ...currentResult,
           translation: transData
@@ -470,6 +510,13 @@ export default function App() {
         throw new Error(json.error || 'Failed to translate emergency message');
       }
     } catch (err: any) {
+      const message = typeof err?.message === 'string' ? err.message : '';
+      // Validation failures surface as an explicit error state with the
+      // original preserved — never a silent unrelated substitution.
+      if (message.startsWith('TRANSLATION_VALIDATION_FAILED:')) {
+        setError(message.slice('TRANSLATION_VALIDATION_FAILED:'.length).trim());
+        return;
+      }
       console.warn('Backend translation failed or timed out. Using local browser offline translation:', err);
 
       const localTrans = translateEmergencyOffline(
@@ -482,6 +529,11 @@ export default function App() {
         locationInfo || undefined
       );
 
+      if (!acceptTranslation(localTrans as TranslatedSOS)) {
+        setError('Translation unavailable — the translation failed safety validation. The original transmission is preserved.');
+        return;
+      }
+
       const updatedResult: EmergencyAnalysisResult = {
         ...currentResult,
         translation: localTrans
@@ -493,7 +545,6 @@ export default function App() {
       setIsTranslating(false);
     }
   };
-
   return (
     <div
       className={`min-h-screen flex flex-col font-sans transition-colors ${

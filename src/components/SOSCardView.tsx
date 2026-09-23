@@ -35,6 +35,13 @@ import {
   Shield
 } from 'lucide-react';
 import { playPing } from '../lib/audio.ts';
+import { looksLikeGeneratedDispatch } from '../lib/translationSafety.ts';
+import {
+  GENERIC_EMERGENCY_GUIDANCE,
+  getCountryEmergencyNumber,
+  getEmergencyNumberDisplay,
+  getSelectedCountry
+} from '../lib/emergencyNumbers.ts';
 import {
   SUPPORTED_LANGUAGES,
   STANDARDIZED_CATEGORIES,
@@ -273,6 +280,20 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
 
   // Active displayed content based on translation state & viewMode
   const hasTranslation = Boolean(result.translation);
+
+  // Translation display guard (PR #16): a translated_message that looks like
+  // generated dispatch/triage boilerplate is NEVER displayed as the user's
+  // translated transmission — an explicit error state is shown instead and
+  // the original transmission below is preserved.
+  const translationFailedValidation =
+    Boolean(result.translation) && looksLikeGeneratedDispatch(result.translation?.translated_message || '');
+  const safeTranslatedMessage = translationFailedValidation ? '' : result.translation?.translated_message || '';
+
+  // Country-aware emergency number (PR #16): the configured number for the
+  // country selected in the partner directory, or an explicit notice when
+  // the country is unknown/unconfigured. Never invented, never universal.
+  const selectedCountry = getSelectedCountry();
+  const configuredEmergencyNumber = getCountryEmergencyNumber(selectedCountry);
   const showTranslated = hasTranslation && viewMode !== 'original';
 
   const activeHeadline = showTranslated && result.translation?.translated_headline
@@ -308,9 +329,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   };
 
   const handleConfirmedShare = async () => {
-    const alertMessage = showTranslated && result.translation
-      ? result.translation.translated_message
-      : result.message;
+    const alertMessage = showTranslated && safeTranslatedMessage ? safeTranslatedMessage : result.message;
 
     const locSuffix = result.location_coordinates
       ? `\nGPS Location: https://maps.google.com/?q=${result.location_coordinates.latitude},${result.location_coordinates.longitude} (${result.location_coordinates.latitude.toFixed(5)}, ${result.location_coordinates.longitude.toFixed(5)})`
@@ -348,7 +367,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
       emergencyType: result.emergency_type,
       category: result.emergency_category,
       severity: result.severity,
-      message: showTranslated && result.translation ? result.translation.translated_message : result.message,
+      message: showTranslated && safeTranslatedMessage ? safeTranslatedMessage : result.message,
       gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
       source: result.source === 'nebius_nemotron' ? 'online' : 'offline',
       voiceCapture: result.voice_capture
@@ -791,7 +810,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div className="text-xs font-bold uppercase tracking-wider text-neutral-300 flex items-center gap-1.5">
             <PhoneCall className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Standard Dispatch Radio Transmission (911 / EMS)</span>
+            <span>Standard Dispatch Radio Transmission</span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -803,10 +822,39 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           </div>
         </div>
 
+        {/* Country-aware emergency guidance (PR #16): generic sentence plus
+            the configured country number, or an explicit notice. */}
+        <div className="mb-2 text-[11px] text-neutral-400 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span>{GENERIC_EMERGENCY_GUIDANCE}</span>
+          <span className="text-neutral-600">•</span>
+          {configuredEmergencyNumber ? (
+            <a
+              href={`tel:${configuredEmergencyNumber}`}
+              className="font-bold text-emerald-300 hover:text-emerald-200 underline underline-offset-2"
+            >
+              Configured emergency number{selectedCountry ? ` (${selectedCountry})` : ''}: {configuredEmergencyNumber}
+            </a>
+          ) : (
+            <span className="font-bold text-amber-300">{getEmergencyNumberDisplay(selectedCountry)}</span>
+          )}
+        </div>
+
         {/* Display both original and translated messages */}
         {hasTranslation ? (
           <div className="space-y-3">
-            {/* Translated Message Box */}
+            {/* Translated Message Box (or an explicit error state when the
+                stored translation failed safety validation) */}
+            {translationFailedValidation ? (
+              <div className="p-2.5 rounded-xl bg-red-950/40 border border-red-700" role="alert">
+                <div className="text-[11px] font-bold text-red-300 flex items-center gap-1.5">
+                  <Languages className="w-3.5 h-3.5 text-red-400" />
+                  <span>Translation unavailable — safety validation failed.</span>
+                </div>
+                <p className="mt-1 text-xs text-red-200/90">
+                  The received content was rejected because it resembled generated dispatch text. The original transmission below is preserved.
+                </p>
+              </div>
+            ) : (
             <div className="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-800/60">
               <div className="flex items-center justify-between mb-1.5">
                 <div className="text-[11px] font-bold text-emerald-300 flex items-center gap-1.5">
@@ -815,7 +863,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <button
-                    onClick={() => handleSpeakAloud(result.translation?.translated_message || '', result.translation?.target_language)}
+                    onClick={() => handleSpeakAloud(safeTranslatedMessage, result.translation?.target_language)}
                     title="Read translated message aloud"
                     className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-[11px]"
                   >
@@ -823,7 +871,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                   </button>
                   <button
                     id="copy-translated-dispatch-btn"
-                    onClick={() => copyText(result.translation?.translated_message || '', true)}
+                    onClick={() => copyText(safeTranslatedMessage, true)}
                     className={`text-[11px] px-2 py-0.5 rounded font-semibold flex items-center gap-1 transition-all ${
                       copiedTranslated
                         ? 'bg-emerald-600 text-white'
@@ -836,9 +884,10 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
               </div>
               <pre className="text-xs sm:text-sm font-mono text-emerald-300/95 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/70 border border-emerald-900/60 select-all">
-                {result.translation?.translated_message}
+                {safeTranslatedMessage}
               </pre>
             </div>
+            )}
 
             {/* Original Message Box */}
             <div className="p-2.5 rounded-xl bg-neutral-900/60 border border-neutral-800">
@@ -1029,7 +1078,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             emergencyType: result.emergency_type,
             category: result.emergency_category,
             severity: result.severity,
-            message: showTranslated && result.translation ? result.translation.translated_message : result.message,
+            message: showTranslated && safeTranslatedMessage ? safeTranslatedMessage : result.message,
             gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
             source: result.source === 'nebius_nemotron' ? 'online' : 'offline'
           })}

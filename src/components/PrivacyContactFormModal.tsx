@@ -223,7 +223,7 @@ export const PrivacyContactFormModal: React.FC<PrivacyContactFormModalProps> = (
                 Use this form for questions about the Privacy Policy, data access or deletion requests, or feedback about how
                 LifeLine AI handles information.
                 <span className="block mt-1.5 text-red-300 font-bold">
-                  Not for emergencies. In immediate danger call 911, 112, or 108 directly.
+                  Not for emergencies. In immediate danger, contact your local emergency services immediately.
                 </span>
               </div>
 

@@ -66,6 +66,56 @@ export const SOS_DELIVERY_STATUS_META: Record<
   }
 };
 
+// ---------------------------------------------------------------------------
+// TEST / DEMO ONLY simulated-status display labels (PR #16).
+//
+// A simulated DELIVERED / ACKNOWLEDGED must NEVER appear to be a real
+// emergency-service acknowledgement. These labels are the single source of
+// truth for every surface that renders a simulated final state (SOS delivery
+// card, queue manager). Real AUTHORIZED_API confirmations keep the
+// SOS_DELIVERY_STATUS_META labels unchanged.
+// ---------------------------------------------------------------------------
+
+/** Display label for a SIMULATED delivery (never a real receipt). */
+export const SIMULATED_DELIVERED_LABEL = 'SIMULATED — DELIVERED';
+
+/** Display label for a SIMULATED responder acknowledgement (never real). */
+export const SIMULATED_ACKNOWLEDGED_LABEL = 'SIMULATED — RESPONDER ACKNOWLEDGED';
+
+/** Explanatory text for a simulated delivery line. */
+export const SIMULATED_DELIVERY_EXPLANATION =
+  'Simulation only — no real emergency organization received this SOS.';
+
+/** Explanatory text for a simulated acknowledgement line. */
+export const SIMULATED_ACK_EXPLANATION =
+  'Simulation only — no real emergency organization acknowledged this SOS.';
+
+/**
+ * True when the item's CURRENT final status (DELIVERED / ACKNOWLEDGED) was
+ * produced by the local TEST / DEMO ONLY simulator — i.e. the matching
+ * transition in the persisted status history carries `simulated: true`.
+ * Real AUTHORIZED_API confirmations (no simulated flag) return false, so
+ * their display behavior is completely unchanged. Because the flag lives in
+ * the persisted history, the simulated label survives refresh.
+ */
+export function isSimulatedFinalStatus(item: PendingSOSItem | null | undefined): boolean {
+  if (!item || (item.status !== 'DELIVERED' && item.status !== 'ACKNOWLEDGED')) {
+    return false;
+  }
+  return Boolean(item.statusHistory?.some((t) => t.status === item.status && t.simulated === true));
+}
+
+/**
+ * Display label for an item's status: simulated finals render the explicit
+ * SIMULATED label; every other state renders the standard lifecycle label.
+ */
+export function getDeliveryDisplayLabel(item: PendingSOSItem): string {
+  if (isSimulatedFinalStatus(item)) {
+    return item.status === 'DELIVERED' ? SIMULATED_DELIVERED_LABEL : SIMULATED_ACKNOWLEDGED_LABEL;
+  }
+  return SOS_DELIVERY_STATUS_META[item.status]?.label || item.status;
+}
+
 // Generate unique SOS ID
 export function generateSOSId(): string {
   const prefix = 'SOS-LL';
