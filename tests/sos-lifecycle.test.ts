@@ -24,7 +24,8 @@ import {
   isDemoSimulatableItem,
   transmitSingleSOSItem,
   savePendingSOS,
-  clearPendingQueue
+  clearPendingQueue,
+  markWaitingForConnection
 } from '../src/lib/emergencyPartnerQueue.ts';
 import { getTestProvider } from '../src/lib/emergencyPartnersData.ts';
 import { EmergencyPartnerProvider, SOSDeliveryStatus } from '../src/types.ts';
@@ -320,3 +321,97 @@ const rawAck = await sendSOSToPartner(queueItem(TEST_PROVIDER, 'raw ack check'))
 assertEqual(rawAck.status, 'ACKNOWLEDGED', 'handoff status field passes through');
 assertEqual(rawAck.deliveryConfirmed, undefined, 'no deliveryConfirmed inferred from handoff status');
 assertEqual(rawAck.responderAcknowledged, undefined, 'no responderAcknowledged inferred from handoff status');
+
+// ---------------------------------------------------------------------------
+// Audit follow-up guard — simulateDemoLifecycleAdvance('DELIVERED') requires
+// SENT. Strict, explicit progression only: SENT → DELIVERED → ACKNOWLEDGED.
+// Never directly from PENDING_LOCAL / WAITING_FOR_CONNECTION / SENDING / FAILED.
+// ---------------------------------------------------------------------------
+section('Guard — DELIVERED simulation is rejected unless the record is SENT');
+
+// PENDING_LOCAL → DELIVERED rejected (and no network touch, nothing fabricated).
+{
+  clearPendingQueue();
+  let fetchCalls = 0;
+  installBrowserStub({
+    online: true,
+    fetch: () => {
+      fetchCalls += 1;
+      return Promise.resolve(mockResponse(200, { success: true, data: {} }));
+    }
+  });
+  const item = queueItem(TEST_PROVIDER, 'Guard probe: pending');
+  savePendingSOS(item);
+  const r = simulateDemoLifecycleAdvance(item.sosPackage.sosId, 'DELIVERED');
+  assertEqual(r.ok, false, 'DELIVERED simulation rejected from PENDING_LOCAL');
+  assertEqual(r.status, 'PENDING_LOCAL', 'PENDING_LOCAL record status unchanged');
+  const fresh = refind(item.sosPackage.sosId);
+  assert(!fresh?.deliveredAt, 'rejected simulation fabricates no deliveredAt');
+  assert(
+    !fresh?.statusHistory?.some((t) => t.status === 'DELIVERED'),
+    'rejected simulation writes no DELIVERED transition'
+  );
+  assertEqual(fetchCalls, 0, 'rejected simulation performed ZERO network calls');
+}
+
+// FAILED → DELIVERED rejected.
+{
+  clearPendingQueue();
+  installBrowserStub({
+    online: true,
+    fetch: () => Promise.resolve(mockResponse(500, { success: false, error: 'upstream unavailable' }))
+  });
+  const item = queueItem(TEST_PROVIDER, 'Guard probe: failed');
+  savePendingSOS(item);
+  const res = await transmitSingleSOSItem(item);
+  assertEqual(res.success, false, 'fixture: transmission failed (record is FAILED)');
+  assertEqual(refind(item.sosPackage.sosId)?.status, 'FAILED', 'fixture: record persisted as FAILED');
+  const r = simulateDemoLifecycleAdvance(item.sosPackage.sosId, 'DELIVERED');
+  assertEqual(r.ok, false, 'DELIVERED simulation rejected from FAILED');
+  assertEqual(r.status, 'FAILED', 'FAILED record status unchanged');
+}
+
+// SENDING (genuinely in flight) → DELIVERED rejected.
+{
+  clearPendingQueue();
+  installBrowserStub({
+    online: true,
+    fetch: () => new Promise(() => {}) // never resolves → record stays SENDING
+  });
+  const item = queueItem(TEST_PROVIDER, 'Guard probe: sending');
+  savePendingSOS(item);
+  const inFlight = transmitSingleSOSItem(item); // intentionally not awaited
+  assertEqual(refind(item.sosPackage.sosId)?.status, 'SENDING', 'fixture: record is SENDING (in flight)');
+  const r = simulateDemoLifecycleAdvance(item.sosPackage.sosId, 'DELIVERED');
+  assertEqual(r.ok, false, 'DELIVERED simulation rejected while SENDING');
+  assertEqual(r.status, 'SENDING', 'SENDING record status unchanged');
+  void inFlight; // the dangling transmission never resolves; nothing to await
+}
+
+// WAITING_FOR_CONNECTION → DELIVERED rejected.
+{
+  clearPendingQueue();
+  installBrowserStub({ online: true });
+  const item = queueItem(TEST_PROVIDER, 'Guard probe: waiting');
+  savePendingSOS(item);
+  markWaitingForConnection(item, 'offline fixture — waiting for connection');
+  assertEqual(refind(item.sosPackage.sosId)?.status, 'WAITING_FOR_CONNECTION', 'fixture: record is WAITING_FOR_CONNECTION');
+  const r = simulateDemoLifecycleAdvance(item.sosPackage.sosId, 'DELIVERED');
+  assertEqual(r.ok, false, 'DELIVERED simulation rejected from WAITING_FOR_CONNECTION');
+  assertEqual(r.status, 'WAITING_FOR_CONNECTION', 'WAITING_FOR_CONNECTION record status unchanged');
+}
+
+// Positive control: the guard must NOT break the legitimate demo flow
+// (real TEST handoff → SENT → simulated DELIVERED).
+{
+  clearPendingQueue();
+  installDemoFetch('GUARD-POSITIVE-1');
+  const item = queueItem(TEST_PROVIDER, 'Guard probe: sent');
+  savePendingSOS(item);
+  const res = await transmitSingleSOSItem(item);
+  assertEqual(res.success, true, 'fixture: TEST handoff succeeded');
+  assertEqual(refind(item.sosPackage.sosId)?.status, 'SENT', 'fixture: record is SENT');
+  const r = simulateDemoLifecycleAdvance(item.sosPackage.sosId, 'DELIVERED');
+  assertEqual(r.ok, true, 'SENT → DELIVERED simulation still accepted (guard does not break the demo flow)');
+  assertEqual(r.status, 'DELIVERED', 'positive control advanced to DELIVERED');
+}

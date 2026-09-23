@@ -301,9 +301,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       setMicError(null);
       if (soundEnabled) playPing('start');
 
-      return 'started';
-
-      // Hard safety cap: never record in the background beyond MAX_RECORDING_MS
+      // Hard safety cap: never record in the background beyond MAX_RECORDING_MS.
+      // Registered BEFORE the success return so the cap is actually armed —
+      // this was previously unreachable dead code after the early return.
       maxDurationTimerRef.current = window.setTimeout(() => {
         try {
           if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -313,6 +313,8 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           // ignore
         }
       }, MAX_RECORDING_MS);
+
+      return 'started';
     } catch (err: any) {
       console.warn('Server voice capture failed to start:', err);
       isServerRecordingRef.current = false;
