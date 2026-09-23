@@ -1,0 +1,351 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  ChevronRight,
+  CheckCircle2,
+  Clock,
+  Radio,
+  RefreshCw,
+  Send,
+  Wifi,
+  WifiOff
+} from 'lucide-react';
+import {
+  PendingSOSItem,
+  SOSDeliveryStatus
+} from '../types.ts';
+import {
+  SOS_DELIVERY_STATUS_META,
+  getPendingQueue,
+  isSOSInFlight,
+  retrySingleSOS,
+  subscribeToQueue
+} from '../lib/emergencyPartnerQueue.ts';
+
+interface SOSDeliveryStatusProps {
+  /** The SOS package that was confirmed/dispatched from the parent record. */
+  sosId: string | null;
+  /** Called after a user-initiated retry attempt finishes (for parent toasts/counters). */
+  onRetryFinished?: () => void;
+}
+
+/**
+ * Always-visible delivery status for an SOS record.
+ *
+ * Rendered directly on the SOS card after the user confirms an SOS — no extra
+ * button is required to see the transmission status. Includes a small
+ * expandable "Delivery details" section with the lifecycle timestamps.
+ *
+ * Trust rules:
+ * - SENT is shown only after the configured endpoint accepted the handoff.
+ * - DELIVERED / RESPONDER ACKNOWLEDGED are shown only when the configured
+ *   receiving integration explicitly provided those confirmations. The
+ *   TEST / DEMO partner never provides them, so they display "Not available".
+ */
+export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId, onRetryFinished }) => {
+  const [item, setItem] = useState<PendingSOSItem | null>(null);
+  const [expanded, setExpanded] = useState<boolean>(false);
+  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+  const [isRetrying, setIsRetrying] = useState<boolean>(false);
+
+  // Reflect live queue changes (status transitions happen in the shared queue lib).
+  useEffect(() => {
+    if (!sosId) {
+      setItem(null);
+      return;
+    }
+    const sync = () => {
+      const found = getPendingQueue().find((i) => i.sosPackage.sosId === sosId) || null;
+      setItem(found);
+    };
+    sync();
+    return subscribeToQueue(sync);
+  }, [sosId]);
+
+  // Live connectivity for the "Connection" line and retry availability.
+  useEffect(() => {
+    const update = () => setIsOnline(navigator.onLine);
+    update();
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
+
+  const status: SOSDeliveryStatus | null = item?.status ?? null;
+  const meta = status ? SOS_DELIVERY_STATUS_META[status] : null;
+
+  // While a transmission is in flight in this session, always present SENDING
+  // even if the persisted write has not landed yet.
+  const effectiveStatus: SOSDeliveryStatus | null =
+    status && sosId && isSOSInFlight(sosId) && status !== 'FAILED' ? 'SENDING' : status;
+
+  const visual = useMemo(() => {
+    switch (effectiveStatus) {
+      case 'PENDING_LOCAL':
+      case 'WAITING_FOR_CONNECTION':
+        return {
+          dot: '🔴',
+          heading: 'SOS CONFIRMED',
+          container: 'border-red-700/80 bg-red-950/60',
+          headingClass: 'text-red-300',
+          pulse: false
+        };
+      case 'SENDING':
+        return {
+          dot: '🟡',
+          heading: 'SENDING',
+          container: 'border-amber-600/80 bg-amber-950/50',
+          headingClass: 'text-amber-300',
+          pulse: true
+        };
+      case 'SENT':
+        return {
+          dot: '🟢',
+          heading: 'SENT',
+          container: 'border-emerald-700/80 bg-emerald-950/50',
+          headingClass: 'text-emerald-300',
+          pulse: false
+        };
+      case 'DELIVERED':
+        return {
+          dot: '🟢',
+          heading: 'DELIVERED',
+          container: 'border-emerald-600/80 bg-emerald-950/60',
+          headingClass: 'text-emerald-300',
+          pulse: false
+        };
+      case 'ACKNOWLEDGED':
+        return {
+          dot: '🟢',
+          heading: 'RESPONDER ACKNOWLEDGED',
+          container: 'border-emerald-500/80 bg-emerald-950/70',
+          headingClass: 'text-emerald-200',
+          pulse: false
+        };
+      case 'FAILED':
+        return {
+          dot: '🔴',
+          heading: 'DELIVERY FAILED',
+          container: 'border-red-600/90 bg-red-950/70',
+          headingClass: 'text-red-300',
+          pulse: false
+        };
+      default:
+        return null;
+    }
+  }, [effectiveStatus]);
+
+  if (!item || !effectiveStatus || !visual) return null;
+
+  const isTestProvider = item.targetPartner.providerType === 'TEST';
+  const recipientLabel = isTestProvider ? 'TEST / DEMO' : item.targetPartner.providerName;
+  const canRetry =
+    effectiveStatus === 'FAILED' && !isOnline
+      ? false // pointless while offline — auto-retry happens on reconnect
+      : effectiveStatus === 'FAILED';
+
+  const handleRetry = async () => {
+    if (isRetrying) return;
+    setIsRetrying(true);
+    try {
+      await retrySingleSOS(item.sosPackage.sosId);
+    } finally {
+      setIsRetrying(false);
+      onRetryFinished?.();
+    }
+  };
+
+  const formatTime = (iso?: string) =>
+    iso ? new Date(iso).toLocaleString() : '—';
+
+  // Lifecycle detail lines (labels fixed for emergency readability).
+  const transmissionLabel =
+    effectiveStatus === 'PENDING_LOCAL'
+      ? 'Pending'
+      : effectiveStatus === 'WAITING_FOR_CONNECTION'
+      ? 'Pending (waiting for connection)'
+      : effectiveStatus === 'SENDING'
+      ? 'In progress'
+      : effectiveStatus === 'FAILED'
+      ? 'Failed — retry available'
+      : 'Completed';
+
+  const deliveryLabel = item.deliveredAt
+    ? `Confirmed by receiving system — ${formatTime(item.deliveredAt)}`
+    : effectiveStatus === 'FAILED' || effectiveStatus === 'SENDING' || effectiveStatus === 'PENDING_LOCAL' || effectiveStatus === 'WAITING_FOR_CONNECTION'
+    ? 'Not available'
+    : 'Not confirmed by receiving system';
+
+  const acknowledgementLabel = item.acknowledgedAt
+    ? `Acknowledged — ${formatTime(item.acknowledgedAt)}`
+    : 'Not available';
+
+  return (
+    <div
+      id="sos-delivery-status"
+      className={`mt-3 rounded-xl border-2 ${visual.container} text-neutral-100`}
+      role="status"
+      aria-live="polite"
+    >
+      {/* Collapsed: status always visible — no extra button needed */}
+      <div className="p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className={`text-xs font-black tracking-widest uppercase flex items-center gap-2 ${visual.headingClass}`}>
+              <span aria-hidden="true">{visual.dot}</span>
+              <span>{visual.heading}</span>
+              {visual.pulse && (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-300" aria-hidden="true" />
+              )}
+            </div>
+            <div className="mt-1 text-xs font-bold text-white">{meta!.label}</div>
+            <div className="text-[11px] text-neutral-300 leading-snug">
+              {effectiveStatus === 'WAITING_FOR_CONNECTION'
+                ? 'Waiting for connection'
+                : effectiveStatus === 'FAILED'
+                ? item.errorMessage || 'Retry available'
+                : effectiveStatus === 'SENT'
+                ? 'Handed off to configured destination'
+                : meta!.detail}
+            </div>
+          </div>
+
+          {canRetry && (
+            <button
+              id="sos-delivery-retry-btn"
+              onClick={handleRetry}
+              disabled={isRetrying || !isOnline}
+              className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-neutral-800 disabled:text-neutral-500 text-white text-[11px] font-black flex items-center gap-1.5 transition-colors shrink-0"
+              title={isOnline ? 'Retry transmitting this SOS' : 'Retry available when connection returns'}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
+              <span>Retry Now</span>
+            </button>
+          )}
+        </div>
+
+        {/* Expandable delivery details */}
+        <button
+          id="sos-delivery-details-toggle"
+          onClick={() => setExpanded((prev) => !prev)}
+          aria-expanded={expanded}
+          className="mt-2 text-[11px] font-bold text-neutral-300 hover:text-white flex items-center gap-1 transition-colors"
+        >
+          <ChevronRight
+            className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-90' : ''}`}
+            aria-hidden="true"
+          />
+          <span>Delivery details</span>
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="px-3 pb-3">
+          <div className="p-3 rounded-lg bg-black/60 border border-neutral-800 space-y-1.5 text-[11px] text-neutral-300">
+            <div>
+              <span className="text-neutral-500 font-bold">SOS ID:</span>{' '}
+              <span className="font-mono text-neutral-200">{item.sosPackage.sosId}</span>
+            </div>
+            <div>
+              <span className="text-neutral-500 font-bold">Created:</span>{' '}
+              <span>{formatTime(item.sosPackage.timestamp)}</span>
+            </div>
+            <div>
+              <span className="text-neutral-500 font-bold">Stored:</span>{' '}
+              <span>Locally (this device)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-neutral-500 font-bold">Connection:</span>
+              {isOnline ? (
+                <span className="flex items-center gap-1 text-emerald-300 font-bold">
+                  <Wifi className="w-3 h-3" /> Online
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-amber-300 font-bold">
+                  <WifiOff className="w-3 h-3" /> Offline
+                </span>
+              )}
+            </div>
+            <div>
+              <span className="text-neutral-500 font-bold">Transmission:</span>{' '}
+              <span>{transmissionLabel}</span>
+              {item.attempts > 0 && (
+                <span className="text-neutral-500"> ({item.attempts} attempt{item.attempts === 1 ? '' : 's'})</span>
+              )}
+            </div>
+            <div>
+              <span className="text-neutral-500 font-bold">Recipient:</span>{' '}
+              <span className={isTestProvider ? 'text-purple-300 font-bold' : 'font-bold'}>
+                {recipientLabel}
+                {isTestProvider && (
+                  <span className="text-purple-400/80"> — DEMONSTRATION ONLY, no real emergency service</span>
+                )}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 font-bold">Delivery:</span>{' '}
+              <span className={item.deliveredAt ? 'text-emerald-300 font-bold' : 'text-neutral-400'}>
+                {deliveryLabel}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 font-bold">Acknowledgement:</span>{' '}
+              <span className={item.acknowledgedAt ? 'text-emerald-300 font-bold' : 'text-neutral-400'}>
+                {acknowledgementLabel}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 font-bold">Consent:</span>{' '}
+              <span className="flex items-center gap-1 inline-flex">
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                Confirmed by user — {formatTime(item.userConsentTimestamp)}
+              </span>
+            </div>
+            {item.acknowledgment?.referenceId && (
+              <div>
+                <span className="text-neutral-500 font-bold">Reference ID:</span>{' '}
+                <span className="font-mono text-neutral-200">{item.acknowledgment.referenceId}</span>
+              </div>
+            )}
+            {item.errorMessage && (
+              <div className="flex items-start gap-1.5 text-red-300 pt-1 border-t border-neutral-800">
+                <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                <span>
+                  <span className="font-bold">Last error:</span> {item.errorMessage}
+                </span>
+              </div>
+            )}
+            {/* Lifecycle transition timestamps */}
+            {item.statusHistory && item.statusHistory.length > 0 && (
+              <div className="pt-1.5 border-t border-neutral-800">
+                <div className="text-neutral-500 font-bold flex items-center gap-1 mb-1">
+                  <Clock className="w-3 h-3" /> Status timeline
+                </div>
+                <ul className="space-y-0.5">
+                  {item.statusHistory.map((t, idx) => (
+                    <li key={idx} className="flex items-center gap-1.5">
+                      <Radio className="w-2.5 h-2.5 text-neutral-600 shrink-0" aria-hidden="true" />
+                      <span className="font-bold text-neutral-300">
+                        {SOS_DELIVERY_STATUS_META[t.status]?.label || t.status}
+                      </span>
+                      <span className="text-neutral-500 font-mono">
+                        {new Date(t.timestamp).toLocaleTimeString()}
+                      </span>
+                      <span className="flex items-center gap-1 text-neutral-600">
+                        <Send className="w-2.5 h-2.5" aria-hidden="true" />
+                        {t.detail ? <span className="truncate max-w-[220px]">{t.detail}</span> : null}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

@@ -1,10 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, CheckCircle2, MapPin, Radio, ShieldAlert, Smartphone, Video, X, Send, Save, Info } from 'lucide-react';
 import { classifyEmergencyOffline } from '../lib/offlineClassifier.ts';
-import { EmergencyAnalysisResult, SeverityLevel, PendingSOSItem, EmergencyPartnerProvider } from '../types.ts';
-import { createSOSPackage, savePendingSOS, processPendingQueue } from '../lib/emergencyPartnerQueue.ts';
+import { EmergencyAnalysisResult, SeverityLevel } from '../types.ts';
+import {
+  createSOSPackage,
+  createQueuedSOSItem,
+  markWaitingForConnection,
+  savePendingSOS,
+  processPendingQueue
+} from '../lib/emergencyPartnerQueue.ts';
 import { getTestProvider } from '../lib/emergencyPartnersData.ts';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
+import { SOSDeliveryStatusCard } from './SOSDeliveryStatus.tsx';
 
 interface SilentSOSProps {
   offlineMode: boolean;
@@ -57,6 +64,9 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   const [sensorAvailable, setSensorAvailable] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [showPartnerConsentModal, setShowPartnerConsentModal] = useState(false);
+  // SOS record confirmed for partner dispatch — its delivery lifecycle status
+  // is shown directly on this screen (no extra navigation required).
+  const [dispatchedSosId, setDispatchedSosId] = useState<string | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreview, setVideoPreview] = useState<string | null>(null);
   const [videoNotice, setVideoNotice] = useState('');
@@ -334,23 +344,26 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     const silentResult = createSilentResult();
     onSaveResult?.(silentResult);
 
-    const pendingItem: PendingSOSItem = {
+    const pendingItem = createQueuedSOSItem({
       sosPackage: sosPkg,
       targetPartner: testPartner,
-      userApprovedForPartnerTransmission: true,
-      userConsentTimestamp: new Date().toISOString(),
-      status: 'PENDING_LOCAL',
-      attempts: 0
-    };
+      userConsentTimestamp: new Date().toISOString()
+    });
 
     savePendingSOS(pendingItem);
     onQueueUpdated?.();
     setShowPartnerConsentModal(false);
     setShowConfirmation(false);
+    // Show the live delivery status on this screen.
+    setDispatchedSosId(sosPkg.sosId);
 
     if (offlineMode || !navigator.onLine) {
+      // Offline: record stays safely stored locally, explicitly waiting for
+      // connection. It transmits automatically when connectivity returns
+      // (unless the user disabled auto-resume in the queue manager).
+      markWaitingForConnection(pendingItem, 'Device offline — waiting for connection.');
       setShareNotice(
-        'OFFLINE — SOS saved locally. It will be sent when a supported connection becomes available.'
+        'OFFLINE — SOS saved locally (PENDING LOCAL). It will be sent when a supported connection becomes available.'
       );
       return;
     }
@@ -624,6 +637,9 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
             </div>
             <div className="mt-2 font-black tracking-widest text-red-400">LIFELINE AI • MSB CREATIVE STUDIOS</div>
           </div>
+
+          {/* Live SOS delivery lifecycle status — always visible after confirmation. */}
+          <SOSDeliveryStatusCard sosId={dispatchedSosId} onRetryFinished={onQueueUpdated} />
 
           {shareNotice && (
             <div className="p-3 rounded-xl bg-purple-950/60 border border-purple-700 text-xs text-purple-100">{shareNotice}</div>

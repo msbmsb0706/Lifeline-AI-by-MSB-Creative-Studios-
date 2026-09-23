@@ -206,6 +206,54 @@ export interface SOSPackage {
   englishTranslation?: string | null;
 }
 
+/**
+ * Explicit SOS communication lifecycle for a queued SOS package.
+ *
+ * ONLINE path:  SOS CONFIRMED → PENDING_LOCAL → SENDING → SENT
+ * OFFLINE path: SOS CONFIRMED → PENDING_LOCAL → WAITING_FOR_CONNECTION
+ *               → (connection returns) → SENDING → SENT
+ *
+ * SENT / DELIVERED / ACKNOWLEDGED are distinct trust levels:
+ * - SENT          : the app handed the SOS to the configured destination endpoint.
+ * - DELIVERED     : ONLY when the configured receiving system explicitly confirms
+ *                   delivery (never inferred from an HTTP 200).
+ * - ACKNOWLEDGED  : ONLY when a human/configured organization explicitly
+ *                   acknowledges the SOS (never fabricated by this client).
+ * FAILED          : last transmission attempt failed; item stays stored locally
+ *                   and remains retryable.
+ *
+ * 'TRANSMITTING' is a legacy persisted value (pre-lifecycle releases). It is
+ * migrated on load by normalizePendingSOSItem() and never written anymore
+ * (use SENDING).
+ */
+export type SOSDeliveryStatus =
+  | 'PENDING_LOCAL'
+  | 'WAITING_FOR_CONNECTION'
+  | 'SENDING'
+  | 'SENT'
+  | 'DELIVERED'
+  | 'ACKNOWLEDGED'
+  | 'FAILED';
+
+/** Timestamped record of one lifecycle transition for a queued SOS. */
+export interface SOSStatusTransition {
+  status: SOSDeliveryStatus;
+  timestamp: string;
+  /** Optional human-readable context, e.g. why a transmission failed. */
+  detail?: string;
+}
+
+/**
+ * Acknowledgment returned by the transmission endpoint after a handoff.
+ *
+ * `status` describes the endpoint's receipt of the handoff itself (this is what
+ * justifies the SENT lifecycle state — it is NOT a responder acknowledgment).
+ *
+ * `deliveryConfirmed` / `responderAcknowledged` may ONLY be set to true by a
+ * real configured receiving integration that explicitly reports delivery or a
+ * human/organizational acknowledgment. The TEST / DEMO endpoint must never set
+ * them, so DELIVERED and ACKNOWLEDGED can never be fabricated in demo mode.
+ */
 export interface PartnerAcknowledgment {
   success: boolean;
   status: 'ACKNOWLEDGED' | 'FAILED' | 'REJECTED';
@@ -215,14 +263,26 @@ export interface PartnerAcknowledgment {
   partnerId: string;
   partnerName: string;
   providerType: PartnerProviderType;
+  /** true ONLY when the configured receiving system explicitly confirmed delivery. */
+  deliveryConfirmed?: boolean;
+  /** true ONLY when a human/configured organization explicitly acknowledged the SOS. */
+  responderAcknowledged?: boolean;
 }
 
 export interface PendingSOSItem {
   sosPackage: SOSPackage;
   targetPartner: EmergencyPartnerProvider;
   userApprovedForPartnerTransmission: boolean;
+  /** Explicit user confirmation timestamp (acts as confirmedAt for the lifecycle). */
   userConsentTimestamp: string;
-  status: 'PENDING_LOCAL' | 'TRANSMITTING' | 'SENT' | 'FAILED';
+  /** Typed delivery lifecycle state — see SOSDeliveryStatus. */
+  status: SOSDeliveryStatus;
+  /** Chronological lifecycle transition log (confirmed/queued/sending/sent/... timestamps). */
+  statusHistory?: SOSStatusTransition[];
+  /** Set ONLY when a configured receiving system explicitly confirmed delivery. */
+  deliveredAt?: string;
+  /** Set ONLY when a human/configured organization explicitly acknowledged the SOS. */
+  acknowledgedAt?: string;
   attempts: number;
   lastAttemptTimestamp?: string;
   errorMessage?: string;

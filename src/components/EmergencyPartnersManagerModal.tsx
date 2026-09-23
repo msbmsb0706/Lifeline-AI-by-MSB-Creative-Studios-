@@ -11,12 +11,17 @@ import {
   getTestProvider
 } from '../lib/emergencyPartnersData.ts';
 import {
+  SOS_DELIVERY_STATUS_META,
+  createQueuedSOSItem,
   getPendingQueue,
   deletePendingSOS,
   clearPendingQueue,
   getAutoSendSetting,
   setAutoSendSetting,
+  isSOSInFlight,
+  markWaitingForConnection,
   processPendingQueue,
+  retrySingleSOS,
   createSOSPackage,
   savePendingSOS
 } from '../lib/emergencyPartnerQueue.ts';
@@ -80,9 +85,28 @@ export const EmergencyPartnersManagerModal: React.FC<
     setAutoSendSetting(enabled);
     setQueueNotice(
       enabled
-        ? 'Automatic transmission enabled: approved pending SOS packages will transmit when connection returns.'
-        : 'Privacy-preserving default active: pending SOS packages will NOT be transmitted automatically when connection returns.'
+        ? 'Automatic resume enabled: user-confirmed pending SOS packages will transmit when connection returns.'
+        : 'Automatic resume disabled: pending SOS packages will stay stored locally until you transmit them manually.'
     );
+  };
+
+  // Per-item manual retry (explicit user action; requires connectivity).
+  const handleRetryItem = async (sosId: string) => {
+    setIsProcessingQueue(true);
+    setQueueNotice(null);
+    try {
+      const res = await retrySingleSOS(sosId);
+      refreshQueue();
+      if (res.success) {
+        setQueueNotice(`SOS ${sosId} transmitted successfully. Partner acknowledgment received.`);
+      } else if (res.error) {
+        setQueueNotice(`Retry failed for ${sosId}: ${res.error}`);
+      }
+    } catch (err: any) {
+      setQueueNotice(`Retry error: ${err.message}`);
+    } finally {
+      setIsProcessingQueue(false);
+    }
   };
 
   const handleDeleteItem = (sosId: string) => {
@@ -153,22 +177,21 @@ export const EmergencyPartnersManagerModal: React.FC<
     setConsentTargetProvider(null);
     setDemoSOSPackage(null);
 
-    const pendingItem: PendingSOSItem = {
+    const consentTimestamp = new Date().toISOString();
+    const pendingItem = createQueuedSOSItem({
       sosPackage: sosPkg,
       targetPartner: targetProvider,
-      userApprovedForPartnerTransmission: true,
-      userConsentTimestamp: new Date().toISOString(),
-      status: 'PENDING_LOCAL',
-      attempts: 0
-    };
+      userConsentTimestamp: consentTimestamp
+    });
 
     // Save to local queue
     savePendingSOS(pendingItem);
     refreshQueue();
 
     if (isOffline) {
+      markWaitingForConnection(pendingItem, 'Device offline — waiting for connection.');
       setQueueNotice(
-        'OFFLINE — SOS saved locally. It will be sent when a supported connection becomes available.'
+        'OFFLINE — SOS saved locally (PENDING LOCAL). It will be sent when a supported connection becomes available.'
       );
       setActiveTab('queue');
       return;
@@ -197,7 +220,10 @@ export const EmergencyPartnersManagerModal: React.FC<
   if (!isOpen) return null;
 
   const currentProviders = getProvidersByCountry(selectedCountry);
-  const pendingCount = pendingItems.filter((i) => i.status !== 'SENT').length;
+  // "Pending" = not yet handed off (excludes terminal SENT/DELIVERED/ACKNOWLEDGED).
+  const pendingCount = pendingItems.filter(
+    (i) => !SOS_DELIVERY_STATUS_META[i.status]?.terminal
+  ).length;
 
   return (
     <div
@@ -464,7 +490,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                       Send pending SOS when connection returns
                     </div>
                     <p className="text-[11px] text-neutral-400 mt-0.5">
-                      Privacy-preserving setting. Controls whether approved offline SOS packages automatically transmit when network connectivity returns.
+                      Controls automatic resume of already user-confirmed SOS packages when network connectivity returns. Consent is always captured per SOS before it is queued; this setting only governs automatic resume vs. manual transmit.
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -476,7 +502,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                           : 'bg-neutral-800 text-neutral-400 hover:text-white'
                       }`}
                     >
-                      ON
+                      ON (Default)
                     </button>
                     <button
                       onClick={() => handleToggleAutoSend(false)}
@@ -486,7 +512,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                           : 'bg-neutral-800 text-neutral-400 hover:text-white'
                       }`}
                     >
-                      OFF (Default)
+                      OFF
                     </button>
                   </div>
                 </div>
@@ -546,15 +572,24 @@ export const EmergencyPartnersManagerModal: React.FC<
               ) : (
                 <div className="space-y-2.5 max-h-[320px] overflow-y-auto pr-1">
                   {pendingItems.map((item) => {
-                    const isSent = item.status === 'SENT';
-                    const isTransmitting = item.status === 'TRANSMITTING';
+                    const statusMeta = SOS_DELIVERY_STATUS_META[item.status] || SOS_DELIVERY_STATUS_META.PENDING_LOCAL;
+                    const isTerminal = statusMeta.terminal;
+                    const isSending =
+                      item.status === 'SENDING' || (isSOSInFlight(item.sosPackage.sosId) && !isTerminal && item.status !== 'FAILED');
                     const isFailed = item.status === 'FAILED';
+                    const canRetryItem =
+                      item.status === 'FAILED' ||
+                      item.status === 'PENDING_LOCAL' ||
+                      item.status === 'WAITING_FOR_CONNECTION';
+                    const sentAt = item.statusHistory?.find(
+                      (t) => t.status === 'SENT' || t.status === 'DELIVERED' || t.status === 'ACKNOWLEDGED'
+                    )?.timestamp;
 
                     return (
                       <div
                         key={item.sosPackage.sosId}
                         className={`p-3.5 rounded-xl border text-xs space-y-2 transition-all ${
-                          isSent
+                          isTerminal
                             ? 'bg-emerald-950/30 border-emerald-800/80'
                             : isFailed
                             ? 'bg-red-950/40 border-red-800/80'
@@ -574,17 +609,29 @@ export const EmergencyPartnersManagerModal: React.FC<
                           <div className="flex items-center gap-2">
                             <span
                               className={`text-[10px] font-black px-2 py-0.5 rounded border uppercase ${
-                                isSent
-                                  ? 'bg-emerald-900 text-emerald-200 border-emerald-600'
-                                  : isTransmitting
+                                isSending
                                   ? 'bg-purple-900 text-purple-200 border-purple-600 animate-pulse'
                                   : isFailed
                                   ? 'bg-red-900 text-red-200 border-red-600'
+                                  : isTerminal
+                                  ? 'bg-emerald-900 text-emerald-200 border-emerald-600'
                                   : 'bg-amber-900 text-amber-200 border-amber-600'
                               }`}
+                              title={statusMeta.detail}
                             >
-                              {item.status}
+                              {statusMeta.label}
                             </span>
+
+                            {canRetryItem && (
+                              <button
+                                onClick={() => handleRetryItem(item.sosPackage.sosId)}
+                                disabled={isProcessingQueue || isSending || isOffline}
+                                className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-emerald-400 hover:text-emerald-300"
+                                title={isOffline ? 'Retry available when connection returns' : 'Retry transmitting this SOS'}
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${isSending ? 'animate-spin' : ''}`} />
+                              </button>
+                            )}
 
                             <button
                               onClick={() => handleDeleteItem(item.sosPackage.sosId)}
@@ -612,6 +659,30 @@ export const EmergencyPartnersManagerModal: React.FC<
                           </div>
                           <div>
                             <b>Attempts:</b> {item.attempts}
+                          </div>
+                          <div className="col-span-1 sm:col-span-2">
+                            <b>Status:</b> {statusMeta.detail}
+                          </div>
+                          {sentAt && (
+                            <div>
+                              <b>Handed off:</b> {new Date(sentAt).toLocaleString()}
+                            </div>
+                          )}
+                          <div>
+                            <b>Delivery:</b>{' '}
+                            {item.deliveredAt ? (
+                              <span className="text-emerald-300">Confirmed — {new Date(item.deliveredAt).toLocaleString()}</span>
+                            ) : (
+                              <span className="text-neutral-500">Not available</span>
+                            )}
+                          </div>
+                          <div>
+                            <b>Acknowledgement:</b>{' '}
+                            {item.acknowledgedAt ? (
+                              <span className="text-emerald-300">Confirmed — {new Date(item.acknowledgedAt).toLocaleString()}</span>
+                            ) : (
+                              <span className="text-neutral-500">Not available</span>
+                            )}
                           </div>
                         </div>
 
