@@ -30,7 +30,7 @@ interface PartnerConfigEnv {
 
 /**
  * Pure status derivation from server environment. Returns public metadata only.
- * Throws when the lookup cannot be performed (callers map this to HTTP 503).
+ * Never throws — route-level failures are mapped to HTTP 503 by the caller.
  */
 export function getEmergencyPartnerConfig(
   countryCode: string | undefined,

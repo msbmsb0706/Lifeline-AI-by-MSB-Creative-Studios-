@@ -74,7 +74,7 @@ export const EmergencyPartnersManagerModal: React.FC<
   const [authConfig, setAuthConfig] = useState<PartnerConfigResult | null>(null);
   const [authConfigLoading, setAuthConfigLoading] = useState<boolean>(false);
 
-  const setSelectedCountry = (code: string) => {
+  const handleSelectedCountryChange = (code: string) => {
     setSelectedCountryState(code);
     setSelectedCountry(code);
   };
@@ -380,7 +380,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                   {SUPPORTED_COUNTRIES.map((c) => (
                     <button
                       key={c.code}
-                      onClick={() => setSelectedCountry(c.code)}
+                      onClick={() => handleSelectedCountryChange(c.code)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
                         selectedCountry === c.code
                           ? 'bg-neutral-100 text-black ring-2 ring-red-500 font-extrabold'
@@ -392,7 +392,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                     </button>
                   ))}
                   <button
-                    onClick={() => setSelectedCountry('ALL')}
+                    onClick={() => handleSelectedCountryChange('ALL')}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                       selectedCountry === 'ALL'
                         ? 'bg-neutral-100 text-black ring-2 ring-red-500'

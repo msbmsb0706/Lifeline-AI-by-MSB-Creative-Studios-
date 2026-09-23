@@ -159,7 +159,7 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
       default:
         return null;
     }
-  }, [effectiveStatus]);
+  }, [effectiveStatus, simulatedFinal]);
 
   if (!item || !effectiveStatus || !visual) return null;
 
