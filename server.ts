@@ -1121,6 +1121,10 @@ Source Language: ${detectedSource.name}`;
 
     console.log(`[Emergency Partner Dispatch] TEST DEMO Acknowledgment generated: ${mockReferenceId} in ${Date.now() - startTime}ms`);
 
+    // NOTE: The TEST / DEMO acknowledgment intentionally does NOT include
+    // `deliveryConfirmed` or `responderAcknowledged`. Those lifecycle states
+    // are reserved for real configured receiving integrations and can never
+    // be fabricated by this demonstration endpoint.
     res.json({
       success: true,
       data: {

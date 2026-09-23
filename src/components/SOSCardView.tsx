@@ -2,8 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   EmergencyAnalysisResult,
   VisualSOSCard,
-  StandardEmergencyCategory,
-  PendingSOSItem
+  StandardEmergencyCategory
 } from '../types.ts';
 import { SeverityGauge } from './SeverityGauge.tsx';
 import {
@@ -43,8 +42,15 @@ import {
 } from '../lib/languages.ts';
 import { ShareAlertConfirmModal } from './ShareAlertConfirmModal.tsx';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
+import { SOSDeliveryStatusCard } from './SOSDeliveryStatus.tsx';
 import { getTestProvider } from '../lib/emergencyPartnersData.ts';
-import { createSOSPackage, savePendingSOS, processPendingQueue } from '../lib/emergencyPartnerQueue.ts';
+import {
+  createSOSPackage,
+  createQueuedSOSItem,
+  markWaitingForConnection,
+  savePendingSOS,
+  processPendingQueue
+} from '../lib/emergencyPartnerQueue.ts';
 
 interface SOSCardViewProps {
   result: EmergencyAnalysisResult;
@@ -79,6 +85,10 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   const [showShareConfirmModal, setShowShareConfirmModal] = useState(false);
   const [showPartnerConsent, setShowPartnerConsent] = useState(false);
   const [shareToast, setShareToast] = useState<string | null>(null);
+
+  // SOS record confirmed for partner dispatch from THIS card — its delivery
+  // lifecycle status is rendered directly on the card (no extra button needed).
+  const [dispatchedSosId, setDispatchedSosId] = useState<string | null>(null);
 
   // View mode for SOS card: 'translated' (if available) or 'original' or 'side-by-side'
   const [viewMode, setViewMode] = useState<'translated' | 'original' | 'dual'>(
@@ -342,20 +352,24 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         : null
     });
 
-    const pendingItem: PendingSOSItem = {
+    const consentTimestamp = new Date().toISOString();
+    const pendingItem = createQueuedSOSItem({
       sosPackage: sosPkg,
       targetPartner: testPartner,
-      userApprovedForPartnerTransmission: true,
-      userConsentTimestamp: new Date().toISOString(),
-      status: 'PENDING_LOCAL',
-      attempts: 0
-    };
+      userConsentTimestamp: consentTimestamp
+    });
 
     savePendingSOS(pendingItem);
     setShowPartnerConsent(false);
+    // Show the live delivery status directly on this SOS card.
+    setDispatchedSosId(sosPkg.sosId);
 
     if (!navigator.onLine) {
-      setShareToast('OFFLINE — SOS saved locally. It will be sent when a supported connection becomes available.');
+      // Offline: record stays safely stored locally, explicitly waiting for
+      // connection. It transmits automatically when connectivity returns
+      // (unless the user disabled auto-resume in the queue manager).
+      markWaitingForConnection(pendingItem, 'Device offline — waiting for connection.');
+      setShareToast('OFFLINE — SOS saved locally (PENDING LOCAL). It will be sent when a supported connection becomes available.');
       return;
     }
 
@@ -480,6 +494,10 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Live SOS delivery lifecycle status — always visible after confirmation,
+          expandable for delivery details. No extra button required. */}
+      <SOSDeliveryStatusCard sosId={dispatchedSosId} />
 
       {/* Multilingual Emergency Translation Control Bar */}
       <div

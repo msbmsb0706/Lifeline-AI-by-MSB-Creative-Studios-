@@ -17,7 +17,13 @@ import {
 } from './types.ts';
 import { classifyEmergencyOffline } from './lib/offlineClassifier.ts';
 import { translateEmergencyOffline, detectLanguage } from './lib/languages.ts';
-import { getPendingQueue, processPendingQueue, getAutoSendSetting } from './lib/emergencyPartnerQueue.ts';
+import {
+  getPendingQueue,
+  processPendingQueue,
+  getAutoSendSetting,
+  subscribeToQueue,
+  SOS_DELIVERY_STATUS_META
+} from './lib/emergencyPartnerQueue.ts';
 import { playPing } from './lib/audio.ts';
 import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send, Mail } from 'lucide-react';
 
@@ -152,14 +158,17 @@ export default function App() {
     }
   }, []);
 
-  // Refresh pending queue count
+  // Refresh pending queue count ("pending" = not yet handed off — terminal
+  // SENT / DELIVERED / ACKNOWLEDGED records stay stored but are not pending).
   const refreshPendingQueue = useCallback(() => {
     const queue = getPendingQueue();
-    const unsent = queue.filter((i) => i.status !== 'SENT');
+    const unsent = queue.filter((i) => !SOS_DELIVERY_STATUS_META[i.status]?.terminal);
     setPendingQueueCount(unsent.length);
   }, []);
 
-  // Monitor network connectivity & auto-send pending queue when connection returns
+  // Monitor network connectivity & auto-resume pending SOS processing when
+  // connection returns. Only records with explicit per-SOS user consent are
+  // ever transmitted (enforced inside processPendingQueue).
   useEffect(() => {
     refreshPendingQueue();
 
@@ -171,7 +180,11 @@ export default function App() {
     };
 
     window.addEventListener('online', handleOnline);
-    return () => window.removeEventListener('online', handleOnline);
+    const unsubscribe = subscribeToQueue(refreshPendingQueue);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      unsubscribe();
+    };
   }, [refreshPendingQueue]);
 
   // Privacy Rule: Do not store voice recordings or emergency information unless user explicitly enables storage feature
