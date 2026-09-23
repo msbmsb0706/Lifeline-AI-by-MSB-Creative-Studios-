@@ -81,6 +81,30 @@ export interface TranslatedSOS {
   source?: 'nebius_nemotron' | 'offline_fallback';
 }
 
+/**
+ * Explicit ONLINE translation outcome for an emergency record.
+ *
+ * - 'none'  : no translation was requested/produced.
+ * - 'ok'    : a translation was produced (online, or in Offline Mode bundled).
+ * - 'error' : ONLINE translation was attempted and FAILED. The original
+ *             transmission is preserved and NO offline translation was
+ *             silently substituted.
+ *
+ * 'error' is deliberately distinct from Offline Mode: an unavailable online
+ * translation service is not the same thing as the user choosing
+ * offline / resilience mode.
+ */
+export type TranslationStatus = 'none' | 'ok' | 'error';
+
+export interface TranslationErrorInfo {
+  /** Stable machine-readable failure code, e.g. TRANSLATION_UPSTREAM_HTTP. */
+  code: string;
+  /** Human-readable explanation shown in the UI. */
+  error: string;
+  /** Upstream HTTP status when the failure came from the translation provider. */
+  upstream_status?: number;
+}
+
 export interface NemotronEmergencyResponse {
   language: string;
   transcript: string;
@@ -112,6 +136,10 @@ export interface EmergencyAnalysisResult extends NemotronEmergencyResponse {
   } | null;
   detected_language?: DetectedLanguage;
   translation?: TranslatedSOS;
+  /** Explicit online-translation outcome (never a silent offline substitution). */
+  translation_status?: TranslationStatus;
+  /** Present when translation_status === 'error'. */
+  translation_error?: TranslationErrorInfo | null;
   active_view_language?: 'original' | 'translated';
   nebius_connected?: boolean;
   /** Present when the emergency was captured via multilingual voice ASR. */
