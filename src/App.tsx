@@ -383,7 +383,17 @@ export default function App() {
         }
         setCurrentResult(result);
         saveReportToHistory(result);
-        setError(null);
+        // A successful ONLINE analysis can still carry an explicit ONLINE
+        // translation failure. That is reported as a translation-unavailable
+        // state — the original transmission stays exactly as the user sent it
+        // and no offline translation is silently shown instead.
+        if (result.translation_status === 'error' && result.translation_error) {
+          setError(
+            `Translation unavailable — ${result.translation_error.error} The original transmission is preserved.`
+          );
+        } else {
+          setError(null);
+        }
         if (soundEnabled) {
           playPing(result.severity >= 4 ? 'alert' : 'sos');
         }
@@ -458,13 +468,20 @@ export default function App() {
       }
       const updatedResult: EmergencyAnalysisResult = {
         ...currentResult,
-        translation: { ...localTrans, source: 'offline_fallback', model_used: 'Bundled emergency phrasebook' }
+        translation: { ...localTrans, source: 'offline_fallback', model_used: 'Bundled emergency phrasebook' },
+        // OFFLINE MODE keeps its deterministic bundled translation — this is a
+        // separate, user-selected mode, not a fallback for a failed online call.
+        translation_status: 'ok',
+        translation_error: null
       };
       setCurrentResult(updatedResult);
       saveReportToHistory(updatedResult);
       setIsTranslating(false);
       return;
     }
+
+    // Failure/error code returned by the online translation endpoint, when any.
+    let failureCode = 'TRANSLATION_FAILED';
 
     try {
       const response = await fetch('/api/translate-emergency', {
@@ -481,6 +498,7 @@ export default function App() {
       });
 
       const json: any = await response.json().catch(() => ({}));
+      if (typeof json?.code === 'string' && json.code) failureCode = json.code;
 
       // Safety-validation failures are explicit and terminal: the original is
       // preserved and NO silent offline substitution is performed for them.
@@ -501,46 +519,40 @@ export default function App() {
         }
         const updatedResult: EmergencyAnalysisResult = {
           ...currentResult,
-          translation: transData
+          translation: transData,
+          translation_status: 'ok',
+          translation_error: null
         };
         setCurrentResult(updatedResult);
         saveReportToHistory(updatedResult);
+        setError(null);
         if (soundEnabled) playPing('sos');
       } else {
         throw new Error(json.error || 'Failed to translate emergency message');
       }
     } catch (err: any) {
       const message = typeof err?.message === 'string' ? err.message : '';
-      // Validation failures surface as an explicit error state with the
-      // original preserved — never a silent unrelated substitution.
-      if (message.startsWith('TRANSLATION_VALIDATION_FAILED:')) {
-        setError(message.slice('TRANSLATION_VALIDATION_FAILED:'.length).trim());
-        return;
-      }
-      console.warn('Backend translation failed or timed out. Using local browser offline translation:', err);
+      const unavailableMessage = message.startsWith('TRANSLATION_VALIDATION_FAILED:')
+        ? message.slice('TRANSLATION_VALIDATION_FAILED:'.length).trim()
+        : `Translation unavailable — ${
+            message || 'the online translation service did not return a usable translation.'
+          } The original transmission is preserved.`;
 
-      const localTrans = translateEmergencyOffline(
-        sourceTranscript,
-        targetLangCode,
-        currentResult.emergency_category || 'MEDICAL',
-        currentResult.severity,
-        currentResult.emergency_type,
-        currentResult.detected_language?.code,
-        locationInfo || undefined
-      );
-
-      if (!acceptTranslation(localTrans as TranslatedSOS)) {
-        setError('Translation unavailable — the translation failed safety validation. The original transmission is preserved.');
-        return;
-      }
-
+      // ONLINE translation failure == explicit unavailable/error state.
+      // The original transmission is preserved and NO offline translation is
+      // silently substituted: offline translation belongs to OFFLINE MODE only
+      // (never to a failed online request).
+      console.warn('Online translation unavailable:', failureCode, message || err);
       const updatedResult: EmergencyAnalysisResult = {
         ...currentResult,
-        translation: localTrans
+        // Never present a stale or unrelated translation as if it succeeded.
+        translation: undefined,
+        translation_status: 'error',
+        translation_error: { code: failureCode, error: unavailableMessage }
       };
       setCurrentResult(updatedResult);
       saveReportToHistory(updatedResult);
-      if (soundEnabled) playPing('sos');
+      setError(unavailableMessage);
     } finally {
       setIsTranslating(false);
     }

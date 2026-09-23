@@ -289,6 +289,12 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     Boolean(result.translation) && looksLikeGeneratedDispatch(result.translation?.translated_message || '');
   const safeTranslatedMessage = translationFailedValidation ? '' : result.translation?.translated_message || '';
 
+  // Explicit ONLINE translation failure state. The original transmission stays
+  // exactly as the user sent it — an unavailable online translation is never
+  // replaced by a silently generated offline one.
+  const translationError =
+    result.translation_status === 'error' && result.translation_error ? result.translation_error : null;
+
   // Country-aware emergency number (PR #16): the configured number for the
   // country selected in the partner directory, or an explicit notice when
   // the country is unknown/unconfigured. Never invented, never universal.
@@ -838,6 +844,21 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             <span className="font-bold text-amber-300">{getEmergencyNumberDisplay(selectedCountry)}</span>
           )}
         </div>
+
+        {/* Explicit translation-unavailable state (online translation failed) */}
+        {translationError && (
+          <div
+            id="translation-unavailable-state"
+            role="alert"
+            className="mb-2 p-2.5 rounded-xl bg-red-950/40 border border-red-700"
+          >
+            <div className="text-[11px] font-bold text-red-300 flex items-center gap-1.5">
+              <Languages className="w-3.5 h-3.5 text-red-400" />
+              <span>Translation unavailable — original transmission preserved.</span>
+            </div>
+            <p className="mt-1 text-xs text-red-200/90">{translationError.error}</p>
+          </div>
+        )}
 
         {/* Display both original and translated messages */}
         {hasTranslation ? (

@@ -6,7 +6,6 @@ import { classifyEmergencyOffline } from './src/lib/offlineClassifier.ts';
 import {
   detectLanguage,
   standardizeCategory,
-  translateEmergencyOffline,
   getLanguageByCodeOrName,
   SUPPORTED_LANGUAGES,
   STANDARDIZED_CATEGORIES
@@ -15,6 +14,10 @@ import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, De
 import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
 import { getEmergencyPartnerConfig } from './server/partnerConfig.ts';
 import { looksLikeGeneratedDispatch } from './src/lib/translationSafety.ts';
+import {
+  resolveEmergencyTranslation,
+  translateForOnlineAnalysis
+} from './server/translation.ts';
 
 dotenv.config();
 
@@ -760,23 +763,49 @@ CONSTRAINTS:
       // Per the multilingual data contract, `translated_message` must be a
       // faithful translation of the USER'S ORIGINAL TEXT (the transcript), never
       // the generated dispatch message.
+      //
+      // Online analysis succeeded → the SHARED ONLINE translation implementation
+      // is used. The offline engine is NOT used merely because analysis already
+      // succeeded online, and an online translation failure is reported as an
+      // explicit translation error state (never a silent offline substitution).
       if (targetLanguage) {
         const targetLangObj = getLanguageByCodeOrName(targetLanguage);
         if (targetLangObj.code !== detectedSourceLang.code) {
-          const offlineTrans = translateEmergencyOffline(
-            trimmedText,
-            targetLangObj.code,
-            emergencyType as StandardEmergencyCategory,
-            validatedSeverity,
-            emergencyType,
-            detectedSourceLang.code,
-            locationString
+          const initialTranslation = await translateForOnlineAnalysis(
+            {
+              // ONLY the user's original transmission is the translation source.
+              sourceText: trimmedText,
+              targetLanguage: targetLangObj.code,
+              sourceLanguage: detectedSourceLang.code,
+              // Structured emergency fields travel separately (locked triage +
+              // separate responder/dispatch content) — they are NEVER the source.
+              currentSOS: {
+                emergency_category: emergencyType as StandardEmergencyCategory,
+                emergency_type: emergencyType,
+                severity: validatedSeverity,
+                needs: validatedNeeds,
+                visual_card: resultData.visual_card
+              },
+              location: locationString
+            },
+            { apiKey, baseUri: NEBIUS_BASE_URI, model: NEBIUS_MODEL }
           );
-          resultData.translation = {
-            ...offlineTrans,
-            source: 'offline_fallback',
-            model_used: 'LifeLine AI Multilingual Translation'
-          };
+
+          if (initialTranslation.status === 'ok') {
+            resultData.translation = initialTranslation.translation;
+            resultData.translation_status = 'ok';
+            resultData.translation_error = null;
+          } else {
+            // Successful analysis is preserved; only translation is unavailable.
+            resultData.translation = undefined;
+            resultData.translation_status = 'error';
+            resultData.translation_error = initialTranslation.error;
+            console.warn(
+              '[Translation] Initial online translation unavailable:',
+              initialTranslation.error.code,
+              initialTranslation.error.error
+            );
+          }
         }
       }
 
@@ -808,11 +837,14 @@ CONSTRAINTS:
     } = req.body || {};
 
     if (!targetLanguage) {
-      res.status(400).json({ error: 'Target language is required for translation.' });
+      res.status(400).json({
+        success: false,
+        code: 'TRANSLATION_INVALID_INPUT',
+        error: 'Target language is required for translation.'
+      });
       return;
     }
 
-    const targetLangObj = getLanguageByCodeOrName(targetLanguage);
     // Translation source contract (PR #16): the user's original transmission
     // ONLY — raw_transcript -> original_message -> legacy transcript. NEVER the
     // generated dispatch message (`message`), responder instructions, action
@@ -827,7 +859,11 @@ CONSTRAINTS:
     const sourceText = providedText || fallbackSource;
 
     if (!sourceText.trim()) {
-      res.status(400).json({ error: 'No message content provided to translate.' });
+      res.status(400).json({
+        success: false,
+        code: 'TRANSLATION_INVALID_INPUT',
+        error: 'No message content provided to translate.'
+      });
       return;
     }
 
@@ -842,199 +878,56 @@ CONSTRAINTS:
       return;
     }
 
-    // Auto-detect source language
-    const detectedSource = sourceLanguage
-      ? getLanguageByCodeOrName(sourceLanguage)
-      : detectLanguage(sourceText);
-
-    // CRITICAL SAFETY INVARIANT:
-    // Never change the emergency category, emergency type, or severity level because of translation!
-    const lockedCategory: StandardEmergencyCategory = currentSOS?.emergency_category
-      ? currentSOS.emergency_category
-      : standardizeCategory(currentSOS?.emergency_type || sourceText);
-
-    const lockedSeverity: SeverityLevel = (
-      typeof currentSOS?.severity === 'number' && currentSOS.severity >= 1 && currentSOS.severity <= 5
-        ? currentSOS.severity
-        : 3
-    ) as SeverityLevel;
-
-    const lockedType: string = currentSOS?.emergency_type || `${lockedCategory} Emergency`;
-
     const apiKey = process.env.NEBIUS_API_KEY ? process.env.NEBIUS_API_KEY.trim() : '';
-    const shouldRunOffline = offlineModeForce === true || !apiKey;
 
-    // Fast deterministic offline translation if offline mode forced or API key missing
-    if (shouldRunOffline) {
-      const translated = translateEmergencyOffline(
-        sourceText,
-        targetLangObj.code,
-        lockedCategory,
-        lockedSeverity,
-        lockedType,
-        detectedSource.code,
-        typeof location === 'string' ? location : undefined
-      );
+    // OFFLINE / RESILIENCE mode and ONLINE translation are distinct paths.
+    // Offline mode is only used when it is explicitly requested — a failed or
+    // unconfigured ONLINE translation is reported as an explicit error state,
+    // never converted into a successful offline translation.
+    const outcome = await resolveEmergencyTranslation(
+      {
+        text: sourceText,
+        targetLanguage,
+        sourceLanguage,
+        currentSOS,
+        offlineModeForce: offlineModeForce === true,
+        location
+      },
+      { apiKey, baseUri: NEBIUS_BASE_URI, model: NEBIUS_MODEL }
+    );
 
-      res.json({
-        success: true,
-        data: {
-          ...translated,
-          source: 'offline_fallback',
-          model_used: 'LifeLine AI Deterministic Multilingual Translation Engine',
-          offline_notice: offlineModeForce
-            ? 'Manual offline translation active.'
-            : 'Nebius API key not configured. Offline translation engine used.',
-          latency_ms: Date.now() - startTime
-        }
+    if (outcome.kind === 'error') {
+      // Explicit translation-error contract — every online failure keeps the
+      // original transmission and returns a real error status/code:
+      //   TRANSLATION_INVALID_INPUT / TRANSLATION_INVALID_SOURCE      -> 400
+      //   TRANSLATION_NOT_CONFIGURED                                  -> 503
+      //   TRANSLATION_UPSTREAM_HTTP / TRANSLATION_TIMEOUT /
+      //   TRANSLATION_INVALID_RESPONSE / TRANSLATION_TRUNCATED /
+      //   TRANSLATION_EMPTY_RESPONSE / TRANSLATION_INVALID_JSON /
+      //   TRANSLATION_MISSING_MESSAGE /
+      //   TRANSLATION_TARGET_LANGUAGE_MISMATCH /
+      //   TRANSLATION_ORIGINAL_MESSAGE_MISMATCH /
+      //   TRANSLATION_VALIDATION_FAILED                               -> 502/504
+      console.warn('[Translation] online translation unavailable:', outcome.code, outcome.error);
+      res.status(outcome.status).json({
+        success: false,
+        code: outcome.code,
+        error: outcome.error,
+        ...(typeof outcome.upstream_status === 'number' ? { upstream_status: outcome.upstream_status } : {})
       });
       return;
     }
 
-    // Call Nebius Token Factory API using Nemotron for natural contextual emergency translation
-    try {
-      const systemPrompt = `You are LifeLine AI's specialized emergency multilingual translation engine developed by MSB Creative Studios.
-Translate the emergency distress report and radio dispatch message into the target language: ${targetLangObj.name} (${targetLangObj.nativeName}).
-
-CRITICAL SAFETY & MEDICAL INVARIANTS:
-1. NEVER alter or change the emergency type ("${lockedType}"), the standardized emergency category ("${lockedCategory}"), or the severity level (${lockedSeverity}). These are locked life-critical triage parameters.
-2. Preserve the emergency meaning, high-urgency tone, and specific assistance required.
-3. Translate with high linguistic accuracy and natural phrasing into ${targetLangObj.name} (using its native script: ${targetLangObj.script || targetLangObj.name}).
-4. "translated_message" MUST be a FAITHFUL, LITERAL translation of ONLY the user's original transmission, word-for-word where possible. It must NEVER add, summarize, reformat, or regenerate dispatch/triage content (no added headlines, priorities, categories, responder directives, or instructions). If the original is a single plain sentence of distress, "translated_message" is exactly that sentence translated.
-5. The structured responder/dispatch fields (translated_headline, translated_action_steps, translated_instructions_for_responders, translated_first_aid_actions, translated_needs) are translated SEPARATELY from the provided structured content — do not fold them into translated_message.
-6. Output STRICTLY a valid JSON object matching this schema:
-{
-  "detected_source_language": {
-    "code": "${detectedSource.code}",
-    "name": "${detectedSource.name}"
-  },
-  "target_language": "${targetLangObj.code}",
-  "target_language_name": "${targetLangObj.name}",
-  "original_message": string (exact original message),
-  "translated_message": string (faithful translation of the original message ONLY),
-  "translated_headline": string (urgent headline in ${targetLangObj.name}),
-  "translated_action_steps": string[] (3-4 immediate survival steps in ${targetLangObj.name}),
-  "translated_instructions_for_responders": string (on-arrival directive in ${targetLangObj.name}),
-  "translated_first_aid_actions": string[] (2-3 first aid protocols in ${targetLangObj.name}),
-  "translated_needs": string[] (translated list of needed units/equipment in ${targetLangObj.name})
-}
-Do NOT include markdown fences (\`\`\`json). Output pure JSON only.`;
-
-      const userPrompt = `Translate the user's ORIGINAL TRANSMISSION into ${targetLangObj.name} (${targetLangObj.nativeName}) — output this faithful translation in the "translated_message" JSON field. Do not paraphrase, summarize, or regenerate it as a dispatch report.
-ORIGINAL TRANSMISSION (translate word-for-word): "${sourceText}"
-
-Separately, translate these structured responder/dispatch fields into ${targetLangObj.name} for their own JSON keys:
-ORIGINAL HEADLINE: "${currentSOS?.visual_card?.headline || lockedType}"
-RESPONDER INSTRUCTION: "${currentSOS?.visual_card?.instructions_for_responders || 'Assess scene safety and vitals.'}"
-ACTION STEPS: ${JSON.stringify(currentSOS?.visual_card?.action_steps || [])}
-FIRST AID: ${JSON.stringify(currentSOS?.visual_card?.first_aid_actions || [])}
-REQUIRED UNITS: ${JSON.stringify(currentSOS?.needs || [])}
-Source Language: ${detectedSource.name}`;
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
-
-      const nebiusResponse = await fetch(`${NEBIUS_BASE_URI}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: NEBIUS_MODEL,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.1,
-          response_format: { type: 'json_object' },
-          max_tokens: 1400
-        }),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!nebiusResponse.ok) {
-        const errText = await nebiusResponse.text();
-        console.error('Nebius translation failed with status:', nebiusResponse.status, errText);
-        throw new Error(`Nebius translation returned status ${nebiusResponse.status}`);
+    res.json({
+      success: true,
+      data: {
+        ...outcome.data,
+        ...(outcome.data.source === 'offline_fallback'
+          ? { offline_notice: 'Manual offline translation active (bundled emergency phrasebook).' }
+          : {}),
+        latency_ms: Date.now() - startTime
       }
-
-      const rawJson = await nebiusResponse.json();
-      const assistantText = rawJson?.choices?.[0]?.message?.content;
-
-      if (!assistantText) {
-        throw new Error('Empty translation response from Nebius Token Factory');
-      }
-
-      const cleaned = assistantText
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-      const parsedTrans = JSON.parse(cleaned);
-
-      // Deterministic guard (PR #16): a translated_message that is empty or
-      // looks like generated dispatch/triage boilerplate is rejected — it is
-      // never presented as the user's translated transmission.
-      const candidateTranslatedMessage =
-        typeof parsedTrans.translated_message === 'string' ? parsedTrans.translated_message.trim() : '';
-      if (!candidateTranslatedMessage || looksLikeGeneratedDispatch(candidateTranslatedMessage)) {
-        res.status(502).json({
-          success: false,
-          code: 'TRANSLATION_VALIDATION_FAILED',
-          error: 'Translation unavailable \u2014 the translation engine returned content that failed safety validation. The original transmission is preserved.'
-        });
-        return;
-      }
-
-      res.json({
-        success: true,
-        data: {
-          detected_source_language: parsedTrans.detected_source_language || detectedSource,
-          target_language: targetLangObj.code,
-          target_language_name: targetLangObj.name,
-          original_message: sourceText,
-          translated_message: candidateTranslatedMessage,
-          translated_headline: parsedTrans.translated_headline,
-          translated_action_steps: Array.isArray(parsedTrans.translated_action_steps) ? parsedTrans.translated_action_steps : undefined,
-          translated_instructions_for_responders: parsedTrans.translated_instructions_for_responders,
-          translated_first_aid_actions: Array.isArray(parsedTrans.translated_first_aid_actions) ? parsedTrans.translated_first_aid_actions : undefined,
-          translated_needs: Array.isArray(parsedTrans.translated_needs) ? parsedTrans.translated_needs : undefined,
-          // STRICT PRESERVATION of emergency type and severity
-          category: lockedCategory,
-          severity: lockedSeverity,
-          emergency_type: lockedType,
-          timestamp: new Date().toISOString(),
-          model_used: NEBIUS_MODEL,
-          source: 'nebius_nemotron',
-          latency_ms: Date.now() - startTime
-        }
-      });
-    } catch (err: any) {
-      console.warn('Nemotron translation online call failed. Using deterministic translation fallback:', err?.message || err);
-
-      const fallbackTrans = translateEmergencyOffline(
-        sourceText,
-        targetLangObj.code,
-        lockedCategory,
-        lockedSeverity,
-        lockedType,
-        detectedSource.code,
-        typeof location === 'string' ? location : undefined
-      );
-
-      res.json({
-        success: true,
-        data: {
-          ...fallbackTrans,
-          source: 'offline_fallback',
-          model_used: 'LifeLine AI Deterministic Multilingual Translation Engine',
-          offline_notice: `Nebius Token Factory unavailable (${err?.message || 'timeout'}). Offline deterministic translation provided.`,
-          latency_ms: Date.now() - startTime
-        }
-      });
-    }
+    });
   });
 
   // Emergency partner API configuration lookup (public status metadata ONLY —
