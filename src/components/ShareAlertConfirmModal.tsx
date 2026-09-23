@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Share2, MapPin, ShieldAlert, X, Check, Copy, AlertTriangle } from 'lucide-react';
 import { EmergencyAnalysisResult } from '../types.ts';
+import { looksLikeGeneratedDispatch } from '../lib/translationSafety.ts';
 
 interface ShareAlertConfirmModalProps {
   isOpen: boolean;
@@ -24,9 +25,12 @@ export const ShareAlertConfirmModal: React.FC<ShareAlertConfirmModalProps> = ({
     ? `Lat ${result.location_coordinates.latitude.toFixed(5)}, Lng ${result.location_coordinates.longitude.toFixed(5)}`
     : 'No location attached';
 
-  const previewText = result.translation
-    ? result.translation.translated_message
-    : result.message;
+  // Preview guard (PR #16): a stored translation that looks like generated
+  // dispatch/triage boilerplate is never previewed as the user's translated
+  // transmission — the dispatch message is shown instead.
+  const storedTranslation = result.translation?.translated_message || '';
+  const previewText =
+    storedTranslation && !looksLikeGeneratedDispatch(storedTranslation) ? storedTranslation : result.message;
 
   return (
     <div

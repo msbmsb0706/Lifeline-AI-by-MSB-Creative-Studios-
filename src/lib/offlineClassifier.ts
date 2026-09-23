@@ -35,7 +35,7 @@ const EMERGENCY_RULES: EmergencyRule[] = [
     badgeColor: 'RED',
     prioritySymbol: 'HEART_PULSE',
     actionSteps: [
-      'Call emergency services immediately (911 / 112 / 108)',
+      'Contact your local emergency services immediately.',
       'Locate nearest AED and begin CPR if patient stops breathing',
       'Keep patient resting in a half-sitting position, loosen tight clothing',
       'Do not give oral fluids or unprescribed medication'

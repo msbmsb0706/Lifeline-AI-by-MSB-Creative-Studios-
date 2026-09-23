@@ -13,6 +13,8 @@ import {
 } from './src/lib/languages.ts';
 import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, DetectedLanguage } from './src/types.ts';
 import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
+import { getEmergencyPartnerConfig } from './server/partnerConfig.ts';
+import { looksLikeGeneratedDispatch } from './src/lib/translationSafety.ts';
 
 dotenv.config();
 
@@ -746,7 +748,8 @@ CONSTRAINTS:
         model_used: NEBIUS_MODEL,
         timestamp: new Date().toISOString(),
         latency_ms: latencyMs,
-        raw_transcript: validatedTranscript,
+        // The user's submitted original text — never the model-returned echo.
+        raw_transcript: trimmedText,
         location_coordinates: req.body.coordinates || null,
         detected_language: detectedSourceLang,
         voice_capture: sanitizedVoiceCapture || undefined,
@@ -810,10 +813,32 @@ CONSTRAINTS:
     }
 
     const targetLangObj = getLanguageByCodeOrName(targetLanguage);
-    const sourceText = text || currentSOS?.message || '';
+    // Translation source contract (PR #16): the user's original transmission
+    // ONLY — raw_transcript -> original_message -> legacy transcript. NEVER the
+    // generated dispatch message (`message`), responder instructions, action
+    // steps, required units, AI summaries, or structured directives.
+    const providedText = typeof text === 'string' ? text.trim() : '';
+    const fallbackSource =
+      (typeof currentSOS?.raw_transcript === 'string' && currentSOS.raw_transcript.trim()) ||
+      (typeof currentSOS?.original_message === 'string' && currentSOS.original_message.trim()) ||
+      (typeof currentSOS?.translation?.original_message === 'string' && currentSOS.translation.original_message.trim()) ||
+      (typeof currentSOS?.transcript === 'string' && currentSOS.transcript.trim()) ||
+      '';
+    const sourceText = providedText || fallbackSource;
 
     if (!sourceText.trim()) {
       res.status(400).json({ error: 'No message content provided to translate.' });
+      return;
+    }
+
+    // Deterministic guard (PR #16): generated dispatch/triage boilerplate is
+    // never accepted as the user's transmission to translate.
+    if (looksLikeGeneratedDispatch(sourceText)) {
+      res.status(400).json({
+        success: false,
+        code: 'TRANSLATION_INVALID_SOURCE',
+        error: 'Translation unavailable \u2014 the provided text failed safety validation. The original transmission is preserved.'
+      });
       return;
     }
 
@@ -913,7 +938,7 @@ Source Language: ${detectedSource.name}`;
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Authorization': apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`
         },
         body: JSON.stringify({
           model: NEBIUS_MODEL,
@@ -949,6 +974,20 @@ Source Language: ${detectedSource.name}`;
         .trim();
       const parsedTrans = JSON.parse(cleaned);
 
+      // Deterministic guard (PR #16): a translated_message that is empty or
+      // looks like generated dispatch/triage boilerplate is rejected — it is
+      // never presented as the user's translated transmission.
+      const candidateTranslatedMessage =
+        typeof parsedTrans.translated_message === 'string' ? parsedTrans.translated_message.trim() : '';
+      if (!candidateTranslatedMessage || looksLikeGeneratedDispatch(candidateTranslatedMessage)) {
+        res.status(502).json({
+          success: false,
+          code: 'TRANSLATION_VALIDATION_FAILED',
+          error: 'Translation unavailable \u2014 the translation engine returned content that failed safety validation. The original transmission is preserved.'
+        });
+        return;
+      }
+
       res.json({
         success: true,
         data: {
@@ -956,7 +995,7 @@ Source Language: ${detectedSource.name}`;
           target_language: targetLangObj.code,
           target_language_name: targetLangObj.name,
           original_message: sourceText,
-          translated_message: parsedTrans.translated_message || sourceText,
+          translated_message: candidateTranslatedMessage,
           translated_headline: parsedTrans.translated_headline,
           translated_action_steps: Array.isArray(parsedTrans.translated_action_steps) ? parsedTrans.translated_action_steps : undefined,
           translated_instructions_for_responders: parsedTrans.translated_instructions_for_responders,
@@ -994,6 +1033,31 @@ Source Language: ${detectedSource.name}`;
           offline_notice: `Nebius Token Factory unavailable (${err?.message || 'timeout'}). Offline deterministic translation provided.`,
           latency_ms: Date.now() - startTime
         }
+      });
+    }
+  });
+
+  // Emergency partner API configuration lookup (public status metadata ONLY —
+  // endpoint URLs, API keys, and any other credentials are never included).
+  // 200 CONFIGURED / NOT_CONFIGURED on success; 503 when the lookup itself
+  // fails (unavailable — never reported as "not configured").
+  app.get('/api/emergency-partner/config', (req, res) => {
+    try {
+      if ((process.env.EMERGENCY_PARTNER_CONFIG_ERROR || '').trim() === 'unavailable') {
+        res.status(503).json({
+          success: false,
+          code: 'PARTNER_CONFIG_UNAVAILABLE',
+          error: 'Emergency API configuration unavailable.'
+        });
+        return;
+      }
+      const country = typeof req.query.country === 'string' ? req.query.country : 'GLOBAL';
+      res.json({ success: true, data: getEmergencyPartnerConfig(country, process.env) });
+    } catch {
+      res.status(503).json({
+        success: false,
+        code: 'PARTNER_CONFIG_UNAVAILABLE',
+        error: 'Emergency API configuration unavailable.'
       });
     }
   });
