@@ -135,13 +135,33 @@ function notifyQueueListeners(): void {
 
 /** Append a timestamped lifecycle transition to the item's status history. */
 function recordTransition(item: PendingSOSItem, status: SOSDeliveryStatus, detail?: string): void {
+  recordTransitionFlagged(item, status, detail, false);
+}
+
+/**
+ * Low-level transition recorder with an explicit `simulated` flag. TEST / DEMO
+ * simulation transitions are always recorded with `simulated: true` so they can
+ * never be mistaken for real emergency-service acknowledgements, even in the
+ * persisted timeline.
+ */
+function recordTransitionFlagged(
+  item: PendingSOSItem,
+  status: SOSDeliveryStatus,
+  detail: string | undefined,
+  simulated: boolean
+): void {
   item.status = status;
   const history = item.statusHistory || [];
   const last = history[history.length - 1];
   // Collapse identical consecutive statuses (e.g. repeated FAILED retries keep
   // one entry per transition — only skip if nothing changed).
   if (!last || last.status !== status || detail !== undefined) {
-    history.push({ status, timestamp: new Date().toISOString(), ...(detail !== undefined ? { detail } : {}) });
+    history.push({
+      status,
+      timestamp: new Date().toISOString(),
+      ...(detail !== undefined ? { detail } : {}),
+      ...(simulated ? { simulated: true } : {})
+    });
   }
   item.statusHistory = history;
 }
@@ -526,6 +546,89 @@ export async function transmitSingleSOSItem(
   } finally {
     inFlightSOSIds.delete(item.sosPackage.sosId);
   }
+}
+
+// ★★★ TEST / DEMO ONLY — LOCAL LIFECYCLE SIMULATOR ★★★ //
+// A clearly-labelled demonstration mechanism for the delivery lifecycle.
+//
+// It ONLY touches the locally stored TEST / DEMO record (providerType ===
+// 'TEST'). It never performs a fetch, never sends a real emergency alert, and
+// never produces a PartnerAcknowledgment of any kind. The transitions it writes
+// are stamped `simulated: true` in the status history so nothing it produces
+// can be mistaken for a real emergency-service acknowledgement.
+//
+// All progression is explicit: every step needs its own user action. Nothing —
+// and in particular neither DELIVERED nor ACKNOWLEDGED — is ever fabricated
+// automatically. Real AUTHORIZED_API records are never eligible for simulation.
+
+export type DemoLifecycleStep = 'DELIVERED' | 'ACKNOWLEDGED';
+
+/** True when a PendingSOSItem is a TEST provider record eligible for local simulation. */
+export function isDemoSimulatableItem(item: PendingSOSItem | null | undefined): boolean {
+  return Boolean(item && item.targetPartner?.providerType === 'TEST');
+}
+
+/**
+ * Simulate the next lifecycle step for a stored TEST / DEMO record:
+ *   SENT → DELIVERED → ACKNOWLEDGED
+ *
+ * - Requires an explicit, already-sent (SENT or later) TEST provider record.
+ * - Writes the transition locally with `simulated: true`, never via network.
+ * - The `deliveredAt` / `acknowledgedAt` timestamps are set (clearly labelled
+ *   as simulated in the history), but NO PartnerAcknowledgment is produced.
+ */
+export function simulateDemoLifecycleAdvance(
+  sosId: string,
+  step: DemoLifecycleStep
+): {
+  ok: boolean;
+  status?: SOSDeliveryStatus;
+  error?: string;
+} {
+  const item = getPendingQueue().find((i) => i.sosPackage.sosId === sosId);
+  if (!item) {
+    return { ok: false, error: 'SOS record not found in local queue.' };
+  }
+  if (!isDemoSimulatableItem(item)) {
+    return {
+      ok: false,
+      error: 'Lifecycle simulation is available ONLY for local TEST / DEMO records.'
+    };
+  }
+
+  const simulatedStamp = '"TEST / DEMO ONLY" simulation (no real emergency service).';
+
+  if (step === 'DELIVERED') {
+    if (item.status === 'ACKNOWLEDGED') {
+      return { ok: false, status: item.status, error: 'Already ACKNOWLEDGED — the demonstration lifecycle cannot move backwards.' };
+    }
+    item.deliveredAt = new Date().toISOString();
+    recordTransitionFlagged(item, 'DELIVERED', `${simulatedStamp} deliveryConfirmed simulated locally.`, true);
+    savePendingSOS(item);
+    return { ok: true, status: 'DELIVERED' };
+  }
+
+  // step === 'ACKNOWLEDGED'
+  if (item.status === 'PENDING_LOCAL' || item.status === 'WAITING_FOR_CONNECTION' || item.status === 'SENDING' || item.status === 'FAILED') {
+    return {
+      ok: false,
+      status: item.status,
+      error: 'Before simulating acknowledgment, the demonstration record must first be SENT and then DELIVERED.'
+    };
+  }
+  if (item.status !== 'DELIVERED') {
+    // Strictly ordered, explicit progression: SENT → (simulate DELIVERED) →
+    // (simulate ACKNOWLEDGED). Every advance is a separate user action.
+    return {
+      ok: false,
+      status: item.status,
+      error: 'The demonstration lifecycle advances one explicit step at a time (SENT → DELIVERED → ACKNOWLEDGED).'
+    };
+  }
+  item.acknowledgedAt = new Date().toISOString();
+  recordTransitionFlagged(item, 'ACKNOWLEDGED', `${simulatedStamp} responderAcknowledged simulated locally.`, true);
+  savePendingSOS(item);
+  return { ok: true, status: 'ACKNOWLEDGED' };
 }
 
 /**

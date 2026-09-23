@@ -4,6 +4,7 @@ import {
   ChevronRight,
   CheckCircle2,
   Clock,
+  FlaskConical,
   Radio,
   RefreshCw,
   Send,
@@ -19,6 +20,8 @@ import {
   getPendingQueue,
   isSOSInFlight,
   retrySingleSOS,
+  simulateDemoLifecycleAdvance,
+  isDemoSimulatableItem,
   subscribeToQueue
 } from '../lib/emergencyPartnerQueue.ts';
 
@@ -39,14 +42,19 @@ interface SOSDeliveryStatusProps {
  * Trust rules:
  * - SENT is shown only after the configured endpoint accepted the handoff.
  * - DELIVERED / RESPONDER ACKNOWLEDGED are shown only when the configured
- *   receiving integration explicitly provided those confirmations. The
- *   TEST / DEMO partner never provides them, so they display "Not available".
+ *   receiving integration explicitly provided those confirmations, OR when the
+ *   developer/demo user explicitly advances the local record via the clearly
+ *   labelled "TEST / DEMO ONLY — Lifecycle Simulator" (which never touches the
+ *   network and stamps every transition as simulated). The normal TEST / DEMO
+ *   dispatch path never fabricates these states.
  */
 export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId, onRetryFinished }) => {
   const [item, setItem] = useState<PendingSOSItem | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [isRetrying, setIsRetrying] = useState<boolean>(false);
+  // TEST / DEMO ONLY local lifecycle simulator busy flag.
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
 
   // Reflect live queue changes (status transitions happen in the shared queue lib).
   useEffect(() => {
@@ -158,6 +166,19 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
     }
   };
 
+  // TEST / DEMO ONLY: advance the local lifecycle record one explicit step
+  // (SENT → DELIVERED → ACKNOWLEDGED). No network, no real emergency alert.
+  const handleSimulate = async (step: 'DELIVERED' | 'ACKNOWLEDGED') => {
+    if (isSimulating) return;
+    setIsSimulating(true);
+    try {
+      simulateDemoLifecycleAdvance(item.sosPackage.sosId, step);
+    } finally {
+      setIsSimulating(false);
+      onRetryFinished?.();
+    }
+  };
+
   const formatTime = (iso?: string) =>
     iso ? new Date(iso).toLocaleString() : '—';
 
@@ -173,15 +194,35 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
       ? 'Failed — retry available'
       : 'Completed';
 
+  // True when the last transition into DELIVERED/ACKNOWLEDGED was produced by the
+  // local TEST / DEMO ONLY simulator (never by real partner integration).
+  const simulatedDelivery = Boolean(
+    item.statusHistory?.some((t) => t.status === 'DELIVERED' && t.simulated)
+  );
+  const simulatedAcknowledged = Boolean(
+    item.statusHistory?.some((t) => t.status === 'ACKNOWLEDGED' && t.simulated)
+  );
+
   const deliveryLabel = item.deliveredAt
-    ? `Confirmed by receiving system — ${formatTime(item.deliveredAt)}`
+    ? `Confirmed by receiving system — ${formatTime(item.deliveredAt)}${
+        simulatedDelivery ? ' (TEST / DEMO ONLY simulation)' : ''
+      }`
     : effectiveStatus === 'FAILED' || effectiveStatus === 'SENDING' || effectiveStatus === 'PENDING_LOCAL' || effectiveStatus === 'WAITING_FOR_CONNECTION'
     ? 'Not available'
     : 'Not confirmed by receiving system';
 
   const acknowledgementLabel = item.acknowledgedAt
-    ? `Acknowledged — ${formatTime(item.acknowledgedAt)}`
+    ? `Acknowledged — ${formatTime(item.acknowledgedAt)}${
+        simulatedAcknowledged ? ' (TEST / DEMO ONLY simulation)' : ''
+      }`
     : 'Not available';
+
+  // TEST / DEMO ONLY simulator availability: a TEST record that has already been
+  // handed off (SENT or later) can advance one explicit step at a time.
+  const isTestRecord = isDemoSimulatableItem(item);
+  const simulatorAvailable =
+    isTestRecord &&
+    (effectiveStatus === 'SENT' || effectiveStatus === 'DELIVERED');
 
   return (
     <div
@@ -318,6 +359,51 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
                 </span>
               </div>
             )}
+            {/* TEST / DEMO ONLY — local lifecycle simulator console.
+                Labelled unmistakably and shown only for local TEST records
+                that have already been handed off (SENT or later). Advancing
+                here never contacts any network or real emergency service. */}
+            {simulatorAvailable && (
+              <div
+                id="demo-lifecycle-simulator"
+                className="mt-2 p-2.5 rounded-lg bg-purple-950/50 border-2 border-dashed border-purple-600 space-y-1.5"
+              >
+                <div className="flex items-center gap-1.5 text-purple-200 font-black uppercase tracking-wider text-[10px]">
+                  <FlaskConical className="w-3.5 h-3.5 text-purple-300 shrink-0" aria-hidden="true" />
+                  <span>TEST / DEMO ONLY — Lifecycle Simulator</span>
+                </div>
+                <p className="text-[10px] text-purple-300/90 leading-snug">
+                  Advance this local TEST / DEMO record one explicit step:
+                  SENT → DELIVERED → ACKNOWLEDGED. Local only — no network, no
+                  real emergency service, and the changes are recorded as
+                  simulated.
+                </p>
+                <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                  {effectiveStatus === 'SENT' && (
+                    <button
+                      id="demo-simulate-delivered-btn"
+                      onClick={() => handleSimulate('DELIVERED')}
+                      disabled={isSimulating}
+                      className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-[11px] font-black flex items-center gap-1.5 transition-colors"
+                    >
+                      <FlaskConical className="w-3 h-3" aria-hidden="true" />
+                      <span>Simulate DELIVERED</span>
+                    </button>
+                  )}
+                  {effectiveStatus === 'DELIVERED' && (
+                    <button
+                      id="demo-simulate-acknowledged-btn"
+                      onClick={() => handleSimulate('ACKNOWLEDGED')}
+                      disabled={isSimulating}
+                      className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-[11px] font-black flex items-center gap-1.5 transition-colors"
+                    >
+                      <FlaskConical className="w-3 h-3" aria-hidden="true" />
+                      <span>Simulate RESPONDER ACKNOWLEDGED</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
             {/* Lifecycle transition timestamps */}
             {item.statusHistory && item.statusHistory.length > 0 && (
               <div className="pt-1.5 border-t border-neutral-800">
@@ -334,6 +420,11 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
                       <span className="text-neutral-500 font-mono">
                         {new Date(t.timestamp).toLocaleTimeString()}
                       </span>
+                      {t.simulated && (
+                        <span className="text-[9px] font-black px-1 py-0.5 rounded bg-purple-900 text-purple-200 border border-purple-600">
+                          SIMULATED
+                        </span>
+                      )}
                       <span className="flex items-center gap-1 text-neutral-600">
                         <Send className="w-2.5 h-2.5" aria-hidden="true" />
                         {t.detail ? <span className="truncate max-w-[220px]">{t.detail}</span> : null}

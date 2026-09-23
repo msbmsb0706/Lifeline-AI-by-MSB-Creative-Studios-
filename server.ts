@@ -753,12 +753,15 @@ CONSTRAINTS:
         nebius_connected: true
       };
 
-      // If a target language is passed during initial analysis and differs from source, provide translation
+      // If a target language is passed during initial analysis and differs from source, provide translation.
+      // Per the multilingual data contract, `translated_message` must be a
+      // faithful translation of the USER'S ORIGINAL TEXT (the transcript), never
+      // the generated dispatch message.
       if (targetLanguage) {
         const targetLangObj = getLanguageByCodeOrName(targetLanguage);
         if (targetLangObj.code !== detectedSourceLang.code) {
           const offlineTrans = translateEmergencyOffline(
-            resultData.message,
+            trimmedText,
             targetLangObj.code,
             emergencyType as StandardEmergencyCategory,
             validatedSeverity,
@@ -872,7 +875,9 @@ CRITICAL SAFETY & MEDICAL INVARIANTS:
 1. NEVER alter or change the emergency type ("${lockedType}"), the standardized emergency category ("${lockedCategory}"), or the severity level (${lockedSeverity}). These are locked life-critical triage parameters.
 2. Preserve the emergency meaning, high-urgency tone, and specific assistance required.
 3. Translate with high linguistic accuracy and natural phrasing into ${targetLangObj.name} (using its native script: ${targetLangObj.script || targetLangObj.name}).
-4. Output STRICTLY a valid JSON object matching this schema:
+4. "translated_message" MUST be a FAITHFUL, LITERAL translation of ONLY the user's original transmission, word-for-word where possible. It must NEVER add, summarize, reformat, or regenerate dispatch/triage content (no added headlines, priorities, categories, responder directives, or instructions). If the original is a single plain sentence of distress, "translated_message" is exactly that sentence translated.
+5. The structured responder/dispatch fields (translated_headline, translated_action_steps, translated_instructions_for_responders, translated_first_aid_actions, translated_needs) are translated SEPARATELY from the provided structured content — do not fold them into translated_message.
+6. Output STRICTLY a valid JSON object matching this schema:
 {
   "detected_source_language": {
     "code": "${detectedSource.code}",
@@ -881,7 +886,7 @@ CRITICAL SAFETY & MEDICAL INVARIANTS:
   "target_language": "${targetLangObj.code}",
   "target_language_name": "${targetLangObj.name}",
   "original_message": string (exact original message),
-  "translated_message": string (the complete emergency dispatch message translated into ${targetLangObj.name}),
+  "translated_message": string (faithful translation of the original message ONLY),
   "translated_headline": string (urgent headline in ${targetLangObj.name}),
   "translated_action_steps": string[] (3-4 immediate survival steps in ${targetLangObj.name}),
   "translated_instructions_for_responders": string (on-arrival directive in ${targetLangObj.name}),
@@ -890,8 +895,10 @@ CRITICAL SAFETY & MEDICAL INVARIANTS:
 }
 Do NOT include markdown fences (\`\`\`json). Output pure JSON only.`;
 
-      const userPrompt = `Translate this emergency dispatch transmission to ${targetLangObj.name} (${targetLangObj.nativeName}):
-ORIGINAL TRANSMISSION: "${sourceText}"
+      const userPrompt = `Translate the user's ORIGINAL TRANSMISSION into ${targetLangObj.name} (${targetLangObj.nativeName}) — output this faithful translation in the "translated_message" JSON field. Do not paraphrase, summarize, or regenerate it as a dispatch report.
+ORIGINAL TRANSMISSION (translate word-for-word): "${sourceText}"
+
+Separately, translate these structured responder/dispatch fields into ${targetLangObj.name} for their own JSON keys:
 ORIGINAL HEADLINE: "${currentSOS?.visual_card?.headline || lockedType}"
 RESPONDER INSTRUCTION: "${currentSOS?.visual_card?.instructions_for_responders || 'Assess scene safety and vitals.'}"
 ACTION STEPS: ${JSON.stringify(currentSOS?.visual_card?.action_steps || [])}
@@ -1108,7 +1115,8 @@ Source Language: ${detectedSource.name}`;
             // delivery or responder acknowledgment, neither value is ever inferred
             // from the other, and the TEST / DEMO path never sets them.
             ...(partnerJson?.deliveryConfirmed === true ? { deliveryConfirmed: true as boolean } : {}),
-            ...(partnerJson?.responderAcknowledged === true ? { responderAcknowledged: true as boolean } : {})
+            ...(partnerJson?.responderAcknowledged === true ? { responderAcknowledged: true as boolean } : {}),
+            ...(partnerJson?.deliveredAt ? { deliveredAt: String(partnerJson.deliveredAt) } : {})
           }
         });
         return;

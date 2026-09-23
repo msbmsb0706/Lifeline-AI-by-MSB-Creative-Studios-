@@ -9,6 +9,7 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
+    "test": "npx tsx tests/run.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
