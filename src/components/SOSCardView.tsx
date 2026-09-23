@@ -103,6 +103,14 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     }
   }, [result.translation]);
 
+  // A completely new analysis result must never display the previous
+  // emergency's delivery lifecycle card. The result timestamp identifies the
+  // emergency (translation updates of the same emergency preserve it), so the
+  // locally dispatched SOS id resets whenever a different emergency is shown.
+  useEffect(() => {
+    setDispatchedSosId(null);
+  }, [result.timestamp]);
+
   // Strobe effect for emergency beacon
   useEffect(() => {
     let interval: any;

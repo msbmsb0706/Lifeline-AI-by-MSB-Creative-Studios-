@@ -602,6 +602,17 @@ export function simulateDemoLifecycleAdvance(
     if (item.status === 'ACKNOWLEDGED') {
       return { ok: false, status: item.status, error: 'Already ACKNOWLEDGED — the demonstration lifecycle cannot move backwards.' };
     }
+    // Defense-in-depth: strict, explicit progression only. DELIVERED can be
+    // simulated exclusively from an already-handed-off (SENT) record — never
+    // directly from PENDING_LOCAL / WAITING_FOR_CONNECTION / SENDING / FAILED.
+    if (item.status !== 'SENT') {
+      return {
+        ok: false,
+        status: item.status,
+        error:
+          'Before simulating delivery, the demonstration record must first be SENT to the partner endpoint (SENT → DELIVERED → ACKNOWLEDGED).'
+      };
+    }
     item.deliveredAt = new Date().toISOString();
     recordTransitionFlagged(item, 'DELIVERED', `${simulatedStamp} deliveryConfirmed simulated locally.`, true);
     savePendingSOS(item);

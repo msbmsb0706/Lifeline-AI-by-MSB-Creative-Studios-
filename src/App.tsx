@@ -82,7 +82,7 @@ export default function App() {
   }, [offlineForce]);
 
   const voiceModeNotice = !offlineForce && asrConfigured === false
-    ? 'Multilingual server voice not configured — browser voice (English) active. Typed text is detected in any language.'
+    ? 'Multilingual server voice not configured — browser voice (selected language) active. Typed text is detected in any language.'
     : null;
 
   /**
@@ -410,10 +410,17 @@ export default function App() {
     setIsTranslating(true);
     setError(null);
 
+    // Translation source contract: what gets translated is the USER'S ORIGINAL
+    // TRANSMISSION (raw_transcript) — NEVER the generated responder/dispatch
+    // message. The generated message stays available (and unchanged) for the
+    // structured responder fields. Legacy results without raw_transcript keep
+    // the previous message fallback.
+    const sourceTranscript = currentResult.raw_transcript || currentResult.message;
+
     // Offline translation is deliberately local and limited to bundled emergency phrases.
     if (offlineForce) {
       const localTrans = translateEmergencyOffline(
-        currentResult.message,
+        sourceTranscript,
         targetLangCode,
         currentResult.emergency_category || 'MEDICAL',
         currentResult.severity,
@@ -436,7 +443,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: currentResult.message,
+          text: sourceTranscript,
           targetLanguage: targetLangCode,
           sourceLanguage: currentResult.detected_language?.code || currentResult.language,
           currentSOS: currentResult,
@@ -466,7 +473,7 @@ export default function App() {
       console.warn('Backend translation failed or timed out. Using local browser offline translation:', err);
 
       const localTrans = translateEmergencyOffline(
-        currentResult.message,
+        sourceTranscript,
         targetLangCode,
         currentResult.emergency_category || 'MEDICAL',
         currentResult.severity,
