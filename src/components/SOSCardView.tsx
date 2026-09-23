@@ -823,7 +823,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <button
-                    onClick={() => handleSpeakAloud(result.message, detectedSourceLangInfo.code)}
+                    onClick={() => handleSpeakAloud(result.raw_transcript || result.message, detectedSourceLangInfo.code)}
                     title="Read original message aloud"
                     className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-[11px]"
                   >
@@ -831,7 +831,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                   </button>
                   <button
                     id="copy-original-dispatch-btn"
-                    onClick={() => copyText(result.message, false)}
+                    onClick={() => copyText(result.raw_transcript || result.message, false)}
                     className={`text-[11px] px-2 py-0.5 rounded font-semibold flex items-center gap-1 transition-all ${
                       copiedOriginal
                         ? 'bg-emerald-600 text-white'
@@ -844,7 +844,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
               </div>
               <pre className="text-xs sm:text-sm font-mono text-neutral-300/90 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/60 border border-neutral-900 select-all">
-                {result.message}
+                {result.raw_transcript || result.message}
               </pre>
             </div>
           </div>
