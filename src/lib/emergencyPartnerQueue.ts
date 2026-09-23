@@ -193,10 +193,11 @@ export function markWaitingForConnection(item: PendingSOSItem, reason?: string):
 
 /**
  * Normalize a persisted queue item to the current typed lifecycle.
- * Migrates the legacy 'TRANSMITTING' value: an interrupted in-flight
- * transmission is returned to the retryable pool so it can never become a
- * permanently stuck record (the per-SOS in-flight guard still prevents
- * concurrent double-sends within a session).
+ * Interrupted transmissions (persisted SENDING / legacy TRANSMITTING) are
+ * recovered once per session by applySessionStartRecovery() before this runs;
+ * the TRANSMITTING mapping here remains as a backstop for older records.
+ * A *live* in-session SENDING record must never be demoted here — it is
+ * genuinely transmitting and is protected by the per-SOS in-flight guard.
  */
 export function normalizePendingSOSItem(raw: any): PendingSOSItem {
   const item: PendingSOSItem = {
@@ -250,8 +251,78 @@ export function setAutoSendSetting(enabled: boolean): void {
   }
 }
 
-// Get all pending SOS items (normalized to the current lifecycle model)
+// ==========================================
+// Session-start recovery (interrupted transmissions)
+// ==========================================
+
+// A transmission that was in flight when the app was closed/refreshed/crashed
+// persists as SENDING (or legacy TRANSMITTING). Nothing is actually transmitting
+// in a new session, so those records must be recovered ONCE per session into the
+// existing retryable pending lifecycle — otherwise they would stay stuck forever
+// (the processor deliberately never re-picks SENDING while it is genuinely in
+// flight, and the in-flight set is empty in a fresh session).
+let sessionRecoveryApplied = false;
+
+function applySessionStartRecovery(): void {
+  if (sessionRecoveryApplied) return;
+  sessionRecoveryApplied = true;
+  try {
+    const data = localStorage.getItem(PENDING_QUEUE_KEY);
+    if (!data) return;
+    const parsed = JSON.parse(data);
+    if (!Array.isArray(parsed)) return;
+
+    const onlineNow = navigator.onLine;
+    let changed = false;
+    const recovered = parsed.map((raw: any) => {
+      const status = raw?.status;
+      // SENDING = PR #12 interrupted transmission; TRANSMITTING = legacy record.
+      if (status !== 'SENDING' && status !== 'TRANSMITTING') return raw;
+      changed = true;
+      const history = Array.isArray(raw.statusHistory) ? [...raw.statusHistory] : [];
+      const at = new Date().toISOString();
+      history.push({
+        status: 'PENDING_LOCAL',
+        timestamp: at,
+        detail:
+          status === 'SENDING'
+            ? 'Recovered after app restart during transmission — ready to retry.'
+            : 'Recovered from interrupted transmission (legacy record).'
+      });
+      // Starting offline: do not transmit; reflect the existing
+      // WAITING_FOR_CONNECTION state until a supported connection returns.
+      if (!onlineNow) {
+        history.push({
+          status: 'WAITING_FOR_CONNECTION',
+          timestamp: at,
+          detail: 'Device offline after restart — waiting for connection.'
+        });
+      }
+      return {
+        ...raw,
+        // All original fields preserved (sosId, message, timestamp, consent, GPS,
+        // photo/video metadata, recipient, attempts, prior history).
+        status: onlineNow ? 'PENDING_LOCAL' : 'WAITING_FOR_CONNECTION',
+        statusHistory: history
+      };
+    });
+
+    if (changed) {
+      localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(recovered));
+      console.info(
+        '[LifeLine AI] Recovered interrupted SOS transmission record(s) into the retryable pending lifecycle.'
+      );
+    }
+  } catch {
+    // Recovery must never break queue reads.
+  }
+}
+
+// Get all pending SOS items (normalized to the current lifecycle model).
+// The first read of every application session also recovers any record left in
+// SENDING/TRANSMITTING by an interrupted previous session (see above).
 export function getPendingQueue(): PendingSOSItem[] {
+  applySessionStartRecovery();
   try {
     const data = localStorage.getItem(PENDING_QUEUE_KEY);
     if (!data) return [];

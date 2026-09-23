@@ -172,6 +172,15 @@ export default function App() {
   useEffect(() => {
     refreshPendingQueue();
 
+    // Session start: records left SENDING by an interrupted previous session are
+    // recovered by the queue library on first read. When online, resume them —
+    // and any still-pending user-confirmed records — through the same processor
+    // and consent/auto-send rules as a reconnect event. Offline starts simply
+    // stay pending until the 'online' event fires.
+    if (navigator.onLine && getAutoSendSetting()) {
+      processPendingQueue({ forceManual: false }).then(() => refreshPendingQueue());
+    }
+
     const handleOnline = () => {
       refreshPendingQueue();
       if (getAutoSendSetting()) {

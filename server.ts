@@ -1102,7 +1102,13 @@ Source Language: ${detectedSource.name}`;
             message: partnerJson.message || 'SOS package acknowledged by authorized partner API.',
             partnerId: partnerId || 'authorized-partner',
             partnerName: 'Authorized Rescue Network API',
-            providerType: 'AUTHORIZED_API'
+            providerType: 'AUTHORIZED_API',
+            // Forward ONLY explicit confirmations returned by the real configured
+            // partner. HTTP 200 / successful processing alone NEVER becomes a
+            // delivery or responder acknowledgment, neither value is ever inferred
+            // from the other, and the TEST / DEMO path never sets them.
+            ...(partnerJson?.deliveryConfirmed === true ? { deliveryConfirmed: true as boolean } : {}),
+            ...(partnerJson?.responderAcknowledged === true ? { responderAcknowledged: true as boolean } : {})
           }
         });
         return;
