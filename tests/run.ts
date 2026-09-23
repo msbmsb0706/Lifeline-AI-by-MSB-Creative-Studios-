@@ -15,6 +15,7 @@ process.stdout.write('LifeLine AI regression tests\n');
 // Ordered imports — each module runs its assertions on load.
 await import('./languages.test.ts');
 await import('./translation.test.ts');
+await import('./routing.test.ts');
 await import('./sos-lifecycle.test.ts');
 await import('./app-call-sites.test.ts');
 

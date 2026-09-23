@@ -104,6 +104,8 @@ export interface EmergencyAnalysisResult extends NemotronEmergencyResponse {
   offline_notice?: string;
   latency_ms?: number;
   raw_transcript?: string;
+  original_message?: string;
+  translation_error?: { code: string; error: string; target_language: string; upstream_status?: number };
   location_coordinates?: {
     latitude: number;
     longitude: number;
@@ -167,6 +169,7 @@ export interface EmergencyPartnerProvider {
   website?: string;
   apiBaseUrl?: string;
   apiEnabled: boolean;
+  apiStatus?: 'NOT_CONFIGURED' | 'CONFIGURED_NOT_VERIFIED';
   requiresUserConfirmation: boolean;
   supportsMediaUpload?: boolean;
   description?: string;

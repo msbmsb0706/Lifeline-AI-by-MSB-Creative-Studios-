@@ -1,6 +1,8 @@
+import { getOriginalTransmission } from '../lib/translation.ts';
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   EmergencyAnalysisResult,
+  EmergencyPartnerProvider,
   VisualSOSCard,
   StandardEmergencyCategory
 } from '../types.ts';
@@ -43,7 +45,7 @@ import {
 import { ShareAlertConfirmModal } from './ShareAlertConfirmModal.tsx';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
 import { SOSDeliveryStatusCard } from './SOSDeliveryStatus.tsx';
-import { getTestProvider } from '../lib/emergencyPartnersData.ts';
+import { getTestProvider, getCountryEmergencyConfig, SUPPORTED_COUNTRIES } from '../lib/emergencyPartnersData.ts';
 import {
   createSOSPackage,
   createQueuedSOSItem,
@@ -54,6 +56,9 @@ import {
 
 interface SOSCardViewProps {
   result: EmergencyAnalysisResult;
+  selectedCountry?: string;
+  onCountryChange?: (country: string) => void;
+  authorizedPartner?: EmergencyPartnerProvider | null;
   highContrast: boolean;
   soundEnabled: boolean;
   onTranslateSOS?: (targetLangCode: string) => Promise<void>;
@@ -62,11 +67,22 @@ interface SOSCardViewProps {
 
 export const SOSCardView: React.FC<SOSCardViewProps> = ({
   result,
+  selectedCountry = 'GLOBAL',
+  onCountryChange,
+  authorizedPartner,
   highContrast,
   soundEnabled,
   onTranslateSOS,
   isTranslating = false
 }) => {
+  const countryConfig = getCountryEmergencyConfig(selectedCountry);
+  const [destinationId, setDestinationId] = useState('test-partner-demo');
+  const authorizedAvailable = authorizedPartner?.apiEnabled &&
+    (authorizedPartner.country === selectedCountry || authorizedPartner.country === 'GLOBAL');
+  const destination = authorizedAvailable && destinationId === authorizedPartner?.id ? authorizedPartner : getTestProvider();
+  const originalTransmission = getOriginalTransmission(result);
+  const transmissionAvailable = Boolean(result.translation?.translated_message) &&
+    !result.translation?.translated_message.includes('faithful translation not available offline');
   const [copiedOriginal, setCopiedOriginal] = useState(false);
   const [copiedTranslated, setCopiedTranslated] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -308,7 +324,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   };
 
   const handleConfirmedShare = async () => {
-    const alertMessage = showTranslated && result.translation
+    const alertMessage = showTranslated && transmissionAvailable && result.translation
       ? result.translation.translated_message
       : result.message;
 
@@ -343,13 +359,13 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   };
 
   const handleConfirmPartnerDispatch = async () => {
-    const testPartner = getTestProvider();
+    const targetPartner = destination;
     const sosPkg = createSOSPackage({
       emergencyType: result.emergency_type,
       category: result.emergency_category,
       severity: result.severity,
-      message: showTranslated && result.translation ? result.translation.translated_message : result.message,
-      gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
+      message: result.message,
+      gps: result.location_coordinates || null,
       source: result.source === 'nebius_nemotron' ? 'online' : 'offline',
       voiceCapture: result.voice_capture
         ? {
@@ -363,7 +379,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     const consentTimestamp = new Date().toISOString();
     const pendingItem = createQueuedSOSItem({
       sosPackage: sosPkg,
-      targetPartner: testPartner,
+      targetPartner,
       userConsentTimestamp: consentTimestamp
     });
 
@@ -384,7 +400,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     try {
       const res = await processPendingQueue({ forceManual: true });
       if (res.successCount > 0) {
-        setShareToast('TEST / DEMO SUCCESS — SOS transmitted to TEST Emergency Partner. Reference ID acknowledged.');
+        setShareToast(destination.providerType === 'TEST' ? 'TEST / DEMO — local handoff only. No real emergency service received this alert.' : 'SOS handoff processed. See delivery status for confirmed delivery / acknowledgement.');
       } else if (res.errors.length > 0) {
         setShareToast(`Partner transmission error: ${res.errors.join('; ')}`);
       }
@@ -473,11 +489,11 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           <button
             id="partner-demo-dispatch-btn"
             onClick={() => setShowPartnerConsent(true)}
-            title="Review and dispatch to TEST Emergency Partner"
+            title={`Review and consent to transmission to ${destination.providerName}`}
             className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-700/80 flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
           >
             <Shield className="w-3.5 h-3.5 text-red-400" />
-            <span className="hidden sm:inline">Partner Demo</span>
+            <span className="hidden sm:inline">{destination.providerType === 'TEST' ? 'Partner Demo' : 'Review Partner SOS'}</span>
           </button>
 
           {/* Share Alert button with explicit privacy review */}
@@ -590,7 +606,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         <div className="mb-3 p-2 rounded-xl bg-neutral-900/90 border border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-1.5 text-neutral-300 font-medium">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Translated into:</span>
+            <span>{result.translation?.source === 'offline_fallback' ? 'Offline structured guidance:' : 'Translated into:'}</span>
             <span className="font-bold text-white uppercase tracking-wide">
               {result.translation?.target_language_name}
             </span>
@@ -641,7 +657,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             <>
               <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
               <span className="text-emerald-300">
-                Classified & Translated by NVIDIA Nemotron via Nebius Token Factory
+                Classified by NVIDIA Nemotron via Nebius Token Factory{result.translation?.source === 'nebius_nemotron' ? ' • Online translation' : ''}
               </span>
             </>
           ) : (
@@ -786,12 +802,12 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         </div>
       </div>
 
-      {/* 911 / EMS Dispatch Broadcast Transmission Section (Displaying Both Original & Translated Messages) */}
+      {/* Configured radio destination is reference information, not proof of dispatch. */}
       <div id="dispatch-transmission-container" className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div className="text-xs font-bold uppercase tracking-wider text-neutral-300 flex items-center gap-1.5">
             <PhoneCall className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Standard Dispatch Radio Transmission (911 / EMS)</span>
+            <span>Standard Dispatch Radio Transmission</span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -803,6 +819,31 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           </div>
         </div>
 
+        <div className="mb-3 space-y-2 text-xs text-neutral-300" id="radio-routing-context">
+          <label>Country context: <select aria-label="Emergency country" value={selectedCountry} onChange={e => onCountryChange?.(e.target.value)} className="bg-neutral-900 p-1 rounded">
+            {SUPPORTED_COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+            {!SUPPORTED_COUNTRIES.some(c => c.code === selectedCountry) && <option value={selectedCountry}>Unconfigured country</option>}
+          </select></label>
+          <div>Destination: <select aria-label="Dispatch destination" value={destination.id} onChange={e => setDestinationId(e.target.value)} className="bg-neutral-900 p-1 rounded">
+            <option value={getTestProvider().id}>{getTestProvider().providerName}</option>
+            {authorizedAvailable && <option value={authorizedPartner!.id}>{authorizedPartner!.providerName}</option>}
+          </select> — {destination.providerType === 'TEST' ? 'TEST / DEMO' : 'AUTHORIZED API'}</div>
+          <div id="emergency-number-reference">{countryConfig.emergencyNumbers.length ? <>Emergency number available (PUBLIC CONTACT): {countryConfig.emergencyNumbers.map(n => <a key={n} href={`tel:${n}`} className="underline mr-2">{n}</a>)} — manual call only</> : 'Emergency number not configured'}</div>
+          <div id="emergency-api-status">{authorizedAvailable ? 'Emergency API integration configured — connectivity / delivery not verified' : 'Emergency API integration not configured for this country'}</div>
+          <div>Source Language: {detectedSourceLangInfo.name} · Category: {currentCategory} · Priority: {result.severity}/5</div>
+          <div id="radio-location">{result.location_coordinates ? <>
+            Location: Attached GPS<br />Lat: {result.location_coordinates.latitude.toFixed(6)}<br />Lon: {result.location_coordinates.longitude.toFixed(6)}
+            {result.location_coordinates.accuracyMeters != null && <><br />Accuracy: {result.location_coordinates.accuracyMeters} m</>}
+            {result.location_coordinates.timestamp != null && <><br />Timestamp: {new Date(result.location_coordinates.timestamp).toISOString()}</>}
+          </> : 'Location: Not attached'}</div>
+          <p>No automatic emergency dispatch. Review and consent are required before partner transmission. TEST / DEMO does not contact emergency services.</p>
+          <div>Transmission (generated dispatch text):</div>
+          <pre id="generated-radio-transmission" className="whitespace-pre-wrap bg-black/60 p-2 rounded">{result.message}</pre>
+        </div>
+        {result.translation_error && <div id="translation-unavailable" role="status" className="mb-3 text-amber-300 text-sm">
+          Translation unavailable — original transmission preserved
+          <div className="text-xs">{result.translation_error.error}</div>
+        </div>}
         {/* Display both original and translated messages */}
         {hasTranslation ? (
           <div className="space-y-3">
@@ -811,9 +852,9 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
               <div className="flex items-center justify-between mb-1.5">
                 <div className="text-[11px] font-bold text-emerald-300 flex items-center gap-1.5">
                   <Languages className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Translated Transmission ({result.translation?.target_language_name}):</span>
+                  <span>{!transmissionAvailable ? 'Offline translation unavailable — original transmission preserved' : `${result.translation?.source === 'offline_fallback' ? 'Offline • ' : ''}Translated Transmission (${result.translation?.target_language_name}):`}</span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                {transmissionAvailable && <div className="flex items-center gap-1.5">
                   <button
                     onClick={() => handleSpeakAloud(result.translation?.translated_message || '', result.translation?.target_language)}
                     title="Read translated message aloud"
@@ -833,10 +874,10 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                     {copiedTranslated ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                     <span>{copiedTranslated ? 'Copied' : 'Copy Translated'}</span>
                   </button>
-                </div>
+                </div>}
               </div>
-              <pre className="text-xs sm:text-sm font-mono text-emerald-300/95 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/70 border border-emerald-900/60 select-all">
-                {result.translation?.translated_message}
+              <pre id="translated-transmission" className="text-xs sm:text-sm font-mono text-emerald-300/95 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/70 border border-emerald-900/60 select-all">
+                {transmissionAvailable ? result.translation?.translated_message : originalTransmission}
               </pre>
             </div>
 
@@ -849,7 +890,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <button
-                    onClick={() => handleSpeakAloud(result.raw_transcript || result.message, detectedSourceLangInfo.code)}
+                    onClick={() => handleSpeakAloud(originalTransmission, detectedSourceLangInfo.code)}
                     title="Read original message aloud"
                     className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-[11px]"
                   >
@@ -857,7 +898,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                   </button>
                   <button
                     id="copy-original-dispatch-btn"
-                    onClick={() => copyText(result.raw_transcript || result.message, false)}
+                    onClick={() => copyText(originalTransmission, false)}
                     className={`text-[11px] px-2 py-0.5 rounded font-semibold flex items-center gap-1 transition-all ${
                       copiedOriginal
                         ? 'bg-emerald-600 text-white'
@@ -870,7 +911,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
               </div>
               <pre className="text-xs sm:text-sm font-mono text-neutral-300/90 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/60 border border-neutral-900 select-all">
-                {result.raw_transcript || result.message}
+                {originalTransmission}
               </pre>
             </div>
           </div>
@@ -878,11 +919,11 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <div className="text-[11px] font-medium text-neutral-400">
-                Source Language: {detectedSourceLangInfo.name} ({detectedSourceLangInfo.code.toUpperCase()})
+                Original Transmission: {detectedSourceLangInfo.name} ({detectedSourceLangInfo.code.toUpperCase()})
               </div>
               <button
                 id="copy-dispatch-msg-btn"
-                onClick={() => copyText(result.message, false)}
+                onClick={() => copyText(originalTransmission, false)}
                 className={`text-xs px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all ${
                   copiedOriginal
                     ? 'bg-emerald-600 text-white'
@@ -897,13 +938,13 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 ) : (
                   <>
                     <Copy className="w-3.5 h-3.5" />
-                    <span>Copy Transmission</span>
+                    <span>Copy Original</span>
                   </>
                 )}
               </button>
             </div>
             <pre className="text-xs sm:text-sm font-mono text-emerald-300/90 whitespace-pre-wrap leading-relaxed p-2.5 rounded-lg bg-black/60 border border-neutral-900 select-all">
-              {result.message}
+              {originalTransmission}
             </pre>
           </div>
         )}
@@ -1024,13 +1065,13 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
       {showPartnerConsent && (
         <PartnerConsentModal
           isOpen={showPartnerConsent}
-          provider={getTestProvider()}
+          provider={destination}
           sosPackage={createSOSPackage({
             emergencyType: result.emergency_type,
             category: result.emergency_category,
             severity: result.severity,
-            message: showTranslated && result.translation ? result.translation.translated_message : result.message,
-            gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
+            message: result.message,
+            gps: result.location_coordinates || null,
             source: result.source === 'nebius_nemotron' ? 'online' : 'offline'
           })}
           isOffline={!navigator.onLine}

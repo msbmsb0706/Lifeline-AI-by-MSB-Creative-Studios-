@@ -1,3 +1,5 @@
+import type { EmergencyPartnerProvider } from './types.ts';
+import { getOriginalTransmission, isUsableOnlineTranslation } from './lib/translation.ts';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header.tsx';
 import { EmergencyVoiceButton } from './components/EmergencyVoiceButton.tsx';
@@ -35,8 +37,10 @@ export default function App() {
   const [showSilentSOS, setShowSilentSOS] = useState<boolean>(false);
   const [pendingQueueCount, setPendingQueueCount] = useState<number>(0);
   const [transcript, setTranscript] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState('GLOBAL');
+  const [authorizedPartner, setAuthorizedPartner] = useState<EmergencyPartnerProvider | null>(null);
   const [locationInfo, setLocationInfo] = useState<string | null>(null);
-  const [locationCoords, setLocationCoords] = useState<{ latitude: number; longitude: number; accuracyMeters?: number } | null>(null);
+  const [locationCoords, setLocationCoords] = useState<{ latitude: number; longitude: number; accuracyMeters?: number; timestamp?: number } | null>(null);
   const [offlineForce, setOfflineForce] = useState<boolean>(false);
   const [selectedLanguage, setSelectedLanguage] = useState<string>('en');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
@@ -205,8 +209,17 @@ export default function App() {
     }
   });
 
-  // Deliberately no automatic status request: this keeps Offline/Resilience mode network-silent.
-  // Online mode remains API-backed when the user explicitly selects it and submits an analysis.
+  useEffect(() => {
+    if (offlineForce) { setAuthorizedPartner(null); return; }
+    let cancelled = false;
+    fetch('/api/emergency-partner/config').then(r => r.ok ? r.json() : Promise.reject())
+      .then(json => { if (!cancelled) setAuthorizedPartner(json.provider); })
+      .catch(() => { if (!cancelled) setAuthorizedPartner(null); });
+    return () => { cancelled = true; };
+  }, [offlineForce]);
+
+  // Offline/Resilience mode remains network-silent. Public partner configuration
+  // is fetched only in online mode; analysis still requires an explicit submission.
 
   // Load recent reports from localStorage ONLY if user has opted into storage feature
   useEffect(() => {
@@ -270,10 +283,10 @@ export default function App() {
 
   const handleLocationUpdate = (
     loc: string,
-    coords?: { latitude: number; longitude: number; accuracyMeters?: number }
+    coords?: { latitude: number; longitude: number; accuracyMeters?: number; timestamp?: number }
   ) => {
     setLocationInfo(loc);
-    if (coords) setLocationCoords(coords);
+    setLocationCoords(coords || null);
   };
 
   /**
@@ -327,6 +340,7 @@ export default function App() {
         offline_notice: 'OFFLINE — classified locally in this browser. No cloud API was called.',
         latency_ms: 1,
         raw_transcript: textToAnalyze,
+        original_message: textToAnalyze,
         location_coordinates: locationCoords,
         voice_capture: voiceCapture ?? undefined
       };
@@ -413,9 +427,9 @@ export default function App() {
     // Translation source contract: what gets translated is the USER'S ORIGINAL
     // TRANSMISSION (raw_transcript) — NEVER the generated responder/dispatch
     // message. The generated message stays available (and unchanged) for the
-    // structured responder fields. Legacy results without raw_transcript keep
-    // the previous message fallback.
-    const sourceTranscript = currentResult.raw_transcript || currentResult.message;
+    // structured responder fields. Use original_message next, then message only
+    // for legacy records that have neither original field.
+    const sourceTranscript = getOriginalTransmission(currentResult);
 
     // Offline translation is deliberately local and limited to bundled emergency phrases.
     if (offlineForce) {
@@ -430,6 +444,7 @@ export default function App() {
       );
       const updatedResult: EmergencyAnalysisResult = {
         ...currentResult,
+        translation_error: undefined,
         translation: { ...localTrans, source: 'offline_fallback', model_used: 'Bundled emergency phrasebook' }
       };
       setCurrentResult(updatedResult);
@@ -452,15 +467,13 @@ export default function App() {
         })
       });
 
-      if (!response.ok) {
-        throw new Error(`Translation API returned HTTP ${response.status}`);
-      }
-
-      const json = await response.json();
-      if (json.success && json.data) {
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(`Translation API HTTP ${response.status}: ${json.error || 'request failed'}`);
+      if (json.success && isUsableOnlineTranslation(json.data) && json.data.target_language === targetLangCode && json.data.original_message === sourceTranscript) {
         const transData: TranslatedSOS = json.data;
         const updatedResult: EmergencyAnalysisResult = {
           ...currentResult,
+          translation_error: undefined,
           translation: transData
         };
         setCurrentResult(updatedResult);
@@ -470,25 +483,14 @@ export default function App() {
         throw new Error(json.error || 'Failed to translate emergency message');
       }
     } catch (err: any) {
-      console.warn('Backend translation failed or timed out. Using local browser offline translation:', err);
-
-      const localTrans = translateEmergencyOffline(
-        sourceTranscript,
-        targetLangCode,
-        currentResult.emergency_category || 'MEDICAL',
-        currentResult.severity,
-        currentResult.emergency_type,
-        currentResult.detected_language?.code,
-        locationInfo || undefined
-      );
-
+      console.warn('Online translation unavailable:', err);
       const updatedResult: EmergencyAnalysisResult = {
         ...currentResult,
-        translation: localTrans
+        translation: undefined,
+        translation_error: { code: 'TRANSLATION_UNAVAILABLE', error: err.message || 'Translation request failed.', target_language: targetLangCode }
       };
       setCurrentResult(updatedResult);
       saveReportToHistory(updatedResult);
-      if (soundEnabled) playPing('sos');
     } finally {
       setIsTranslating(false);
     }
@@ -737,6 +739,9 @@ export default function App() {
         {currentResult && (
           <SOSCardView
             result={currentResult}
+            selectedCountry={selectedCountry}
+            onCountryChange={setSelectedCountry}
+            authorizedPartner={authorizedPartner}
             highContrast={highContrast}
             soundEnabled={soundEnabled}
             onTranslateSOS={handleTranslateSOS}
@@ -834,6 +839,9 @@ export default function App() {
 
       {/* Emergency Partners Configuration & Queue Manager Modal */}
       <EmergencyPartnersManagerModal
+        selectedCountry={selectedCountry}
+        onCountryChange={setSelectedCountry}
+        authorizedPartner={authorizedPartner}
         isOpen={showPartnersModal}
         onClose={() => setShowPartnersModal(false)}
         isOffline={offlineForce || !navigator.onLine}

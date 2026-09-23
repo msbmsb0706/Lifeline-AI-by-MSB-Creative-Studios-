@@ -335,3 +335,39 @@ LifeLine AI does not predefine any of the values.
   API.
 - No real government, rescue, or public-safety dispatch integration is
   currently claimed or active.
+
+### Country-aware radio references and authorized configuration
+
+The SOS card and partner manager share a user-selected country context (default:
+Global/Test, **not** inferred from language or GPS). Radio emergency numbers come
+only from the existing public-contact directory in `src/lib/emergencyPartnersData.ts`.
+An unconfigured country displays **Emergency number not configured**. A phone
+number is reference information for a manual call, not an API connection.
+The generated radio report remains separate from the user's original transmission
+and its translation. No automatic 911/112 dispatch is implemented.
+
+The existing authorized adapter uses the following **server-only** settings:
+
+- `AUTHORIZED_PARTNER_API_URL` and `AUTHORIZED_PARTNER_API_KEY`: actual contracted
+  endpoint and credentials; never use a guessed government API.
+- `AUTHORIZED_PARTNER_NAME`: required public display name. Without name, URL and
+  key, the adapter remains disabled. Existing URL/key-only deployments must add
+  the real configured provider's name before authorized dispatch is enabled.
+- `AUTHORIZED_PARTNER_COUNTRY`: country code, or `GLOBAL` (default). Select the
+  appropriate country and explicitly choose this provider on the SOS card.
+- `AUTHORIZED_PARTNER_ALLOWED_FIELDS`: comma-separated permitted SOS fields.
+  Defaults to `sosId,timestamp,emergencyType,severity,message,source`. Only the
+  intersection with the adapter's supported fields is sent. Optional `gps`,
+  `photos`, `video`, `detectedLanguage`, `originalTranscript`, and
+  `englishTranslation` require explicit inclusion under the provider agreement.
+  GPS must also have been explicitly attached through the existing location
+  consent flow; sending still requires the existing partner review/consent.
+
+`GET /api/emergency-partner/config` exposes only public provider metadata and
+`NOT_CONFIGURED` / `CONFIGURED_NOT_VERIFIED` status, never the remote endpoint or
+credentials. Configured does not mean reachable, delivered, or acknowledged.
+`deliveryConfirmed` and `responderAcknowledged` are forwarded only when the
+configured receiving API explicitly returns boolean `true`. HTTP success alone
+is only a handoff. TEST/DEMO dispatch never sets these fields or contacts an
+emergency service. The existing explicitly labelled, opt-in local lifecycle
+simulator is unchanged.

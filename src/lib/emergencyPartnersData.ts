@@ -212,3 +212,21 @@ export function getTestProvider(): EmergencyPartnerProvider {
 export function getProviderById(id: string): EmergencyPartnerProvider | undefined {
   return EMERGENCY_PARTNER_PROVIDERS.find((p) => p.id === id);
 }
+
+/** Public routing information only. No inferred numbers, GPS geocoding, or API credentials. */
+export function getCountryEmergencyConfig(countryCode: string) {
+  const contacts = EMERGENCY_PARTNER_PROVIDERS.filter(p => p.country === countryCode && p.providerType === 'PUBLIC_CONTACT');
+  const numbers = (service: EmergencyPartnerProvider['serviceType']) => contacts
+    .filter(p => p.serviceType === service && p.phone).map(p => p.phone!);
+  return {
+    countryCode,
+    countryName: SUPPORTED_COUNTRIES.find(c => c.code === countryCode)?.name || 'Unconfigured country',
+    emergencyNumbers: numbers('GENERAL_EMERGENCY'),
+    policeNumbers: numbers('POLICE'),
+    medicalNumbers: numbers('AMBULANCE'),
+    fireNumbers: numbers('FIRE'),
+    rescueNumbers: numbers('RESCUE'),
+    sources: contacts.map(p => ({ name: p.verifiedOfficialSource, url: p.website })),
+    configurationSource: 'LifeLine public-contact directory',
+  };
+}

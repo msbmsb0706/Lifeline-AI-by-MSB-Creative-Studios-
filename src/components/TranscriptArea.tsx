@@ -35,7 +35,7 @@ interface TranscriptAreaProps {
   offlineForce: boolean;
   highContrast: boolean;
   locationInfo: string | null;
-  onLocationUpdate: (loc: string, coords?: { latitude: number; longitude: number; accuracyMeters?: number }) => void;
+  onLocationUpdate: (loc: string, coords?: { latitude: number; longitude: number; accuracyMeters?: number; timestamp?: number }) => void;
   selectedLanguage: string;
   onLanguageChange: (lang: string) => void;
   nebiusConnected?: boolean;
@@ -167,7 +167,8 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
         onLocationUpdate(locStr, {
           latitude: pos.coords.latitude,
           longitude: pos.coords.longitude,
-          accuracyMeters: pos.coords.accuracy
+          accuracyMeters: pos.coords.accuracy,
+          timestamp: pos.timestamp
         });
         setLocationSuccess(true);
       },

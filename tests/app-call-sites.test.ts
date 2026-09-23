@@ -53,13 +53,13 @@ const appSource = readRepoSource('../src/App.tsx');
 const translateFn = extractFunction(appSource, 'handleTranslateSOS', '\n  return (');
 
 assert(
-  translateFn.includes('currentResult.raw_transcript || currentResult.message'),
+  translateFn.includes('getOriginalTransmission(currentResult)'),
   "handleTranslateSOS derives its translation source from raw_transcript (the user's original transmission)"
 );
 assertEqual(
   countOccurrences(translateFn, 'currentResult.message'),
-  1,
-  'the generated dispatch message appears ONLY as the legacy fallback operand — never as a translation source'
+  0,
+  'the App uses the shared original-source helper rather than directly translating dispatch text'
 );
 assert(
   !translateFn.includes('text: currentResult.message'),
@@ -71,8 +71,8 @@ assert(
 );
 const sourceUses = countOccurrences(translateFn, 'sourceTranscript');
 assert(
-  sourceUses >= 4,
-  `the authoritative translation source is used at every call-site (definition + offline + online + catch fallback): ${sourceUses} uses`
+  sourceUses >= 3,
+  `the authoritative translation source is used at every call-site (definition + offline + online; no catch fallback): ${sourceUses} uses`
 );
 
 // ---------------------------------------------------------------------------

@@ -287,3 +287,33 @@ LifeLine AI and LifeLine AI branding assets are trademarks of MSB Creative Studi
 ## License
 
 This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for complete details.
+
+### Translation/routing regression checks
+
+```sh
+npm ci
+npm test
+npm run lint
+npm run build
+npx playwright install --with-deps chromium
+npm run test:integration
+```
+
+The integration suite starts the actual Express/Vite application on port 4173
+and an isolated local upstream fixture on 4174. It checks the final browser
+transmission values for English→Tamil, Tamil→English, English→Hindi and
+Tamil→Hindi, plus failure states, routing, consent/GPS and delivery semantics.
+It never contacts Nebius or a real emergency service. An existing compatible
+Chromium can be supplied via `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
+
+Online initial analysis and “Translate SOS” now use the same server/Nebius
+translation implementation. The source is `raw_transcript`, then
+`original_message`/submitted original text, then legacy `message`. Analysis
+preserves submitted text rather than trusting the model's rewritten transcript.
+Upstream HTTP status, malformed JSON, truncation, and missing `translated_message`
+are explicit translation failures, not successful offline translations. Analysis
+can still succeed while the UI says **Translation unavailable — original
+transmission preserved**. Offline phrasebook guidance is labelled offline.
+Live linguistic quality requires separate verification against the configured
+Nebius deployment; fixture tests validate the application data flow, not model
+translation accuracy.

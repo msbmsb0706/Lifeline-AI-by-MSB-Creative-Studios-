@@ -47,6 +47,9 @@ import {
 } from 'lucide-react';
 
 interface EmergencyPartnersManagerModalProps {
+  selectedCountry: string;
+  onCountryChange: (country: string) => void;
+  authorizedPartner?: EmergencyPartnerProvider | null;
   isOpen: boolean;
   onClose: () => void;
   isOffline: boolean;
@@ -55,8 +58,7 @@ interface EmergencyPartnersManagerModalProps {
 
 export const EmergencyPartnersManagerModal: React.FC<
   EmergencyPartnersManagerModalProps
-> = ({ isOpen, onClose, isOffline, onQueueUpdated }) => {
-  const [selectedCountry, setSelectedCountry] = useState<string>('GLOBAL');
+> = ({ isOpen, onClose, isOffline, onQueueUpdated, selectedCountry, onCountryChange: setSelectedCountry, authorizedPartner }) => {
   const [activeTab, setActiveTab] = useState<'providers' | 'queue'>('providers');
   const [pendingItems, setPendingItems] = useState<PendingSOSItem[]>([]);
   const [autoSendEnabled, setAutoSendEnabled] = useState<boolean>(getAutoSendSetting());
@@ -219,7 +221,8 @@ export const EmergencyPartnersManagerModal: React.FC<
 
   if (!isOpen) return null;
 
-  const currentProviders = getProvidersByCountry(selectedCountry);
+  const currentProviders = getProvidersByCountry(selectedCountry).filter(p => p.providerType !== 'AUTHORIZED_API');
+  if (authorizedPartner && (selectedCountry === 'ALL' || authorizedPartner.country === 'GLOBAL' || authorizedPartner.country === selectedCountry)) currentProviders.push(authorizedPartner);
   // "Pending" = not yet handed off (excludes terminal SENT/DELIVERED/ACKNOWLEDGED).
   const pendingCount = pendingItems.filter(
     (i) => !SOS_DELIVERY_STATUS_META[i.status]?.terminal
@@ -411,7 +414,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                             : isPublic
                             ? 'PUBLIC CONTACT'
                             : provider.apiEnabled
-                            ? 'AUTHORIZED API (ACTIVE)'
+                            ? 'AUTHORIZED API (CONFIGURED — UNVERIFIED)'
                             : 'AUTHORIZED API (DISABLED)'}
                         </span>
                       </div>
