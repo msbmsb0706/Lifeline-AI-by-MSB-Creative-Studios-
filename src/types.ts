@@ -241,6 +241,11 @@ export interface SOSStatusTransition {
   timestamp: string;
   /** Optional human-readable context, e.g. why a transmission failed. */
   detail?: string;
+  /**
+   * true when the transition was produced by the local TEST / DEMO ONLY
+   * lifecycle simulator (never by real partner integration).
+   */
+  simulated?: boolean;
 }
 
 /**

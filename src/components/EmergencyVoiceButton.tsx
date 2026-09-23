@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, AlertCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { playPing } from '../lib/audio.ts';
+import { getSpeechRecognitionLocale } from '../lib/languages.ts';
 
 interface EmergencyVoiceButtonProps {
   onTranscriptChange: (transcript: string, isFinal: boolean) => void;
@@ -10,6 +11,14 @@ interface EmergencyVoiceButtonProps {
   offlineMode?: boolean;
   soundEnabled: boolean;
   highContrast: boolean;
+  /**
+   * Currently selected application language code (e.g. 'en', 'ta', 'hi').
+   * Mapped to a BCP-47 Web Speech API recognizer locale so the browser voice
+   * path recognizes speech in the selected language instead of forcing
+   * English. Only affects the browser SpeechRecognition path — the server-side
+   * MediaRecorder / NVIDIA ASR path is unchanged.
+   */
+  selectedLanguage?: string;
   /**
    * Multilingual fast voice path. Resolved at activation time (explicit user
    * action) so offline mode stays network-silent. Returns 'server' when the
@@ -71,6 +80,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   offlineMode = false,
   soundEnabled,
   highContrast,
+  selectedLanguage = 'en',
   onResolveVoiceMode,
   onVoiceRecordingStopped,
   voicePhase = 'idle',
@@ -131,7 +141,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       recognition.interimResults = true;
       // The experimental flag is the only honest browser signal that recognition is local.
       setLocalSpeechSupported((recognition as any).processLocally === true);
-      recognition.lang = 'en-US';
+      // Selected-language recognizer locale. Browser SpeechRecognition uses a
+      // BCP-47 tag (e.g. 'ta-IN'), not a bare language code. Whether the locale
+      // is recognised locally/offline depends on the user's browser and OS.
+      recognition.lang = getSpeechRecognitionLocale(selectedLanguage);
 
       recognition.onstart = () => {
         setIsListening(true);
@@ -196,7 +209,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         }
       }
     };
-  }, [soundEnabled, onTranscriptChange, onSubmitEmergency]);
+  }, [soundEnabled, selectedLanguage, onTranscriptChange, onSubmitEmergency]);
 
   // Cleanup transient MediaRecorder capture on unmount — never leave the mic open
   useEffect(() => {

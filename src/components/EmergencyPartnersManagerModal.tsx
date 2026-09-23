@@ -584,6 +584,18 @@ export const EmergencyPartnersManagerModal: React.FC<
                     const sentAt = item.statusHistory?.find(
                       (t) => t.status === 'SENT' || t.status === 'DELIVERED' || t.status === 'ACKNOWLEDGED'
                     )?.timestamp;
+                    // True when the active final state was produced by the local
+                    // TEST / DEMO ONLY lifecycle simulator (never real partner
+                    // integration). Rendered so a simulated DELIVERED/ACKNOWLEDGED
+                    // can never be mistaken for a real emergency-service receipt.
+                    const isSimulatedFinal =
+                      item.status === 'DELIVERED' || item.status === 'ACKNOWLEDGED'
+                        ? Boolean(
+                            item.statusHistory?.some(
+                              (t) => t.status === item.status && t.simulated
+                            )
+                          )
+                        : false;
 
                     return (
                       <div
@@ -621,6 +633,12 @@ export const EmergencyPartnersManagerModal: React.FC<
                             >
                               {statusMeta.label}
                             </span>
+
+                            {isSimulatedFinal && (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-purple-900 text-purple-200 border border-purple-600 uppercase">
+                                Simulated
+                              </span>
+                            )}
 
                             {canRetryItem && (
                               <button

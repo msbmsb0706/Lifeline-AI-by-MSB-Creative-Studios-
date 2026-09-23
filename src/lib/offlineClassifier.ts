@@ -395,11 +395,14 @@ export function classifyEmergencyOffline(
     detected_language: detected
   };
 
-  // If a target language is specified (e.g. Tamil or Hindi) and differs from detected, generate translated SOS
+  // If a target language is specified (e.g. Tamil or Hindi) and differs from detected, generate translated SOS.
+  // Per the multilingual data contract, `translated_message` must be a faithful
+  // translation of the USER'S SOURCE TEXT (the transcript), never the generated
+  // dispatch message. The structured directive fields remain separate above.
   const targetCode = targetLanguageCode || (preferredLanguage ? getLanguageByCodeOrName(preferredLanguage).code : undefined);
   if (targetCode && targetCode !== detected.code) {
     const translated = translateEmergencyOffline(
-      dispatchMessage,
+      text.trim(),
       targetCode,
       bestRule.category,
       severity,

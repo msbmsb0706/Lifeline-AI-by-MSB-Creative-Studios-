@@ -613,6 +613,7 @@ export default function App() {
           offlineMode={offlineForce}
           soundEnabled={soundEnabled}
           highContrast={highContrast}
+          selectedLanguage={selectedLanguage}
           onResolveVoiceMode={resolveVoiceMode}
           onVoiceRecordingStopped={handleVoiceRecordingStopped}
           voicePhase={asrPhase}

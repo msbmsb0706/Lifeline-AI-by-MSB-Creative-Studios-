@@ -89,6 +89,40 @@ export function getLanguageByCodeOrName(identifier?: string): SupportedLanguageI
 }
 
 /**
+ * Browser Web Speech API (SpeechRecognition) recognizer locale per application
+ * language code. The Web Speech API consumes BCP-47 language tags, not bare
+ * ISO-639-1 codes, so the application language codes are mapped to the most
+ * appropriate BCP-47 recognizer locale for each language.
+ *
+ * NOTE: This only sets the browser's on-device speech recognizer. Whether a
+ * given locale is actually supported — and whether recognition runs on-device
+ * or via a vendor speech service — depends entirely on the user's browser and
+ * OS. It is not guaranteed to work offline or on every browser.
+ */
+const SPEECH_RECOGNITION_LOCALES: Record<string, string> = {
+  en: 'en-US',
+  ta: 'ta-IN',
+  hi: 'hi-IN',
+  te: 'te-IN',
+  kn: 'kn-IN',
+  ml: 'ml-IN',
+  bn: 'bn-IN',
+  mr: 'mr-IN',
+  es: 'es-ES',
+  fr: 'fr-FR'
+};
+
+/**
+ * Maps an application language code (e.g. 'ta') to the BCP-47 locale used by
+ * the browser SpeechRecognition API (e.g. 'ta-IN'), defaulting to 'en-US' for
+ * unknown codes.
+ */
+export function getSpeechRecognitionLocale(languageCode?: string): string {
+  if (!languageCode) return SPEECH_RECOGNITION_LOCALES.en;
+  return SPEECH_RECOGNITION_LOCALES[languageCode.toLowerCase().trim()] || SPEECH_RECOGNITION_LOCALES.en;
+}
+
+/**
  * High-accuracy multi-script & heuristic language detector
  * Supports English, Spanish, French, and Indian Regional (Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, Marathi)
  */
@@ -253,6 +287,14 @@ export interface OfflineEmergencyDict {
   immediateActionPrefix: string;
   firstAidHeader: string;
   needsTranslations: Record<string, string>;
+  /**
+   * Optional phrase-level free-text translation capability for the dictionary
+   * entry. Only curly-brace-written entries that can faithfully translate the
+   * subset of emergency phrases they list use this; all other dictionaries
+   * have no bundled free-text translation and must never present generated
+   * dispatch text as a translation of the user's original message.
+   */
+  phraseTranslations?: Partial<Record<string, Record<string, string>>>;
   sampleDirectives: Record<StandardEmergencyCategory, {
     headline: string;
     actionSteps: string[];
@@ -1434,6 +1476,20 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       'Emergency Shelter Team': 'Refugio Temporal y Mantas Térmicas',
       'Search & Rescue Tracking Team': 'Equipo Canino de Búsqueda y Rastreo (K9)'
     },
+    // Deterministic phrase-level free-text translation (source 'en' → target 'es').
+    // Faithful, conservatively bounded — partial words are never substituted.
+    phraseTranslations: {
+      en: {
+        'help': 'ayuda',
+        'sos': 'sos',
+        'emergency': 'emergencia',
+        'call the police': 'llame a la policía',
+        'call an ambulance': 'llame a una ambulancia',
+        'there is a fire': 'hay un incendio',
+        'i need help': 'necesito ayuda',
+        'help me': 'ayúdeme'
+      }
+    },
     sampleDirectives: {
       MEDICAL: {
         headline: 'EMERGENCIA MÉDICA CRÍTICA - DESPACHO INMEDIATO DE AMBULANCIA',
@@ -1577,6 +1633,20 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
       'Emergency Shelter Team': 'Abris d\'Urgence et Couvertures de Survie',
       'Search & Rescue Tracking Team': 'Équipe Cynophile de Recherche et Sauvetage'
     },
+    // Deterministic phrase-level free-text translation (source 'en' → target 'fr').
+    // Faithful, conservatively bounded — partial words are never substituted.
+    phraseTranslations: {
+      en: {
+        'help': 'aide',
+        'sos': 'sos',
+        'emergency': 'urgence',
+        'call the police': 'appelez la police',
+        'call an ambulance': 'appelez une ambulance',
+        'there is a fire': 'il y a un incendie',
+        'i need help': "j'ai besoin d'aide",
+        'help me': 'aidez-moi'
+      }
+    },
     sampleDirectives: {
       MEDICAL: {
         headline: 'URGENCE MÉDICALE CRITIQUE - ENVOI IMMÉDIAT DU SMUR',
@@ -1697,6 +1767,22 @@ export const EMERGENCY_TRANSLATION_DICTIONARY: Record<string, OfflineEmergencyDi
 /**
  * Deterministically translates an emergency SOS result into any of the 10 supported languages,
  * strictly maintaining severity, category, and emergency meaning.
+ *
+ * Data contract (PR #13):
+ * - `translated_message` MUST be a faithful translation of `originalMessage`
+ *   (the user's own source text) ONLY.
+ * - The deterministic radio dispatch message (constructed from
+ *   `dispatchHeader` / `priorityLabel` / `categoryLabel` / `needs`) is NEVER
+ *   presented as `translated_message`.
+ * - The structured responder/dispatch directive fields (headline, action steps,
+ *   responder instruction, first aid, needs) remain separate, translated fields.
+ *
+ * Because a static phrasebook cannot faithfully translate arbitrary free-form
+ * sentences, `translated_message` is produced only when a faithful
+ * deterministic translation is actually available (same language, or the small
+ * curated en→es/en→fr phrase set). Otherwise an explicit, honest safe fallback
+ * is returned in `translated_message` so generated dispatch content is never
+ * mistaken for the user's own translated words.
  */
 export function translateEmergencyOffline(
   originalMessage: string,
@@ -1718,12 +1804,17 @@ export function translateEmergencyOffline(
   const directive = dict.sampleDirectives[currentCategory] || dict.sampleDirectives.OTHER;
   const categoryLabel = dict.categoryLabels[currentCategory] || currentCategory;
 
-  const locPart = locationHint ? ` [${locationHint}]` : '';
-
-  // Standardized, high-urgency translated radio transmission message
-  const translatedMessage = `${dict.dispatchHeader}: ${dict.priorityLabel} ${currentSeverity}/5 - ${categoryLabel}.${locPart} ${dict.requiredAssetsLabel}: ${directive.responderDirective} ${dict.actionRequiredLabel}`;
-
+  // Structured emergency directive fields — translated deterministically via the
+  // bundled phrasebook. These are separate from the user's message translation.
   const translatedNeeds = Object.entries(dict.needsTranslations).slice(0, 3).map(([_, trans]) => trans);
+
+  // Faithful translation of the user's source text only. Never the generated
+  // dispatch message, never fabricated content.
+  const translatedMessage = translateFreeFormMessageFaithfully(
+    originalMessage,
+    targetLang.code,
+    detectedSource.code
+  );
 
   return {
     detected_source_language: {
@@ -1744,4 +1835,83 @@ export function translateEmergencyOffline(
     emergency_type: currentEmergencyType,
     timestamp: new Date().toISOString()
   };
+}
+
+/**
+ * Determines the faithful translation of the user's source `originalMessage`
+ * into `targetCode`, using only deterministic mechanisms that are safe to
+ * present as a translation of the user's own words:
+ *
+ * 1. Source and target are the same language → the text is already "translated".
+ * 2. Small curated phrase dictionary is available for the pair (en→es, en→fr) →
+ *    a conservative, phrase-by-phrase substitution.
+ * 3. Otherwise → an explicit honest fallback indicating a faithful
+ *    deterministic translation is not available offline. The fallback is marked
+ *    with the source language name so it can never be mistaken for machine
+ *    translation of the user's words. Online machine translation (Nebius /
+ *    Nemotron) remains available server-side.
+ */
+function translateFreeFormMessageFaithfully(
+  originalMessage: string,
+  targetCode: string,
+  sourceCode: string
+): string {
+  const sourceFreeText = (originalMessage || '').trim();
+
+  // Idempotent: translating to the same language is the text unchanged.
+  if (targetCode === sourceCode) return sourceFreeText;
+
+  const phraseTable = EMERGENCY_TRANSLATION_DICTIONARY[targetCode]?.phraseTranslations?.[sourceCode];
+  if (phraseTable) {
+    const translation = translateWithPhraseTable(sourceFreeText, phraseTable);
+    if (translation !== null) return translation;
+  }
+
+  // Deterministic faithful translation unavailable for this pair. Fall back to
+  // the original text with an explicit availability indication — never generated
+  // dispatch content.
+  const sourceName = getLanguageByCodeOrName(sourceCode).name;
+  return `[${targetCode.toUpperCase()} faithful translation not available offline for ${sourceName} free text — original message preserved] ${sourceFreeText}`;
+}
+
+/**
+ * Conservative phrase-boundary substitution. Phrases are matched against whole
+ * lowercased tokens so partial word overlaps never corrupt the source text.
+ * Applied within a single pass so phrases never cascade. Returns null when no
+ * substitution could be performed for the language pair.
+ */
+function translateWithPhraseTable(
+  sourceText: string,
+  phraseTable: Record<string, string>
+): string | null {
+  if (!sourceText) return null;
+
+  const sortedPhrases = Object.keys(phraseTable).sort((a, b) => b.length - a.length);
+  let result = sourceText;
+  let translated = 0;
+
+  for (const phrase of sortedPhrases) {
+    const regex = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(phrase)}(?=$|[^\\p{L}\\p{M}\\p{N}])`, 'giu');
+    const replaced = result.replace(regex, (match, prefix) => {
+      translated += 1;
+      // `match` is prefix + phrase; extract and case-match the phrase itself.
+      const word = match.slice(prefix.length);
+      return `${prefix}${matchCase(word, phraseTable[phrase])}`;
+    });
+    result = replaced;
+  }
+
+  return translated > 0 ? result : null;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Matches casing of the replacement to the original word's first letter. */
+function matchCase(originalWord: string, replacement: string): string {
+  if (!originalWord || !replacement) return replacement;
+  return originalWord[0] === originalWord[0].toUpperCase()
+    ? replacement[0].toUpperCase() + replacement.slice(1)
+    : replacement;
 }
