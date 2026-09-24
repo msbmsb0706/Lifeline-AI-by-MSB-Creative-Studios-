@@ -172,7 +172,11 @@ const SPEECH_RECOGNITION_LOCALES: Record<string, string> = {
  */
 export function getSpeechRecognitionLocale(languageCode?: string): string {
   if (!languageCode) return SPEECH_RECOGNITION_LOCALES.en;
-  return SPEECH_RECOGNITION_LOCALES[languageCode.toLowerCase().trim()] || SPEECH_RECOGNITION_LOCALES.en;
+  const clean = languageCode.toLowerCase().trim();
+  if (SPEECH_RECOGNITION_LOCALES[clean]) return SPEECH_RECOGNITION_LOCALES[clean];
+  // Accept BCP-47 tags ('ta-IN') and underscore locales ('ta_IN') as well as codes.
+  const base = clean.split(/[-_]/)[0];
+  return SPEECH_RECOGNITION_LOCALES[base] || SPEECH_RECOGNITION_LOCALES.en;
 }
 
 /**

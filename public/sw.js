@@ -11,10 +11,7 @@ const SHELL = '/index.html';
 const NAVIGATION_TIMEOUT_MS = 4000;
 const OPTIONAL_ASSETS = [
   '/manifest.webmanifest', '/favicon.svg', '/favicon.ico', '/apple-touch-icon.png',
-  '/logo.png', '/file_00000000f3ec8211ba741b84f232a029.png',
-  '/assets/branding/lifeline-ai-brand-1200.png',
-  '/assets/branding/lifeline-ai-brand.png',
-  '/assets/branding/lifeline-ai-icon-512.png',
+  '/logo.png',
   '/assets/branding/lifeline-ai-pwa-icon-192.png',
   '/assets/branding/lifeline-ai-pwa-icon-512.png'
 ];

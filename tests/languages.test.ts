@@ -32,3 +32,5 @@ section('Fallback behavior');
 assertEqual(getSpeechRecognitionLocale(), 'en-US', 'no code → en-US');
 assertEqual(getSpeechRecognitionLocale('xx'), 'en-US', "unknown code 'xx' → en-US");
 assertEqual(getSpeechRecognitionLocale('TA'), 'ta-IN', 'case-insensitive matching');
+assertEqual(getSpeechRecognitionLocale('ta-IN'), 'ta-IN', "BCP-47 tag 'ta-IN' stays 'ta-IN'");
+assertEqual(getSpeechRecognitionLocale('hi_IN'), 'hi-IN', "underscore locale 'hi_IN' → 'hi-IN'");

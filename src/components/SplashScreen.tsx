@@ -55,9 +55,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onDismiss, nebiusCon
           <div className="absolute -inset-2 rounded-3xl bg-gradient-to-tr from-red-600/30 to-red-500/10 blur-md" />
           <div className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-3xl overflow-hidden border-2 border-red-500/30 shadow-2xl bg-neutral-950 flex items-center justify-center p-1">
             <img
-              src="/assets/branding/lifeline-ai-brand-1200.png"
-              srcSet="/assets/branding/lifeline-ai-brand-1200.png 1200w, /assets/branding/lifeline-ai-brand.png 1536w"
-              sizes="(min-width: 640px) 144px, 112px"
+              src="/assets/branding/lifeline-ai-pwa-icon-512.png"
               alt="LifeLine AI by MSB Creative Studios"
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover rounded-2xl"

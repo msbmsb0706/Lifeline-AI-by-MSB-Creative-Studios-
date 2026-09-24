@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import { playPing } from '../lib/audio.ts';
 import { SHOW_TECH_DETAILS, friendlyTranslationText } from '../lib/uiVisibility.ts';
+import { speakText, speechSynthesisAvailable, stopSpeaking } from '../lib/speech.ts';
 import { looksLikeGeneratedDispatch } from '../lib/translationSafety.ts';
 import {
   GENERIC_EMERGENCY_GUIDANCE,
@@ -149,25 +150,21 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   };
 
   const handleSpeakAloud = (textToRead: string, langCode?: string) => {
-    if (!('speechSynthesis' in window)) return;
+    if (!speechSynthesisAvailable()) return;
 
     if (isSpeaking) {
-      window.speechSynthesis.cancel();
+      stopSpeaking();
       setIsSpeaking(false);
       return;
     }
 
-    const utterance = new SpeechSynthesisUtterance(textToRead);
-    utterance.rate = 0.95;
-    utterance.pitch = 1.0;
-    if (langCode) {
-      utterance.lang = langCode;
-    }
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-
     setIsSpeaking(true);
-    window.speechSynthesis.speak(utterance);
+    const spoken = speakText(textToRead, {
+      languageCode: langCode,
+      interrupt: true,
+      onEnd: () => setIsSpeaking(false)
+    });
+    if (!spoken.started) setIsSpeaking(false);
   };
 
   // Map deterministic priority symbols
@@ -889,7 +886,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <button
-                    onClick={() => handleSpeakAloud(safeTranslatedMessage, result.translation?.target_language)}
+                    onClick={() => handleSpeakAloud(friendlyTranslationText(safeTranslatedMessage), result.translation?.target_language)}
                     title="Read translated message aloud"
                     className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-[11px]"
                   >
@@ -1026,7 +1023,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
       <div className="mt-3 pt-2.5 border-t border-neutral-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-400">
         <div className="flex items-center gap-1.5">
           <img
-            src="/file_00000000f3ec8211ba741b84f232a029.png"
+            src="/logo.png"
             alt="LifeLine AI"
             className="w-4 h-4 rounded object-cover"
             onError={(e) => {

@@ -211,11 +211,23 @@ section('FIX 3 — browser voice notice wording');
 
 assert(
   !appSource.includes('browser voice (English)'),
-  'stale "(English)" browser-voice wording removed (browser voice follows the selected language since PR #13)'
+  'stale "(English)" browser-voice wording removed (browser voice follows the heard language)'
 );
 assert(
-  appSource.includes('browser voice (selected language)'),
-  'notice now accurately says the browser voice uses the selected language'
+  appSource.includes('speaks answers in any supported language'),
+  'notice says the microphone speaks answers in any supported language'
+);
+assert(
+  appSource.includes('buildSpokenEmergencyBrief'),
+  'voice emergencies are spoken aloud, not left as typed text only'
+);
+assert(
+  voiceBtnSource.includes('shouldSwitchRecognitionLanguage'),
+  'microphone retargets the recognizer live when another language is heard'
+);
+assert(
+  voiceBtnSource.includes('REALTIME_BROWSER_SPEECH'),
+  'real-time browser speech is preferred over batch record-then-type'
 );
 
 // ---------------------------------------------------------------------------

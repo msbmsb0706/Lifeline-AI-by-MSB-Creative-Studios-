@@ -54,7 +54,7 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             <img
-              src="/file_00000000f3ec8211ba741b84f232a029.png"
+              src="/logo.png"
               alt="LifeLine AI by MSB Creative Studios"
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover"
@@ -201,7 +201,7 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex items-center gap-3 mb-3">
               <div className="w-11 h-11 rounded-xl overflow-hidden border border-neutral-700 bg-neutral-950 flex-shrink-0">
                 <img
-                  src="/file_00000000f3ec8211ba741b84f232a029.png"
+                  src="/logo.png"
                   alt="LifeLine AI by MSB Creative Studios"
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover"

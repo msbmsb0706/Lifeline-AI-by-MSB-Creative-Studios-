@@ -1,38 +1,11 @@
 /**
- * Browser Web Speech API capture lifecycle (no paid ASR service required).
+ * Browser Web Speech API helpers (no paid ASR service required).
  *
- * Handles Chrome/Android behaviour where recognition ends on its own when the
- * speech end-point is reached:
- *  - interim and final results are emitted immediately
- *  - captured text is kept when Chrome ends the session (a trailing interim
- *    result is promoted to final instead of being dropped)
- *  - onerror / onend are handled once per session; stale events from an old
- *    recognizer are ignored
- *  - every tap creates a FRESH recognizer, so restarting never hits
- *    InvalidStateError from a session that is still shutting down
- *  - the selected language locale is applied on every start
+ * Used by EmergencyVoiceButton to handle Chrome/Android behaviour where
+ * recognition ends on its own at the speech end-point:
+ *  - finals are merged without Android's cumulative duplicates
+ *  - error codes map to user-facing messages (silence/abort stay quiet)
  */
-
-export interface RecognitionLike {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  onstart: ((ev?: any) => void) | null;
-  onresult: ((ev: any) => void) | null;
-  onerror: ((ev: any) => void) | null;
-  onend: ((ev?: any) => void) | null;
-  start(): void;
-  stop(): void;
-  abort(): void;
-}
-
-export interface SpeechCaptureCallbacks {
-  onListeningChange: (listening: boolean) => void;
-  onTranscript: (text: string, isFinal: boolean) => void;
-  onError: (message: string | null) => void;
-  /** Fired once per session with the full captured text (may be ''). */
-  onSessionEnd?: (finalText: string) => void;
-}
 
 export function speechErrorMessage(code: string | undefined): string | null {
   switch (code) {
@@ -77,128 +50,23 @@ export function buildTranscript(results: any): { finalText: string; interimText:
   return { finalText: finals.join(' '), interimText: interim };
 }
 
-export class SpeechCaptureController {
-  private recognition: RecognitionLike | null = null;
-  private sessionId = 0;
-  private finalText = '';
-  private interimText = '';
-  private listening = false;
-
-  constructor(
-    private readonly factory: () => RecognitionLike,
-    private readonly cb: SpeechCaptureCallbacks
-  ) {}
-
-  get isListening(): boolean {
-    return this.listening;
+/**
+ * Append a newly finalized chunk to the committed transcript. Android Chrome
+ * can re-emit cumulative finals ("help" then "help my father"); those replace
+ * the tail instead of duplicating it.
+ */
+export function mergeFinalChunk(committed: string, chunk: string): string {
+  const prev = committed.trim();
+  const next = chunk.replace(/\s+/g, ' ').trim();
+  if (!next) return prev;
+  if (!prev) return next;
+  if (prev === next || prev.endsWith(' ' + next)) return prev;
+  if (next.startsWith(prev + ' ')) return next;
+  // Replace a repeated tail segment: "fire" + "fire on floor two"
+  const words = prev.split(' ');
+  for (let i = 1; i < words.length; i++) {
+    const tail = words.slice(i).join(' ');
+    if (next === tail || next.startsWith(tail + ' ')) return `${words.slice(0, i).join(' ')} ${next}`;
   }
-
-  get transcript(): string {
-    return [this.finalText, this.interimText].filter(Boolean).join(' ').trim();
-  }
-
-  start(lang: string): boolean {
-    this.detach(true);
-    const id = ++this.sessionId;
-    this.finalText = '';
-    this.interimText = '';
-    this.cb.onError(null);
-
-    let rec: RecognitionLike;
-    try {
-      rec = this.factory();
-    } catch {
-      this.cb.onError('Speech recognition is not supported in this browser. Please type your emergency description.');
-      return false;
-    }
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = lang;
-
-    const live = () => id === this.sessionId && this.recognition === rec;
-
-    rec.onstart = () => {
-      if (!live()) return;
-      this.setListening(true);
-    };
-    rec.onresult = (event: any) => {
-      if (!live()) return;
-      const { finalText, interimText } = buildTranscript(event?.results);
-      this.finalText = finalText;
-      this.interimText = interimText;
-      const text = this.transcript;
-      if (text) this.cb.onTranscript(text, !interimText);
-    };
-    rec.onerror = (event: any) => {
-      if (!live()) return;
-      const msg = speechErrorMessage(event?.error);
-      if (msg) this.cb.onError(msg);
-      // onend always follows onerror; some engines skip it, so finish here too.
-      this.finish(rec);
-    };
-    rec.onend = () => {
-      if (!live()) return;
-      this.finish(rec);
-    };
-
-    this.recognition = rec;
-    try {
-      rec.start();
-      this.setListening(true); // optimistic: button reflects the tap immediately
-      return true;
-    } catch {
-      this.recognition = null;
-      this.setListening(false);
-      this.cb.onError('Could not start microphone. You can type distress details directly.');
-      return false;
-    }
-  }
-
-  /** User tapped stop — text is delivered via onend (or immediately if it never comes). */
-  stop(): void {
-    const rec = this.recognition;
-    if (!rec) return;
-    try {
-      rec.stop();
-    } catch {
-      this.finish(rec);
-    }
-  }
-
-  dispose(): void {
-    this.detach(true);
-    this.setListening(false);
-  }
-
-  private finish(rec: RecognitionLike): void {
-    if (this.recognition !== rec) return;
-    this.recognition = null;
-    // Don't lose a trailing interim result when Chrome ends the session.
-    const text = this.transcript;
-    this.finalText = text;
-    this.interimText = '';
-    if (text) this.cb.onTranscript(text, true);
-    this.setListening(false);
-    this.cb.onSessionEnd?.(text);
-  }
-
-  private detach(abort: boolean): void {
-    const rec = this.recognition;
-    this.recognition = null;
-    if (!rec) return;
-    rec.onstart = rec.onresult = rec.onerror = rec.onend = null;
-    if (abort) {
-      try {
-        rec.abort();
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  private setListening(value: boolean): void {
-    if (this.listening === value) return;
-    this.listening = value;
-    this.cb.onListeningChange(value);
-  }
+  return `${prev} ${next}`;
 }
