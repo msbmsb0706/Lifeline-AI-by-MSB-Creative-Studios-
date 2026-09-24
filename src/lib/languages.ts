@@ -79,13 +79,66 @@ export const STANDARDIZED_CATEGORIES: {
   }
 ];
 
-export function getLanguageByCodeOrName(identifier?: string): SupportedLanguageInfo {
-  if (!identifier) return SUPPORTED_LANGUAGES[0];
+/**
+ * Tolerant language-identifier matcher (audit FAIL-1). Returns null for unknown
+ * identifiers — callers that need "never crash" semantics use
+ * getLanguageByCodeOrName(); callers that must NEVER silently relabel text use
+ * resolveDetectedSourceLanguage().
+ *
+ * Accepts: 'ta', 'Tamil', 'தமிழ்', 'TA', locale tags ('ta-IN', 'ta_in', 'en-US'),
+ * ISO-639-2/3 aliases ('tam', 'hin', 'tel', 'kan', 'mal', 'ben', 'mar', 'spa',
+ * 'fra'/'fre', 'eng') and descriptive strings containing the language name as a
+ * whole word ('Tamil language', 'Tamil (India)').
+ */
+const LANGUAGE_ALIASES: Record<string, string> = {
+  eng: 'en', spa: 'es', esp: 'es', fra: 'fr', fre: 'fr',
+  hin: 'hi', tam: 'ta', tel: 'te', kan: 'kn', mal: 'ml', ben: 'bn', mar: 'mr'
+};
+
+export function matchLanguageIdentifier(identifier: string): SupportedLanguageInfo | null {
   const clean = identifier.toLowerCase().trim();
-  const match = SUPPORTED_LANGUAGES.find(
+  if (!clean) return null;
+  // 1. Exact code | name | native name (existing rule, unchanged).
+  const exact = SUPPORTED_LANGUAGES.find(
     (l) => l.code.toLowerCase() === clean || l.name.toLowerCase() === clean || l.nativeName.toLowerCase() === clean
   );
-  return match || SUPPORTED_LANGUAGES[0];
+  if (exact) return exact;
+  // 2. Locale-tagged identifiers: 'ta-in', 'ta_in', 'en-us' -> base code.
+  const base = clean.split(/[-_]/)[0];
+  const byBase = SUPPORTED_LANGUAGES.find((l) => l.code.toLowerCase() === base);
+  if (byBase) return byBase;
+  // 3. ISO-639-2/3 aliases: 'tam', 'hin', ...
+  const alias = LANGUAGE_ALIASES[clean] || LANGUAGE_ALIASES[base];
+  if (alias) return SUPPORTED_LANGUAGES.find((l) => l.code === alias) || null;
+  // 4. Descriptive strings containing the language NAME as a whole word.
+  const byNameWord = SUPPORTED_LANGUAGES.find((l) => {
+    const name = l.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^a-z])${name}(?=$|[^a-z])`).test(clean);
+  });
+  return byNameWord || null;
+}
+
+export function getLanguageByCodeOrName(identifier?: string): SupportedLanguageInfo {
+  if (!identifier) return SUPPORTED_LANGUAGES[0];
+  // Contract preserved: unknown identifiers still fall back to English for
+  // TARGET/UI-list resolution; source-language relabeling is fixed in
+  // resolveDetectedSourceLanguage() below (audit FAIL-1).
+  return matchLanguageIdentifier(identifier) || SUPPORTED_LANGUAGES[0];
+}
+
+/**
+ * Resolves the SOURCE language of a transmission (audit FAIL-1):
+ * a recognised label (canonical, locale-tagged, alias or descriptive) wins;
+ * an unknown/missing label NEVER silently becomes English — deterministic
+ * script/keyword detection of the actual text runs instead (the same policy
+ * normalizeAsrLanguage() in server.ts applies to ASR-reported labels).
+ */
+export function resolveDetectedSourceLanguage(sourceLanguage: unknown, sourceText: string): DetectedLanguage {
+  if (typeof sourceLanguage === 'string' && sourceLanguage.trim()) {
+    const matched = matchLanguageIdentifier(sourceLanguage);
+    if (matched) return { code: matched.code, name: matched.name, confidence: 0.95 };
+  }
+  return detectLanguage(sourceText);
 }
 
 /**
@@ -170,45 +223,54 @@ export function detectLanguage(text: string): DetectedLanguage {
   }
 
   // 2. Transliterated / Romanized Emergency markers for Indian Regional Languages
+  // Word-boundary matching (audit FAIL-2): a marker must appear as its own
+  // word, never inside a longer word — 'vali' no longer matches "invalid" or
+  // "kavali" (which was stealing Romanized Telugu as Tamil).
+  const hasMarkerWord = (text: string, word: string): boolean =>
+    new RegExp(`(^|[^\\p{L}\\p{M}])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^\\p{L}\\p{M}])`, 'u').test(text);
+
   const romanizedTamil = ['kapathunga', 'udavi', 'thee', 'maruthuva', 'vali', 'appadiye', 'vanthudunga', 'tamil'];
-  if (romanizedTamil.some((w) => lower.includes(w))) {
+  if (romanizedTamil.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'ta', name: 'Tamil', confidence: 0.88 };
   }
 
   const romanizedHindi = ['bachao', 'madad', 'aag', 'chot', 'dard', 'aspataal', 'saans', 'jaldi', 'gadi'];
-  if (romanizedHindi.some((w) => lower.includes(w))) {
+  if (romanizedHindi.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'hi', name: 'Hindi', confidence: 0.88 };
   }
 
   const romanizedTelugu = ['sahayam', 'sahayatha', 'kapadandi', 'nappi', 'manta', 'raktham'];
-  if (romanizedTelugu.some((w) => lower.includes(w))) {
+  if (romanizedTelugu.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'te', name: 'Telugu', confidence: 0.88 };
   }
 
   const romanizedKannada = ['sahaya', 'kapaadi', 'benki', 'rogi', 'nogavu', 'thondare'];
-  if (romanizedKannada.some((w) => lower.includes(w))) {
+  if (romanizedKannada.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'kn', name: 'Kannada', confidence: 0.88 };
   }
 
   const romanizedMalayalam = ['sahayikku', 'sahayam', 'rakshikku', 'thee', 'vedana', 'aasupathri'];
-  if (romanizedMalayalam.some((w) => lower.includes(w))) {
+  if (romanizedMalayalam.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'ml', name: 'Malayalam', confidence: 0.88 };
   }
 
   const romanizedBengali = ['bachao', 'shahajjo', 'agun', 'rokto', 'batha', 'shonko'];
-  if (romanizedBengali.some((w) => lower.includes(w))) {
+  if (romanizedBengali.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'bn', name: 'Bengali', confidence: 0.88 };
   }
 
   const romanizedMarathi = ['vachva', 'madat', 'aag', 'tras', 'vedna', 'davaakhana'];
-  if (romanizedMarathi.some((w) => lower.includes(w))) {
+  if (romanizedMarathi.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'mr', name: 'Marathi', confidence: 0.88 };
   }
 
   // 3. Spanish markers
   const spanishMarkers = [
     'ayuda', 'socorro', 'fuego', 'dolor', 'emergencia', 'herido', 'sangre', 'respirar',
-    'hospital', 'ambulancia', 'accidente', 'urgente', 'incendio', 'pecho', 'por favor'
+    // 'hospital' removed (audit FAIL-2): identical spelling in English made
+    // "…heart attack at the hospital" detect as Spanish. Spanish is still
+    // covered by 'ambulancia', 'emergencia', 'accidente', accent rules, etc.
+    'ambulancia', 'accidente', 'urgente', 'incendio', 'pecho', 'por favor'
   ];
   const spanishChars = /[áéíóúñ¿¡]/i;
   const spanishHits = spanishMarkers.filter((w) => lower.includes(w)).length;
@@ -218,7 +280,10 @@ export function detectLanguage(text: string): DetectedLanguage {
 
   // 4. French markers
   const frenchMarkers = [
-    'aide', 'secours', 'urgence', 'feu', 'douleur', 'blessé', 'sang', 'respirer',
+    // 'sang' removed (audit FAIL-2): English past tense of "sing" made
+    // "They sang songs…" detect as French. French blood-injury phrasing is
+    // still covered by 'blessé', 'secours', 'douleur', accent rules, etc.
+    'aide', 'secours', 'urgence', 'feu', 'douleur', 'blessé', 'respirer',
     'hôpital', 'pompiers', 'accident', 'étouffement', 'poitrine', 's\'il vous plaît'
   ];
   const frenchChars = /[àèêëîïôùûçœ]/i;

@@ -27,8 +27,8 @@
  *     not a substitute for a failed online call.
  */
 import {
-  detectLanguage,
   getLanguageByCodeOrName,
+  resolveDetectedSourceLanguage,
   standardizeCategory,
   translateEmergencyOffline,
   SUPPORTED_LANGUAGES
@@ -198,10 +198,9 @@ export function buildOfflineTranslation(input: {
   location?: unknown;
 }): TranslatedSOS {
   const targetLangObj = getLanguageByCodeOrName(input.targetLanguage);
-  const detectedSource =
-    typeof input.sourceLanguage === 'string' && input.sourceLanguage.trim()
-      ? getLanguageByCodeOrName(input.sourceLanguage)
-      : detectLanguage(input.sourceText);
+  // Audit FAIL-1: recognised labels win; unknown labels fall back to script
+  // detection of the text — never a silent English relabel.
+  const detectedSource = resolveDetectedSourceLanguage(input.sourceLanguage, input.sourceText);
   const locked = lockTriage(input.currentSOS, input.sourceText);
 
   const translated = translateEmergencyOffline(
@@ -362,10 +361,7 @@ export async function translateEmergencyOnline(
 ): Promise<TranslatedSOS> {
   const { sourceText } = input;
   const targetLangObj = getLanguageByCodeOrName(input.targetLanguage);
-  const detectedSource =
-    typeof input.sourceLanguage === 'string' && input.sourceLanguage.trim()
-      ? getLanguageByCodeOrName(input.sourceLanguage)
-      : detectLanguage(sourceText);
+  const detectedSource = resolveDetectedSourceLanguage(input.sourceLanguage, sourceText);
   const locked = lockTriage(input.currentSOS, sourceText);
   const structured = input.currentSOS?.visual_card || {};
 
