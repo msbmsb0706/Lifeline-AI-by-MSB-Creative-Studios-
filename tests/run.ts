@@ -16,6 +16,7 @@ process.stdout.write('LifeLine AI regression tests\n');
 await import('./languages.test.ts');
 await import('./language-detection-regression.test.ts');
 await import('./translation.test.ts');
+await import('./offline-fire-denial.test.ts');
 await import('./sos-lifecycle.test.ts');
 await import('./app-call-sites.test.ts');
 await import('./pr16-corrective.test.ts');
