@@ -35,8 +35,8 @@ tested its API or integration.
 
 Accordingly:
 
-- **TEST / DEMO** is a demonstration and testing provider only. It is
-  **not** real emergency dispatch.
+- **LOCAL_ONLY** stores real user SOS text on this browser/device for manual sharing; it is not an API destination or a partner.
+- **TEST / DEMO** accepts only the fixed synthetic example from the partner directory. Real user SOS text (including legacy queued TEST records) is blocked from demo API upload. It is **not** emergency dispatch.
 - **PUBLIC_CONTACT** is an officially published contact-information
   provider. It is **not** an API dispatch integration.
 - **AUTHORIZED_API** is used only when an organization has actually supplied
@@ -50,8 +50,8 @@ Accordingly:
 ### TEST / DEMO Provider
 
 - Labeled clearly: `"TEST EMERGENCY PARTNER — DEMONSTRATION ONLY"`.
-- Used exclusively for system demonstrations and sandbox testing.
-- Simulates receiving an SOS package and returns a mock acknowledgment with
+- Used exclusively for synthetic partner-directory demonstrations and sandbox testing. The demo endpoint rejects user SOS messages and local-only records.
+- Simulates receiving a fixed example and returns a mock acknowledgment with
   a reference ID (`DEMO-ACK-XXXXX`).
 - Does **not** send alerts to any real government, police, fire, or rescue
   organization.
@@ -86,11 +86,13 @@ Accordingly:
 ## Architecture
 
 ```
-Browser  →  Node/Express backend  →  POST /api/emergency-partner/dispatch
-              │
+Real SOS → LOCAL_ONLY browser queue → user-initiated device share/clipboard (no API)
+Fixed synthetic demo / explicitly approved authorized record
+         → Node/Express POST /api/emergency-partner/dispatch
               ├─ PUBLIC_CONTACT   → rejected (no API capability)
-              ├─ AUTHORIZED_API   → server-side HTTPS call to the authorized endpoint
-              └─ TEST / DEMO      → local mock acknowledgment (demonstration only)
+              ├─ LOCAL_ONLY       → rejected (no API capability)
+              ├─ AUTHORIZED_API   → server-side HTTPS call if configured
+              └─ TEST / DEMO      → mock acknowledgment for fixed synthetic example ONLY
 ```
 
 - The browser talks to the LifeLine backend over relative API routes.
@@ -101,13 +103,10 @@ Browser  →  Node/Express backend  →  POST /api/emergency-partner/dispatch
 
 ## User Confirmation & Consent
 
-- A mandatory, explicit consent confirmation is shown prior to any
-  transmission.
-- Each pending SOS record carries the user's approval flag and the time the
-  user confirmed the transmission.
-- The user can view, manually transmit, or delete any unsent pending SOS
-  from the local queue at any time.
-- Transmission cannot proceed without the user's explicit confirmation.
+- A local save is **not** consent to partner transmission. It creates a LOCAL_ONLY record; no API upload is possible for that record.
+- Explicit review/approval is required for eligible configured partner transmissions. The approved record carries its confirmation timestamp.
+- Real SOS text can be reviewed, manually shared through the device or copied to clipboard, and deleted from the queue.
+- No queue transmission runs on reconnect, page open, timer, focus, or battery recovery — even if an older auto-send preference was stored.
 
 ---
 
@@ -129,7 +128,7 @@ documented fields are:
 | `video` | Optional 10-second video metadata entry, or `null`. |
 | `source` | `online` or `offline`. |
 | `partnerId` | Identifier of the target partner/provider. |
-| `providerType` | `TEST`, `PUBLIC_CONTACT`, or `AUTHORIZED_API`. |
+| `providerType` | `LOCAL_ONLY` (never sent), `TEST` (synthetic only), `PUBLIC_CONTACT`, or `AUTHORIZED_API`. |
 | `userConsentConfirmed` | Boolean confirming explicit user review and consent. |
 
 ---
@@ -156,8 +155,7 @@ documented fields are:
   sooner).
 - Photos and video are evidence only. They are **not** sent to a vision AI
   model.
-- Photos and video are transmitted to a provider only if that provider's
-  documented API interface explicitly supports media uploads.
+- Photo/video **bytes are not retained by the SOS queue and cannot be uploaded from it**, even if a provider supports media. Only file names/types/sizes can be included in a manually approved API payload. Save video to the device or share evidence via the device sheet while the tab and files are still open.
 
 ---
 
@@ -231,9 +229,8 @@ real organization integration.
 
 - An SOS is marked `SENT` only after receiving a valid provider
   acknowledgment.
-- Items already `SENT`, or currently `TRANSMITTING`, are skipped so the same
-  approved SOS is not transmitted more than once.
-- Duplicate submissions are prevented.
+- Items already `SENT` and in-flight `SENDING` records are skipped during a normal session. An interrupted `SENDING` record is recovered for manual review on restart, **not automatically retried**.
+- Exactly-once delivery is **not guaranteed**: if a partner accepted the request but the browser closed before saving the receipt, a later manual retry could duplicate it. A real partner must implement idempotency by `sosId`.
 
 ---
 
@@ -254,18 +251,15 @@ exposes credentials:
 - Timeouts and network failures during an authorized-provider call are
   surfaced as dispatch failures.
 
-Failed SOS items remain in the local queue with an error message. They are
-retried only through the framework's safe retry flow — either an explicit
-user action or the opt-in "Send pending SOS when connection returns"
-setting.
+Failed eligible partner records remain in the local queue with an error message.
+Only an explicit user action can retry them. Local-only SOS records are never
+API retry candidates; old auto-send preferences are ignored.
 
 ---
 
 ## Sandbox Testing
 
-- The built-in TEST / DEMO provider is the sandbox for demonstrating and
-  validating the dispatch flow. It simulates receiving an SOS package and
-  returns a mock acknowledgment; no real service receives the alert.
+- The built-in TEST / DEMO provider accepts only a fixed synthetic partner-directory fixture. It returns a mock endpoint receipt, never an actual emergency-service delivery or acknowledgment.
 - A real `AUTHORIZED_API` integration must be validated against the
   organization's own sandbox / test endpoint before the real endpoint is
   enabled.
@@ -277,16 +271,10 @@ setting.
 - Offline SOS generation continues to work without internet: device GPS (if
   available), local classification, photo evidence (up to 2 images), and
   10-second video recording.
-- A pending SOS package is saved locally only after explicit user review
-  and confirmation.
-- A privacy-preserving "Send pending SOS when connection returns" setting is
-  provided; it defaults to `OFF`.
-- When enabled and the user has explicitly approved partner transmission,
-  the queue transmits pending SOS packages when connectivity returns,
-  prevents duplicate submissions, and marks an SOS as `SENT` only after a
-  valid provider acknowledgment.
-- Photos and video are only transmitted to a real provider if its documented
-  API interface explicitly supports media uploads.
+- A real SOS package is saved only after explicit user confirmation, locally in browser storage; a failed save is reported and storage can be evicted by the browser/OS.
+- No automatic upload setting exists. Reconnecting/restarting never uploads any SOS (including older consented partner records); review and share manually after connectivity returns if desired.
+- Partner API dispatch is unavailable until a documented authorized integration is actually configured. The included TEST endpoint is for synthetic examples only.
+- Photo/video file contents are never queued or uploaded by the partner API flow; only metadata survives closing the tab.
 
 ---
 
@@ -326,8 +314,8 @@ LifeLine AI does not predefine any of the values.
 
 ## Current Framework Status
 
-- **TEST / DEMO**: available for demonstrations and sandbox testing; never
-  real emergency dispatch.
+- **LOCAL_ONLY**: saves real SOS text on device for manual sharing, without a partner or API destination.
+- **TEST / DEMO**: synthetic directory example only, never real emergency dispatch.
 - **PUBLIC_CONTACT**: available with verified official emergency contact
   information for the documented countries; not an API integration.
 - **AUTHORIZED_API**: framework-only template, disabled unless an

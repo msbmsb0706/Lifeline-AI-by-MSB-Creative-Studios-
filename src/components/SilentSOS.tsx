@@ -1,15 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, CheckCircle2, MapPin, Radio, ShieldAlert, Smartphone, Video, X, Send, Save, Info } from 'lucide-react';
 import { classifyEmergencyOffline } from '../lib/offlineClassifier.ts';
+import { detectLanguage } from '../lib/languages.ts';
 import { EmergencyAnalysisResult, SeverityLevel } from '../types.ts';
 import {
   createSOSPackage,
   createQueuedSOSItem,
-  markWaitingForConnection,
-  savePendingSOS,
-  processPendingQueue
+  savePendingSOS
 } from '../lib/emergencyPartnerQueue.ts';
-import { getTestProvider } from '../lib/emergencyPartnersData.ts';
+import { LOCAL_ONLY_PROVIDER } from '../lib/emergencyPartnersData.ts';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
 import { SOSDeliveryStatusCard } from './SOSDeliveryStatus.tsx';
 
@@ -64,8 +63,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
   const [sensorAvailable, setSensorAvailable] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [showPartnerConsentModal, setShowPartnerConsentModal] = useState(false);
-  // SOS record confirmed for partner dispatch — its delivery lifecycle status
-  // is shown directly on this screen (no extra navigation required).
+  // Locally saved SOS status is shown directly here, never as a partner dispatch.
   const [dispatchedSosId, setDispatchedSosId] = useState<string | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreview, setVideoPreview] = useState<string | null>(null);
@@ -307,11 +305,10 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     model_used: 'LifeLine Local Deterministic Triage Rules',
     timestamp: new Date().toISOString(),
     raw_transcript: message.trim() || selectedEvent?.text || 'Possible emergency reported by silent user trigger.',
-    offline_notice: offlineMode ? 'Silent SOS classified locally. No cloud API was called.' : undefined,
+    offline_notice: 'Silent SOS classified locally. No cloud API was called. No SOS was automatically sent.',
     location_coordinates: location.coords || null
   });
 
-  const testPartner = getTestProvider();
 
   const buildSOSPkg = () => {
     const silentResult = createSilentResult();
@@ -335,52 +332,37 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
             sizeBytes: videoFile.size
           }
         : null,
-      source: offlineMode || !navigator.onLine ? 'offline' : 'online'
+      source: 'offline', // Silent SOS classification is always on-device.
+      originalTranscript: silentResult.raw_transcript,
+      detectedLanguage: silentResult.detected_language
     });
   };
 
-  const handleConfirmPartnerConsent = async () => {
+  const handleSaveLocalSOS = () => {
     const sosPkg = buildSOSPkg();
     const silentResult = createSilentResult();
     onSaveResult?.(silentResult);
 
     const pendingItem = createQueuedSOSItem({
       sosPackage: sosPkg,
-      targetPartner: testPartner,
+      targetPartner: LOCAL_ONLY_PROVIDER,
       userConsentTimestamp: new Date().toISOString()
     });
 
-    savePendingSOS(pendingItem);
+    if (!savePendingSOS(pendingItem)) {
+      setShowPartnerConsentModal(false);
+      setShowConfirmation(false);
+      setShareNotice('SAVE FAILED — storage is full or unavailable. This SOS was NOT queued or sent. Call your local emergency number directly.');
+      return;
+    }
     onQueueUpdated?.();
     setShowPartnerConsentModal(false);
     setShowConfirmation(false);
-    // Show the live delivery status on this screen.
     setDispatchedSosId(sosPkg.sosId);
 
-    if (offlineMode || !navigator.onLine) {
-      // Offline: record stays safely stored locally, explicitly waiting for
-      // connection. It transmits automatically when connectivity returns
-      // (unless the user disabled auto-resume in the queue manager).
-      markWaitingForConnection(pendingItem, 'Device offline — waiting for connection.');
-      setShareNotice(
-        'OFFLINE — SOS saved locally (PENDING LOCAL). It will be sent when a supported connection becomes available.'
-      );
-      return;
-    }
-
-    try {
-      const res = await processPendingQueue({ forceManual: true });
-      onQueueUpdated?.();
-      if (res.successCount > 0) {
-        setShareNotice(
-          'TEST / DEMO SUCCESS — SOS transmitted to TEST Emergency Partner. Reference ID acknowledged.'
-        );
-      } else if (res.errors.length > 0) {
-        setShareNotice(`Partner transmission failed: ${res.errors.join('; ')}`);
-      }
-    } catch (err: any) {
-      setShareNotice(`Partner transmission error: ${err.message}`);
-    }
+    setShareNotice(
+      'SAVED ON THIS DEVICE ONLY — NOT SENT. Reconnecting will never upload it. Open the queue to share text manually; photo/video files are NOT stored in this queue, so save or share them now before closing.'
+    );
   };
 
   const confirmShare = async () => {
@@ -412,12 +394,11 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
         const shareData: ShareData = { title: 'LifeLine AI Silent SOS', text: shareText };
         if (canAttachFiles) shareData.files = attachmentFiles;
         await navigator.share(shareData);
-        if (attachmentFiles.length > 0 && !canAttachFiles) {
-          notice =
-            'Share sheet opened. Photo/video files could not be attached because this browser does not support file sharing. Nothing was sent to government or rescue services.';
-        }
+        notice = attachmentFiles.length > 0 && !canAttachFiles
+          ? 'Share sheet closed. This browser cannot attach files; photo/video bytes were NOT shared. Check your chosen app for delivery.'
+          : 'Share sheet closed. LifeLine cannot verify delivery; check the chosen app. Nothing was sent automatically to emergency services.';
       } catch {
-        /* user cancelled */
+        notice = 'Share canceled or failed. No delivery was confirmed; evidence is still on this screen.';
       }
     } else {
       try {
@@ -432,11 +413,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     }
 
     setShowConfirmation(false);
-    if (notice) {
-      setShareNotice(notice);
-      return;
-    }
-    onClose();
+    setShareNotice(notice || 'Sharing could not be verified. Check the chosen app before closing.');
   };
 
   return (
@@ -483,6 +460,8 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
           <textarea
             value={message}
             onChange={(e) => setMessage(e.target.value)}
+            dir="auto"
+            lang="mul"
             rows={2}
             placeholder="Optional emergency message (no speaking required)"
             className="w-full rounded-xl bg-black border border-neutral-700 p-3 text-sm outline-none focus:border-red-500"
@@ -549,8 +528,8 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
               {isRecording && <span className="text-xs font-black text-red-400 animate-pulse">RECORDING {secondsLeft}s</span>}
             </div>
             <p className="text-[11px] text-neutral-400">
-              Video is captured only after you tap CAPTURE SOS VIDEO. Recording stops automatically after 10 seconds.
-              Review before sharing.
+              Video is captured only after you tap CAPTURE SOS VIDEO. Recording stops after 10 seconds.
+              It stays in this browser tab only; it is NOT uploaded or kept in the SOS queue. Save it to your device before closing.
             </p>
             <video
               ref={liveVideoRef}
@@ -589,6 +568,12 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
                   </button>
                 </>
               )}
+              {videoFile && videoPreview && !isRecording && (
+                <a href={videoPreview} download={videoFile.name}
+                   className="px-3 py-2 rounded-lg bg-emerald-800 hover:bg-emerald-700 font-black text-xs">
+                  SAVE VIDEO TO DEVICE
+                </a>
+              )}
               {videoFile && !isRecording && (
                 <button
                   type="button"
@@ -600,6 +585,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
               )}
             </div>
             {videoNotice && <div className="text-[11px] text-amber-300">{videoNotice}</div>}
+            {videoFile && <p className="text-[11px] text-amber-300">Partner queue saves file name/type/size ONLY; it cannot upload or recover the recording after this screen closes.</p>}
           </div>
 
           <div className="rounded-xl bg-red-950/50 border-2 border-red-700 p-4">
@@ -639,7 +625,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
           </div>
 
           {/* Live SOS delivery lifecycle status — always visible after confirmation. */}
-          <SOSDeliveryStatusCard sosId={dispatchedSosId} onRetryFinished={onQueueUpdated} />
+          <SOSDeliveryStatusCard sosId={dispatchedSosId} offlineMode={offlineMode} onRetryFinished={onQueueUpdated} />
 
           {shareNotice && (
             <div className="p-3 rounded-xl bg-purple-950/60 border border-purple-700 text-xs text-purple-100">{shareNotice}</div>
@@ -717,7 +703,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
                 className="py-3 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow"
               >
                 <Radio className="w-4 h-4" />
-                <span>SEND TO EMERGENCY PARTNER (DEMO)</span>
+                <span>SAVE SOS ON THIS DEVICE</span>
               </button>
               <button onClick={confirmShare} className="py-3 px-3 rounded-xl bg-red-600 hover:bg-red-500 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow">
                 <ShieldAlert className="w-4 h-4" />
@@ -736,11 +722,11 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
       {showPartnerConsentModal && (
         <PartnerConsentModal
           isOpen={showPartnerConsentModal}
-          provider={testPartner}
+          provider={LOCAL_ONLY_PROVIDER}
           sosPackage={buildSOSPkg()}
           isOffline={offlineMode || !navigator.onLine}
           onCancel={() => setShowPartnerConsentModal(false)}
-          onConfirm={handleConfirmPartnerConsent}
+          onConfirm={handleSaveLocalSOS}
         />
       )}
     </div>

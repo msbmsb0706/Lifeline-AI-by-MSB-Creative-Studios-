@@ -16,17 +16,22 @@ import {
   DetectedLanguage
 } from './types.ts';
 import { classifyEmergencyOffline } from './lib/offlineClassifier.ts';
+
 import { translateEmergencyOffline, detectLanguage } from './lib/languages.ts';
 import { selectTranslationSource, validateTranslatedMessage } from './lib/translationSafety.ts';
 import {
   getPendingQueue,
-  processPendingQueue,
-  getAutoSendSetting,
   subscribeToQueue,
   SOS_DELIVERY_STATUS_META
 } from './lib/emergencyPartnerQueue.ts';
 import { playPing } from './lib/audio.ts';
+import { getCountryEmergencyNumber, getSelectedCountry } from './lib/emergencyNumbers.ts';
+import { checkOfflineShellReady } from './lib/offlineShell.ts';
+import { attemptOnlineTriage } from './lib/onlineTriage.ts';
 import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send, Mail } from 'lucide-react';
+
+/** Keep a weak/failed online AI connection from blocking an on-device SOS. */
+const ONLINE_ANALYZE_TIMEOUT_MS = 4000;
 
 export default function App() {
   const [showSplash, setShowSplash] = useState<boolean>(true);
@@ -38,7 +43,14 @@ export default function App() {
   const [transcript, setTranscript] = useState('');
   const [locationInfo, setLocationInfo] = useState<string | null>(null);
   const [locationCoords, setLocationCoords] = useState<{ latitude: number; longitude: number; accuracyMeters?: number } | null>(null);
-  const [offlineForce, setOfflineForce] = useState<boolean>(false);
+  // Remember the user-selected offline mode across reloads / battery restarts.
+  // Only the preference is stored here, never an emergency transcript.
+  const [offlineForce, setOfflineForce] = useState<boolean>(() => {
+    try { return localStorage.getItem('lifeline_force_offline') === 'true'; }
+    catch { return false; }
+  });
+  const [networkAvailable, setNetworkAvailable] = useState<boolean>(() => navigator.onLine);
+  const [offlineShellReady, setOfflineShellReady] = useState<boolean | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState<string>('en');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
@@ -63,7 +75,7 @@ export default function App() {
    * completely network-silent (offline always returns 'browser' without any fetch).
    */
   const resolveVoiceMode = useCallback(async (): Promise<'server' | 'browser'> => {
-    if (offlineForce) return 'browser';
+    if (offlineForce || !navigator.onLine) return 'browser';
     const now = Date.now();
     if (asrProbeRef.current && now - asrProbeRef.current.at < 5 * 60 * 1000) {
       return asrProbeRef.current.configured ? 'server' : 'browser';
@@ -92,6 +104,11 @@ export default function App() {
    * never discard the original transcript.
    */
   const handleVoiceRecordingStopped = useCallback(async (audioBase64: string, mimeType: string, durationMs: number) => {
+    if (offlineForce || !navigator.onLine) {
+      setAsrPhase('idle');
+      setVoiceNotice('Offline voice upload unavailable — type the emergency instead. No recording was uploaded.');
+      return;
+    }
     setError(null);
     setVoiceNotice(null);
     setAsrPhase('transcribing');
@@ -157,7 +174,7 @@ export default function App() {
       setVoiceNotice(err?.message || 'Speech transcription failed. Tap the microphone to retry, use browser voice, or type the emergency.');
       // Any previously captured transcript is intentionally preserved.
     }
-  }, []);
+  }, [offlineForce]);
 
   // Refresh pending queue count ("pending" = not yet handed off — terminal
   // SENT / DELIVERED / ACKNOWLEDGED records stay stored but are not pending).
@@ -167,35 +184,58 @@ export default function App() {
     setPendingQueueCount(unsent.length);
   }, []);
 
-  // Monitor network connectivity & auto-resume pending SOS processing when
-  // connection returns. Only records with explicit per-SOS user consent are
-  // ever transmitted (enforced inside processPendingQueue).
+  // Re-read locally saved SOS records after restart and on network changes.
+  // Never send on startup, reconnect, focus, a timer, or after battery recovery.
+  // A fresh user action is required to share. New code ignores the legacy
+  // preference; force it OFF too, for any older tab still open on this device.
   useEffect(() => {
-    refreshPendingQueue();
-
-    // Session start: records left SENDING by an interrupted previous session are
-    // recovered by the queue library on first read. When online, resume them —
-    // and any still-pending user-confirmed records — through the same processor
-    // and consent/auto-send rules as a reconnect event. Offline starts simply
-    // stay pending until the 'online' event fires.
-    if (navigator.onLine && getAutoSendSetting()) {
-      processPendingQueue({ forceManual: false }).then(() => refreshPendingQueue());
-    }
-
-    const handleOnline = () => {
-      refreshPendingQueue();
-      if (getAutoSendSetting()) {
-        processPendingQueue({ forceManual: false }).then(() => refreshPendingQueue());
-      }
-    };
-
+    try { localStorage.setItem('lifeline_autosend_pending_sos', 'false'); }
+    catch { /* older tabs may remain active; storage could be unavailable */ }
+    refreshPendingQueue(); // also recovers interrupted SENDING records, without uploading
+    const handleOnline = () => { setNetworkAvailable(true); refreshPendingQueue(); };
+    const handleOffline = () => { setNetworkAvailable(false); refreshPendingQueue(); };
     window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
     const unsubscribe = subscribeToQueue(refreshPendingQueue);
     return () => {
       window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       unsubscribe();
     };
   }, [refreshPendingQueue]);
+
+  // Verify the worker has HTML AND its JS/CSS before promising offline startup.
+  // Recheck after foregrounding: OS storage eviction can happen at any time.
+  useEffect(() => {
+    if (!(import.meta as unknown as { env?: { PROD?: boolean } }).env?.PROD) return;
+    if (!('serviceWorker' in navigator)) {
+      setOfflineShellReady(false);
+      return;
+    }
+    let mounted = true;
+    const update = () => {
+      checkOfflineShellReady().then((ready) => {
+        if (mounted) setOfflineShellReady(ready);
+      });
+    };
+    const foreground = () => { if (document.visibilityState === 'visible') update(); };
+    update();
+    navigator.serviceWorker.addEventListener('controllerchange', update);
+    document.addEventListener('visibilitychange', foreground);
+    window.addEventListener('pageshow', update);
+    return () => {
+      mounted = false;
+      navigator.serviceWorker.removeEventListener('controllerchange', update);
+      document.removeEventListener('visibilitychange', foreground);
+      window.removeEventListener('pageshow', update);
+    };
+  }, []);
+
+  // Persist the offline-mode switch only; no message, location or recording.
+  useEffect(() => {
+    try { localStorage.setItem('lifeline_force_offline', String(offlineForce)); }
+    catch { /* private mode / unavailable storage */ }
+  }, [offlineForce]);
 
   // Privacy Rule: Do not store voice recordings or emergency information unless user explicitly enables storage feature
   const [historyStorageEnabled, setHistoryStorageEnabled] = useState<boolean>(() => {
@@ -297,6 +337,7 @@ export default function App() {
     setError(null);
 
     const textToAnalyze = inputText.trim();
+    const startedAt = Date.now();
     const detectedLang = detectLanguage(textToAnalyze);
 
     // Bilingual voice context (detected language + original transcript + optional
@@ -326,7 +367,7 @@ export default function App() {
         model_used: 'LifeLine Local Deterministic Triage Rules',
         timestamp: new Date().toISOString(),
         offline_notice: 'OFFLINE — classified locally in this browser. No cloud API was called.',
-        latency_ms: 1,
+        latency_ms: Math.max(0, Date.now() - startedAt),
         raw_transcript: textToAnalyze,
         location_coordinates: locationCoords,
         voice_capture: voiceCapture ?? undefined
@@ -339,76 +380,71 @@ export default function App() {
       return;
     }
 
-    // Online AI Mode: Send to Nebius Token Factory backend for Nemotron processing
+    // AUTOMATIC OFFLINE SOS: when the online AI cannot answer (airplane mode,
+    // no signal, timeout, server/API-key failure), the SOS is classified on
+    // this device immediately. This is never silent — the result is labelled
+    // offline_fallback and states why the online AI was not used.
+    const completeOnDevice = (reason: string) => {
+      const offlineClassified = classifyEmergencyOffline(
+        textToAnalyze,
+        locationInfo || undefined,
+        voiceCapture?.detectedLanguage?.name || detectedLang.name,
+        selectedLanguage
+      );
+      const onDeviceResult: EmergencyAnalysisResult = {
+        ...offlineClassified,
+        source: 'offline_fallback',
+        model_used: 'LifeLine Local Deterministic Triage Rules',
+        timestamp: new Date().toISOString(),
+        offline_notice: `ONLINE AI UNAVAILABLE — ${reason} Classified locally on this device; this result was NOT sent to a responder. Call your local emergency number in immediate danger.`,
+        latency_ms: Math.max(0, Date.now() - startedAt),
+        raw_transcript: textToAnalyze,
+        location_coordinates: locationCoords,
+        voice_capture: voiceCapture ?? undefined
+      };
+      setNebiusConnected(false);
+      setError(null);
+      setCurrentResult(onDeviceResult);
+      saveReportToHistory(onDeviceResult);
+      if (soundEnabled) playPing(onDeviceResult.severity >= 4 ? 'alert' : 'sos');
+      setIsAnalyzing(false);
+    };
+
+    // The online attempt is time-bounded and fully tested; a failed/invalid
+    // reply returns a reason instead of blocking the SOS. The helper NEVER
+    // sends to emergency partners — only the explicit consent flow can do that.
     try {
-      const response = await fetch('/api/analyze-emergency', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: textToAnalyze,
-          location: locationInfo,
-          coordinates: locationCoords,
-          offlineModeForce: false,
-          language: voiceCapture?.detectedLanguage?.name || detectedLang.name,
-          targetLanguage: selectedLanguage,
-          voiceCapture: voiceCapturePayload
-        })
-      });
+      const attempt = await attemptOnlineTriage({
+        text: textToAnalyze,
+        location: locationInfo,
+        coordinates: locationCoords,
+        language: voiceCapture?.detectedLanguage?.name || detectedLang.name,
+        targetLanguage: selectedLanguage,
+        voiceCapture: voiceCapturePayload
+      }, { isOnline: navigator.onLine, timeoutMs: ONLINE_ANALYZE_TIMEOUT_MS });
 
-      const json = await response.json().catch(() => ({}));
-
-      if (!response.ok || !json.success) {
-        const errMessage =
-          json.error ||
-          (response.status === 401
-            ? 'Nebius API authentication failed. Verify NEBIUS_API_KEY configuration.'
-            : response.status === 502
-            ? 'Nebius Token Factory service unreachable or timed out. Switch to Offline Fallback Mode if needed.'
-            : `Analysis request failed with status ${response.status}.`);
-
-        setError(errMessage);
-        setNebiusConnected(false);
-        if (soundEnabled) playPing('alert');
+      if ('reason' in attempt) {
+        completeOnDevice(attempt.reason);
         return;
       }
 
-      if (json.success && json.data) {
-        const result: EmergencyAnalysisResult = json.data;
-        // Verify actual completed Nebius response
-        if (result.source === 'nebius_nemotron' || result.nebius_connected) {
-          setNebiusConnected(true);
-        }
-        if (voiceCapture && !result.voice_capture) {
-          result.voice_capture = voiceCapture;
-        }
-        setCurrentResult(result);
-        saveReportToHistory(result);
-        // A successful ONLINE analysis can still carry an explicit ONLINE
-        // translation failure. That is reported as a translation-unavailable
-        // state — the original transmission stays exactly as the user sent it
-        // and no offline translation is silently shown instead.
-        if (result.translation_status === 'error' && result.translation_error) {
-          setError(
-            `Translation unavailable — ${result.translation_error.error} The original transmission is preserved.`
-          );
-        } else {
-          setError(null);
-        }
-        if (soundEnabled) {
-          playPing(result.severity >= 4 ? 'alert' : 'sos');
-        }
+      const result = attempt.data;
+      setNebiusConnected(result.source === 'nebius_nemotron' || Boolean(result.nebius_connected));
+      if (voiceCapture && !result.voice_capture) result.voice_capture = voiceCapture;
+      setCurrentResult(result);
+      saveReportToHistory(result);
+      // A successful ONLINE analysis can carry an explicit ONLINE translation
+      // error. Never replace that with a fabricated offline translation.
+      if (result.translation_status === 'error' && result.translation_error) {
+        setError(`Translation unavailable — ${result.translation_error.error} The original transmission is preserved.`);
       } else {
-        throw new Error(json.error || 'Invalid response from Nebius Token Factory');
+        setError(null);
       }
-    } catch (apiErr: any) {
-      console.error('Online Nebius analysis failed:', apiErr);
-      // Explicit error state: do not fabricate successful response or silent fallback!
-      setError(
-        apiErr.message ||
-        'Network error contacting Nebius Token Factory. Please check connection or switch to Offline Mode.'
-      );
-      setNebiusConnected(false);
-      if (soundEnabled) playPing('alert');
+      if (soundEnabled) playPing(result.severity >= 4 ? 'alert' : 'sos');
+    } catch (error) {
+      // Unexpected client failure is still not a reason to hide the local SOS.
+      console.error('Online emergency analysis failed:', error);
+      completeOnDevice('Online AI could not complete the request.');
     } finally {
       setIsAnalyzing(false);
     }
@@ -450,8 +486,10 @@ export default function App() {
       return validateTranslatedMessage(candidate.translated_message).ok;
     };
 
-    // Offline translation is deliberately local and limited to bundled emergency phrases.
-    if (offlineForce) {
+    // Any locally classified result (including automatic fallback) uses the
+    // honest, bundled phrasebook. An ONLINE-classified result never silently
+    // substitutes offline text for a failed online translation.
+    if (offlineForce || currentResult.source === 'offline_fallback') {
       const localTrans = translateEmergencyOffline(
         sourceTranscript,
         targetLangCode,
@@ -469,8 +507,8 @@ export default function App() {
       const updatedResult: EmergencyAnalysisResult = {
         ...currentResult,
         translation: { ...localTrans, source: 'offline_fallback', model_used: 'Bundled emergency phrasebook' },
-        // OFFLINE MODE keeps its deterministic bundled translation — this is a
-        // separate, user-selected mode, not a fallback for a failed online call.
+        // This is an OFFLINE-classified SOS, never a substitute for a failed
+        // online translation of an ONLINE-classified result.
         translation_status: 'ok',
         translation_error: null
       };
@@ -557,6 +595,11 @@ export default function App() {
       setIsTranslating(false);
     }
   };
+  // The country is explicitly selected in the partner directory; never guess a
+  // phone number from browser language or an unreliable offline IP lookup.
+  const configuredEmergencyNumber = getCountryEmergencyNumber(getSelectedCountry());
+  const localOnlyMode = offlineForce || !networkAvailable;
+
   return (
     <div
       className={`min-h-screen flex flex-col font-sans transition-colors ${
@@ -603,7 +646,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               <Clock className="w-4 h-4 text-amber-400 shrink-0" />
               <span>
-                <b>OFFLINE / QUEUED:</b> {pendingQueueCount} pending SOS package(s) saved locally. It will be sent when a supported connection becomes available.
+                <b>NOT SENT:</b> {pendingQueueCount} SOS record(s) stored on this device. Reconnecting or reopening NEVER uploads them. Review and share manually when ready. TEST/DEMO alerts never reach responders; call your local emergency number directly.
               </span>
             </div>
             <div className="flex items-center gap-2 ml-auto">
@@ -612,7 +655,7 @@ export default function App() {
                 className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-black transition-colors flex items-center gap-1"
               >
                 <Shield className="w-3.5 h-3.5" />
-                <span>View Queue & Settings</span>
+                <span>View & Share Saved SOS</span>
               </button>
             </div>
           </div>
@@ -628,26 +671,20 @@ export default function App() {
             <span>In immediate life danger, call emergency services directly:</span>
           </div>
           <div className="flex items-center gap-2">
-            <a
-              href="tel:911"
-              className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white font-extrabold rounded-lg flex items-center gap-1 transition-colors"
-            >
-              <PhoneCall className="w-3.5 h-3.5" />
-              <span>Call 911</span>
-            </a>
-            <a
-              href="tel:112"
-              className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-lg text-xs transition-colors"
-            >
-              112 (EU/Intl)
-            </a>
-            <a
-              href="tel:108"
-              className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-lg text-xs transition-colors"
-              title="National Emergency Ambulance (India)"
-            >
-              108 (India)
-            </a>
+            {configuredEmergencyNumber ? (
+              <a
+                href={`tel:${configuredEmergencyNumber}`}
+                className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white font-extrabold rounded-lg flex items-center gap-1 transition-colors"
+              >
+                <PhoneCall className="w-3.5 h-3.5" />
+                <span>Call {configuredEmergencyNumber}</span>
+              </a>
+            ) : (
+              <button type="button" onClick={() => setShowPartnersModal(true)}
+                className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white font-bold rounded-lg text-xs">
+                Select country to view its emergency number
+              </button>
+            )}
             <button
               id="banner-privacy-link-btn"
               onClick={() => setShowPrivacyModal(true)}
@@ -661,9 +698,20 @@ export default function App() {
         </div>
 
         {/* Explicit mode status */}
-        <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${offlineForce ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
-          {offlineForce ? 'OFFLINE — No API Key Required • Local deterministic rules • No cloud calls' : 'ONLINE AI — Nebius Token Factory • Configured Nemotron model • API key required'}
+        <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${localOnlyMode ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
+          {localOnlyMode
+            ? 'LOCAL SOS TRIAGE — typed messages work without internet. Nothing is automatically sent; browser voice may need a network.'
+            : 'ONLINE AI selected — on-device SOS takes over if unreachable. Dispatch requires separate consent and a real supported partner.'}
         </div>
+
+        {offlineShellReady !== null && (
+          <div id="offline-shell-readiness" aria-live="polite"
+            className={`mb-3 px-3 py-2 rounded-lg border text-xs ${offlineShellReady ? 'border-emerald-800 bg-emerald-950/40 text-emerald-200' : 'border-amber-700 bg-amber-950/50 text-amber-200'}`}>
+            {offlineShellReady
+              ? 'App files saved for offline startup on this device. You can type an SOS without network; browser storage can still be cleared by the OS. No message is delivered in airplane mode.'
+              : 'Offline startup not verified on this device yet. Open once on a working connection and wait until app files finish saving; keep the page open until then.'}
+          </div>
+        )}
 
         {/* Silent SOS activation: location is requested only after this explicit user action */}
         <button
@@ -680,7 +728,7 @@ export default function App() {
         <EmergencyVoiceButton
           onTranscriptChange={handleTranscriptVoiceChange}
           isAnalyzing={isAnalyzing}
-          offlineMode={offlineForce}
+          offlineMode={localOnlyMode}
           soundEnabled={soundEnabled}
           highContrast={highContrast}
           selectedLanguage={selectedLanguage}
@@ -708,7 +756,7 @@ export default function App() {
             handleAnalyzeEmergency(testText);
           }}
           isAnalyzing={isAnalyzing}
-          offlineForce={offlineForce}
+          offlineForce={localOnlyMode}
           highContrast={highContrast}
           locationInfo={locationInfo}
           onLocationUpdate={handleLocationUpdate}
@@ -802,6 +850,7 @@ export default function App() {
             result={currentResult}
             highContrast={highContrast}
             soundEnabled={soundEnabled}
+            offlineMode={offlineForce}
             onTranslateSOS={handleTranslateSOS}
             isTranslating={isTranslating}
           />
@@ -885,7 +934,7 @@ export default function App() {
 
       {showSilentSOS && (
         <SilentSOS
-          offlineMode={offlineForce}
+          offlineMode={localOnlyMode}
           onClose={() => setShowSilentSOS(false)}
           onSaveResult={(result) => {
             setCurrentResult(result);
@@ -899,7 +948,7 @@ export default function App() {
       <EmergencyPartnersManagerModal
         isOpen={showPartnersModal}
         onClose={() => setShowPartnersModal(false)}
-        isOffline={offlineForce || !navigator.onLine}
+        isOffline={localOnlyMode}
         onQueueUpdated={refreshPendingQueue}
       />
 
@@ -965,6 +1014,7 @@ export default function App() {
       {/* Privacy Contact Form — posts to /api/privacy-contact; no email address is published in the client */}
       <PrivacyContactFormModal
         isOpen={showPrivacyContactForm}
+        offlineMode={localOnlyMode}
         onClose={() => setShowPrivacyContactForm(false)}
       />
     </div>

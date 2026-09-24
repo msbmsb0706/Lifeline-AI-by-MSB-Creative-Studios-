@@ -66,7 +66,7 @@ When `NEBIUS_API_KEY` is configured on the backend, LifeLine AI operates in **On
 
 ### 2. Offline / Resilience Mode
 
-When offline, during network infrastructure disruptions, or when server API keys are unavailable, LifeLine AI operates seamlessly in **Offline / Resilience** mode (which users can also explicitly select at any time):
+When offline, during network infrastructure disruptions, or when server API keys are unavailable, LifeLine AI switches to **Offline / Resilience** mode (also selectable manually). For an airplane-mode launch, first open the production PWA online and verify its *offline-ready* indicator: the service worker must have cached the HTML and required JS/CSS. Browser storage/OS eviction can invalidate this preparation, so offline launch and locked-screen execution are not guaranteed:
 
 - **Local Deterministic Emergency Classification:** Evaluates input text through a robust deterministic keyword and regex-matching engine requiring no cloud API calls and no active internet connection.
 - **8 Standard Emergency Categories:**
@@ -116,12 +116,12 @@ LifeLine AI supports multilingual distress communication across **10 languages**
 - **Western Language Lexical Markers:** Identifies Spanish and French distress vocabulary, accents, and punctuation markers.
 
 #### Transcript Preservation & Translation Aid
-- **Original Transcript Preservation:** Original spoken or typed distress transcripts are preserved verbatim in their source language to maintain ground-truth context for arriving responders.
-- **English Translation as an Interpretation Aid:** An English translation is generated alongside the original transcript to facilitate cross-jurisdictional triage, disaster coordination, and mutual-aid responses.
+- **Original Transcript Preservation:** Original spoken or typed distress text is preserved verbatim in its source language for on-device review and optional manual sharing (subject to browser storage availability).
+- **English Translation as an Interpretation Aid:** When an online translation is configured/available, it can supplement the original text. Offline wording uses a fixed emergency phrasebook; unsupported free-form sentences remain in the original language rather than getting a fabricated translation. Multilingual typed matching is heuristic, not a certified medical interpreter.
 
 #### Speech-to-Text (ASR) Capabilities
 - **Optional Multilingual ASR (NVIDIA Whisper NIM):**
-  - When server-side ASR credentials are explicitly configured (`ASR_PROVIDER=nvidia_nim`, `ASR_BASE_URL`, `ASR_API_KEY`/`NVIDIA_API_KEY`, and `ASR_MODEL=openai/whisper-large-v3`), browser audio recordings are transmitted to the backend proxy (`POST /api/asr/transcribe`) for transcription with automatic multilingual detection (`language=multi`).
+  - When server-side ASR credentials are explicitly configured (`ASR_PROVIDER=nvidia_nim`, `ASR_BASE_URL`, `ASR_API_KEY`/`NVIDIA_API_KEY`, and `ASR_MODEL=openai/whisper-large-v3`), browser audio recordings are transmitted to the backend proxy (`POST /api/transcribe-speech`) for transcription with automatic multilingual detection (`language=multi`).
   - Audio is processed transiently in memory: audio buffers are **never written to disk** and are **never persisted**.
   - Nebius Token Factory does not host speech or audio endpoints; therefore, multilingual ASR connects to dedicated NVIDIA NIM infrastructure when configured.
   - *ASR Accuracy Notice:* Server-side NVIDIA Whisper ASR is an optional/configurable capability. It is active **only** when the required ASR credentials are configured on the server.
@@ -138,7 +138,7 @@ Silent SOS provides a non-verbal emergency workflow for active threats, entrapme
 3. **Optional Evidence Capture:**
    - **Up to 2 Still Photos:** Captured via device camera or local file selection.
    - **Optional 10-Second SOS Video:** Dedicated recording that stops automatically at 10 seconds (or upon manual stop). Camera and microphone hardware tracks are immediately closed and released upon completion.
-   - **Evidence Only:** Attached media files serve strictly as visual evidence for human first responders. They are **not** analyzed by Nemotron, **not** processed by AI vision models, and **not** uploaded without explicit confirmation.
+   - **Evidence Only:** Silent SOS photos/video are not analyzed by AI and are not uploaded by the partner queue. The queue retains file details only, not media bytes. Video exists in the open tab until you save it to the device or manually share it; close/reload can lose unsaved media.
 4. **User Review and Explicit Confirmation:**
    - A comprehensive summary screen presents emergency category, severity, one-time GPS coordinates, accuracy, attached evidence previews, and timestamp.
    - Alert transmission requires explicit user confirmation via the Web Share API (`navigator.share`) or clipboard export.
@@ -157,7 +157,7 @@ LifeLine AI includes an extensible, country-aware integration framework for coor
 
 1. **TEST / DEMO PROVIDER**
    - Explicitly labeled: `"TEST EMERGENCY PARTNER — DEMONSTRATION ONLY"`.
-   - Used for system evaluation, live demonstrations, and responder training.
+   - Used only for synthetic examples launched in the partner directory; real user SOS text is blocked from this endpoint (including old queued TEST records).
    - Generates mock provider acknowledgments with unique tracking IDs (`DEMO-ACK-XXXXX`).
    - Does **not** alert actual public safety answering points.
 
@@ -167,16 +167,16 @@ LifeLine AI includes an extensible, country-aware integration framework for coor
    - Does not upload media or location data to public telephone lines.
 
 3. **AUTHORIZED API PROVIDER**
-   - Enabled only when an emergency response agency implements a formal, documented HTTPS API interface.
-   - Transmits structured SOS payloads server-to-server over encrypted HTTPS with server-side authentication.
-   - Supports schema validation, provider acknowledgment logging, error handling, and retry semantics.
+   - Enabled only when an emergency response agency implements a formal, documented HTTPS API interface. **No such organization is configured by default.**
+   - A user-approved manual action can transmit structured SOS text/metadata through the backend to a configured HTTPS endpoint with server-side authentication; storage alone never grants transmission permission.
+   - Supports acknowledgment handling, errors and manual retries; a successful handoff is not proof of responder delivery.
 
 ### Offline-First Pending Transmission Queue
 
-- **Local Storage:** When an alert is confirmed offline, the structured SOS package is saved to client-side storage.
-- **Privacy-Preserving User Consent:** Automatic transmission on reconnection defaults to `OFF`. It activates only if the user explicitly turns on *"Send pending SOS when connection returns"* and approves partner transmission.
-- **User Control:** Users can inspect pending alerts, trigger manual transmission, or delete records from the queue at any time.
-- **Media Upload Guardrails:** Photo and video evidence are transmitted only if the authorized provider's documented API specifications explicitly authorize media ingestion.
+- **Local Storage:** A user-confirmed SOS can be saved on this browser/device, online or offline, with the original typed language preserved. Browser storage may be evicted or unavailable; failed saves are reported.
+- **Manual-only:** Reconnect, app reopen, focus and battery recovery **never** upload SOS records. Even a legacy `auto-send=true` setting is ignored. A local save does not approve API transmission.
+- **User Control:** Review and share saved SOS text manually through the device share sheet/clipboard, or delete it. Synthetic demo records can be manually sent to the TEST endpoint; a direct real partner API send requires a separately configured, authorized organization and explicit consent. No real partner is preconfigured.
+- **Evidence Limitation:** Photo/video bytes are **not** persisted in the SOS queue or uploaded from it, even if a provider advertises media support. Only file metadata may be included in a manually approved partner payload. Share files while the tab is open or save the video to the device first.
 
 For integration specifications and onboarding instructions for emergency response agencies, see [EMERGENCY_ORGANIZATION_INTEGRATION.md](EMERGENCY_ORGANIZATION_INTEGRATION.md).
 

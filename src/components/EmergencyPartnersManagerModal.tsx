@@ -16,8 +16,6 @@ import {
   getPendingQueue,
   deletePendingSOS,
   clearPendingQueue,
-  getAutoSendSetting,
-  setAutoSendSetting,
   isSOSInFlight,
   isSimulatedFinalStatus,
   getDeliveryDisplayLabel,
@@ -48,6 +46,7 @@ import {
   Trash2,
   RefreshCw,
   Send,
+  Share2,
   Lock,
   Radio,
   AlertTriangle,
@@ -79,7 +78,6 @@ export const EmergencyPartnersManagerModal: React.FC<
     setSelectedCountry(code);
   };
   const [pendingItems, setPendingItems] = useState<PendingSOSItem[]>([]);
-  const [autoSendEnabled, setAutoSendEnabled] = useState<boolean>(getAutoSendSetting());
   const [isProcessingQueue, setIsProcessingQueue] = useState<boolean>(false);
   const [queueNotice, setQueueNotice] = useState<string | null>(null);
 
@@ -90,7 +88,6 @@ export const EmergencyPartnersManagerModal: React.FC<
   useEffect(() => {
     if (isOpen) {
       refreshQueue();
-      setAutoSendEnabled(getAutoSendSetting());
     }
   }, [isOpen]);
 
@@ -125,25 +122,22 @@ export const EmergencyPartnersManagerModal: React.FC<
     onQueueUpdated?.();
   };
 
-  const handleToggleAutoSend = (enabled: boolean) => {
-    setAutoSendEnabled(enabled);
-    setAutoSendSetting(enabled);
-    setQueueNotice(
-      enabled
-        ? 'Automatic resume enabled: user-confirmed pending SOS packages will transmit when connection returns.'
-        : 'Automatic resume disabled: pending SOS packages will stay stored locally until you transmit them manually.'
-    );
-  };
-
   // Per-item manual retry (explicit user action; requires connectivity).
   const handleRetryItem = async (sosId: string) => {
+    if (isOffline) {
+      setQueueNotice('OFFLINE MODE — nothing was sent. Retry after reconnecting.');
+      return;
+    }
     setIsProcessingQueue(true);
     setQueueNotice(null);
     try {
       const res = await retrySingleSOS(sosId);
       refreshQueue();
       if (res.success) {
-        setQueueNotice(`SOS ${sosId} transmitted successfully. Partner acknowledgment received.`);
+        const sent = getPendingQueue().find((record) => record.sosPackage.sosId === sosId);
+        setQueueNotice(sent?.targetPartner.providerType === 'TEST'
+          ? `TEST / DEMO ${sosId} reached only the demonstration endpoint — NO RESPONDER received it.`
+          : `SOS ${sosId} handed to the configured authorized partner endpoint. Check status for delivery confirmation.`);
       } else if (res.error) {
         setQueueNotice(`Retry failed for ${sosId}: ${res.error}`);
       }
@@ -151,6 +145,36 @@ export const EmergencyPartnersManagerModal: React.FC<
       setQueueNotice(`Retry error: ${err.message}`);
     } finally {
       setIsProcessingQueue(false);
+    }
+  };
+
+  // Only a deliberate share-sheet/clipboard action can export a saved user SOS.
+  // Neither API demo dispatch nor a network event is involved in this path.
+  const handleShareItem = async (sosId: string) => {
+    const item = getPendingQueue().find((record) => record.sosPackage.sosId === sosId);
+    if (!item) { setQueueNotice('SOS not found on this device. Nothing was shared.'); return; }
+    const sos = item.sosPackage;
+    const text = [
+      'EMERGENCY ALERT — shared manually from LifeLine AI',
+      `Type: ${sos.emergencyType} | Priority: ${sos.severity}/5`,
+      `Message: ${sos.message}`,
+      sos.originalTranscript ? `Original words (${sos.detectedLanguage?.name || 'as entered'}): ${sos.originalTranscript}` : '',
+      sos.gps ? `Location: https://maps.google.com/?q=${sos.gps.latitude},${sos.gps.longitude}` : 'Location: unavailable',
+      `Recorded: ${sos.timestamp}`,
+      'No recording is attached to this text. Call your local emergency number directly in immediate danger.'
+    ].filter(Boolean).join('\n');
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'Emergency alert — manual share', text });
+        setQueueNotice('Device share sheet completed. LifeLine cannot verify that a recipient received the alert. No API dispatch was made.');
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        setQueueNotice('SOS text copied to clipboard ONLY. Paste into your chosen app to share; no delivery is confirmed.');
+      } else {
+        setQueueNotice('Share sheet and clipboard are unavailable. The SOS text remains visible here; copy it manually. Nothing was sent.');
+      }
+    } catch {
+      setQueueNotice('Sharing canceled or failed. The SOS remains on this device; delivery is not confirmed.');
     }
   };
 
@@ -167,17 +191,21 @@ export const EmergencyPartnersManagerModal: React.FC<
   };
 
   const handleProcessQueueNow = async () => {
+    if (isOffline) {
+      setQueueNotice('OFFLINE MODE — no network request was made. Exit offline mode and retry after reconnecting.');
+      return;
+    }
     setIsProcessingQueue(true);
     setQueueNotice(null);
     try {
       const res = await processPendingQueue({ forceManual: true });
       refreshQueue();
       if (res.processedCount === 0) {
-        setQueueNotice('No approved pending SOS packages available to transmit.');
+        setQueueNotice('No eligible partner API records. To share a saved real SOS, use its Share via device button below. Local-only records are NEVER uploaded.');
       } else if (res.errors.length > 0) {
         setQueueNotice(`Processed ${res.processedCount} package(s): ${res.successCount} succeeded. Errors: ${res.errors.join('; ')}`);
       } else {
-        setQueueNotice(`Successfully transmitted ${res.successCount} SOS package(s) with provider acknowledgment.`);
+        setQueueNotice(`Manually processed ${res.successCount} eligible record(s). TEST/DEMO handoffs are demonstrations only — no responder receives them. Check each destination and delivery status.`);
       }
     } catch (err: any) {
       setQueueNotice(`Queue transmission error: ${err.message}`);
@@ -206,7 +234,8 @@ export const EmergencyPartnersManagerModal: React.FC<
         name: 'test-sos-video-10s.webm',
         mimeType: 'video/webm'
       },
-      source: isOffline ? 'offline' : 'online'
+      source: isOffline ? 'offline' : 'online',
+      demoOnly: true // synthetic training fixture — NEVER real user SOS text
     });
 
     setDemoSOSPackage(testPackage);
@@ -229,30 +258,32 @@ export const EmergencyPartnersManagerModal: React.FC<
       userConsentTimestamp: consentTimestamp
     });
 
-    // Save to local queue
-    savePendingSOS(pendingItem);
+    if (!savePendingSOS(pendingItem)) {
+      setQueueNotice('SAVE FAILED — storage is full or unavailable. This demo SOS was not queued or sent.');
+      setActiveTab('queue');
+      return;
+    }
     refreshQueue();
 
     if (isOffline) {
-      markWaitingForConnection(pendingItem, 'Device offline — waiting for connection.');
+      markWaitingForConnection(pendingItem, 'Offline — manually retry this synthetic demo after reconnecting.');
       setQueueNotice(
-        'OFFLINE — SOS saved locally (PENDING LOCAL). It will be sent when a supported connection becomes available.'
+        'SAVED LOCALLY — NOT SENT. Reopening or reconnecting will NOT upload this TEST/DEMO record. Retry manually if you want to test. No real emergency service will receive it.'
       );
       setActiveTab('queue');
       return;
     }
 
-    // Process immediately if online
+    // Only this synthetic record is sent; confirming a demo must not upload
+    // any other pending record from the device.
     setIsProcessingQueue(true);
     try {
-      const res = await processPendingQueue({ forceManual: true });
+      const res = await retrySingleSOS(sosPkg.sosId);
       refreshQueue();
-      if (res.successCount > 0) {
-        setQueueNotice(
-          'DEMO SUCCESS: SOS transmitted to TEST provider. Acknowledgment reference ID received.'
-        );
-      } else if (res.errors.length > 0) {
-        setQueueNotice(`Transmission failed: ${res.errors.join('; ')}`);
+      if (res.success) {
+        setQueueNotice('TEST / DEMO SUCCESS — synthetic example accepted by demo endpoint ONLY. No real responder received it.');
+      } else if (res.error) {
+        setQueueNotice(`Demo transmission failed: ${res.error}`);
       }
     } catch (err: any) {
       setQueueNotice(`Demo transmission failed: ${err.message}`);
@@ -269,6 +300,11 @@ export const EmergencyPartnersManagerModal: React.FC<
   const pendingCount = pendingItems.filter(
     (i) => !SOS_DELIVERY_STATUS_META[i.status]?.terminal
   ).length;
+  const canSendPartnerRecord = pendingItems.some((item) =>
+    item.userApprovedForPartnerTransmission && !SOS_DELIVERY_STATUS_META[item.status]?.terminal &&
+    item.status !== 'SENDING' && (item.targetPartner.providerType === 'AUTHORIZED_API' ||
+      (item.targetPartner.providerType === 'TEST' && item.sosPackage.demoOnly === true))
+  );
 
   return (
     <div
@@ -553,40 +589,14 @@ export const EmergencyPartnersManagerModal: React.FC<
           {/* TAB 2: PENDING QUEUE & SETTINGS */}
           {activeTab === 'queue' && (
             <div className="space-y-4">
-              {/* Connection Setting: Privacy Preserving Auto-Send */}
-              <div className="p-4 rounded-xl bg-neutral-900 border border-neutral-800 space-y-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-extrabold text-white text-xs sm:text-sm">
-                      Send pending SOS when connection returns
-                    </div>
-                    <p className="text-[11px] text-neutral-400 mt-0.5">
-                      Controls automatic resume of already user-confirmed SOS packages when network connectivity returns. Consent is always captured per SOS before it is queued; this setting only governs automatic resume vs. manual transmit.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={() => handleToggleAutoSend(true)}
-                      className={`px-3 py-1 rounded-lg font-extrabold text-xs transition-colors ${
-                        autoSendEnabled
-                          ? 'bg-emerald-600 text-white shadow'
-                          : 'bg-neutral-800 text-neutral-400 hover:text-white'
-                      }`}
-                    >
-                      ON (Default)
-                    </button>
-                    <button
-                      onClick={() => handleToggleAutoSend(false)}
-                      className={`px-3 py-1 rounded-lg font-extrabold text-xs transition-colors ${
-                        !autoSendEnabled
-                          ? 'bg-amber-600 text-white shadow'
-                          : 'bg-neutral-800 text-neutral-400 hover:text-white'
-                      }`}
-                    >
-                      OFF
-                    </button>
-                  </div>
-                </div>
+              {/* Manual-only privacy policy: never upload on reconnect/restart. */}
+              <div className="p-4 rounded-xl bg-neutral-900 border border-amber-800 space-y-2">
+                <div className="font-extrabold text-amber-200 text-xs sm:text-sm">ON-DEVICE ONLY — NO AUTOMATIC UPLOAD</div>
+                <p className="text-[11px] text-neutral-300">
+                  Reconnecting, restarting, or unlocking never sends a saved SOS. Use Share via device for a real SOS;
+                  an authorized partner API must be configured before any direct API dispatch is possible.
+                  TEST/DEMO records are synthetic and never alert responders.
+                </p>
               </div>
 
               {/* Pending Items Actions */}
@@ -607,15 +617,16 @@ export const EmergencyPartnersManagerModal: React.FC<
                 <div className="flex items-center gap-2">
                   <button
                     onClick={handleProcessQueueNow}
-                    disabled={isProcessingQueue || pendingItems.length === 0}
+                    disabled={isProcessingQueue || isOffline || !canSendPartnerRecord}
                     className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-neutral-800 disabled:text-neutral-500 text-white font-extrabold text-xs flex items-center gap-1.5 transition-colors"
+                    title="Only explicitly approved synthetic demos or configured authorized partner records; local SOS stays here"
                   >
                     <RefreshCw
                       className={`w-3.5 h-3.5 ${
                         isProcessingQueue ? 'animate-spin' : ''
                       }`}
                     />
-                    <span>Transmit Pending Now</span>
+                    <span>Send Eligible Partner Records</span>
                   </button>
 
                   {pendingItems.length > 0 && (
@@ -637,7 +648,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                   <CheckCircle2 className="w-8 h-8 text-neutral-600 mx-auto mb-2" />
                   <p className="font-bold text-white">No pending SOS packages in queue.</p>
                   <p className="mt-1 text-[11px] text-neutral-500">
-                    When you save an offline Silent SOS with partner consent, it will appear here for review and transmission.
+                    Save an SOS locally to review and share its text manually, online or offline. Only synthetic demos use the TEST endpoint.
                   </p>
                 </div>
               ) : (
@@ -648,10 +659,11 @@ export const EmergencyPartnersManagerModal: React.FC<
                     const isSending =
                       item.status === 'SENDING' || (isSOSInFlight(item.sosPackage.sosId) && !isTerminal && item.status !== 'FAILED');
                     const isFailed = item.status === 'FAILED';
-                    const canRetryItem =
-                      item.status === 'FAILED' ||
-                      item.status === 'PENDING_LOCAL' ||
-                      item.status === 'WAITING_FOR_CONNECTION';
+                    const canRetryItem = item.userApprovedForPartnerTransmission &&
+                      (item.targetPartner.providerType === 'AUTHORIZED_API' ||
+                        (item.targetPartner.providerType === 'TEST' && item.sosPackage.demoOnly === true)) &&
+                      (item.status === 'FAILED' || item.status === 'PENDING_LOCAL' ||
+                        item.status === 'WAITING_FOR_CONNECTION');
                     const sentAt = item.statusHistory?.find(
                       (t) => t.status === 'SENT' || t.status === 'DELIVERED' || t.status === 'ACKNOWLEDGED'
                     )?.timestamp;
@@ -710,6 +722,15 @@ export const EmergencyPartnersManagerModal: React.FC<
                               </span>
                             )}
 
+                            <button
+                              onClick={() => void handleShareItem(item.sosPackage.sosId)}
+                              className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-amber-300 hover:text-white flex items-center gap-1"
+                              title="Manually share SOS text and saved location (if any) via device or clipboard — no partner API upload"
+                              aria-label={`Share SOS ${item.sosPackage.sosId} manually`}
+                            >
+                              <Share2 className="w-3.5 h-3.5" />
+                              <span className="text-[10px] font-bold">Share text{item.sosPackage.gps ? ' + location' : ''}</span>
+                            </button>
                             {canRetryItem && (
                               <button
                                 onClick={() => handleRetryItem(item.sosPackage.sosId)}
@@ -738,9 +759,20 @@ export const EmergencyPartnersManagerModal: React.FC<
                           <div>
                             <b>Type:</b> {item.sosPackage.emergencyType}
                           </div>
-                          <div className="col-span-1 sm:col-span-2 truncate">
+                          <div className="col-span-1 sm:col-span-2 whitespace-pre-wrap break-words" dir="auto">
                             <b>Message:</b> "{item.sosPackage.message}"
                           </div>
+                          {item.sosPackage.originalTranscript && (
+                            <div className="col-span-1 sm:col-span-2 whitespace-pre-wrap break-words" dir="auto">
+                              <b>Original words ({item.sosPackage.detectedLanguage?.name || 'as entered'}):</b>{' '}
+                              {item.sosPackage.originalTranscript}
+                            </div>
+                          )}
+                          {item.sosPackage.gps && (
+                            <div className="col-span-1 sm:col-span-2 text-amber-200">
+                              <b>Location included in manual share:</b> {item.sosPackage.gps.latitude}, {item.sosPackage.gps.longitude}
+                            </div>
+                          )}
                           <div>
                             <b>Created:</b>{' '}
                             {new Date(item.sosPackage.timestamp).toLocaleString()}
@@ -749,7 +781,11 @@ export const EmergencyPartnersManagerModal: React.FC<
                             <b>Attempts:</b> {item.attempts}
                           </div>
                           <div className="col-span-1 sm:col-span-2">
-                            <b>Status:</b> {statusMeta.detail}
+                            <b>Status:</b> {item.targetPartner.providerType === 'LOCAL_ONLY'
+                              ? 'On this device only — not sent. Use Share via device if you wish.'
+                              : item.targetPartner.providerType === 'TEST' && !item.sosPackage.demoOnly
+                              ? 'Older real SOS saved for TEST/DEMO — API send blocked. Use Share via device.'
+                              : statusMeta.detail}
                           </div>
                           {sentAt && (
                             <div>
@@ -783,7 +819,9 @@ export const EmergencyPartnersManagerModal: React.FC<
                           <div className="p-2.5 rounded-lg bg-black/60 border border-emerald-700/80 text-[11px] space-y-1">
                             <div className="flex items-center gap-1.5 font-bold text-emerald-400">
                               <CheckCircle2 className="w-3.5 h-3.5" />
-                              <span>Partner Acknowledgment Received</span>
+                              <span>{item.targetPartner.providerType === 'TEST'
+                                ? 'TEST / DEMO ENDPOINT ONLY — NO RESPONDER'
+                                : 'Partner Acknowledgment Received'}</span>
                             </div>
                             <div className="font-mono text-emerald-300">
                               Reference ID:{' '}

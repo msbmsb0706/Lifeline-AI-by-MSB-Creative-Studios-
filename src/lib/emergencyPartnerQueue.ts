@@ -12,8 +12,9 @@ import {
 import { getTestProvider } from './emergencyPartnersData.ts';
 
 const PENDING_QUEUE_KEY = 'lifeline_pending_sos_queue';
-const AUTOSEND_SETTING_KEY = 'lifeline_autosend_pending_sos';
-const MAX_QUEUE_ITEMS = 5;
+// Bound only completed history. Never silently discard an unsent/failed SOS
+// when more than five have been confirmed offline (or after a device restart).
+const MAX_COMPLETED_QUEUE_ITEMS = 5;
 
 /**
  * Typed delivery lifecycle metadata. Single source of truth for status labels —
@@ -36,7 +37,7 @@ export const SOS_DELIVERY_STATUS_META: Record<
   },
   WAITING_FOR_CONNECTION: {
     label: 'PENDING LOCAL',
-    detail: 'Waiting for connection. The SOS will transmit automatically when connectivity returns.',
+    detail: 'Stored on this device, not sent. Reconnecting never uploads it; review and share manually if needed.',
     terminal: false
   },
   SENDING: {
@@ -110,8 +111,12 @@ export function isSimulatedFinalStatus(item: PendingSOSItem | null | undefined):
  * SIMULATED label; every other state renders the standard lifecycle label.
  */
 export function getDeliveryDisplayLabel(item: PendingSOSItem): string {
+  if (item.targetPartner.providerType === 'LOCAL_ONLY') return 'SAVED LOCALLY — NOT SENT';
   if (isSimulatedFinalStatus(item)) {
     return item.status === 'DELIVERED' ? SIMULATED_DELIVERED_LABEL : SIMULATED_ACKNOWLEDGED_LABEL;
+  }
+  if (item.targetPartner.providerType === 'TEST' && item.status === 'SENT') {
+    return 'SENT TO TEST/DEMO ONLY — NO RESPONDER';
   }
   return SOS_DELIVERY_STATUS_META[item.status]?.label || item.status;
 }
@@ -134,8 +139,14 @@ export function createSOSPackage(params: {
   photos?: MediaAttachmentInfo[];
   video?: MediaAttachmentInfo | null;
   source?: 'online' | 'offline';
+  /** Original typed message (or transcript), preserved verbatim through the offline queue. */
+  originalTranscript?: string;
+  /** Detected language for typed messages; voice capture takes precedence when present. */
+  detectedLanguage?: { code: string; name: string } | null;
   /** Optional bilingual voice context from multilingual voice ASR. */
   voiceCapture?: { detectedLanguage?: { code: string; name: string } | null; originalTranscript?: string; englishTranslation?: string } | null;
+  /** Synthetic directory example, never set for real user emergencies. */
+  demoOnly?: boolean;
 }): SOSPackage {
   return {
     sosId: generateSOSId(),
@@ -149,8 +160,9 @@ export function createSOSPackage(params: {
     video: params.video || null,
     source: params.source || (navigator.onLine ? 'online' : 'offline'),
     offlineCreated: !navigator.onLine,
-    detectedLanguage: params.voiceCapture?.detectedLanguage || null,
-    originalTranscript: params.voiceCapture?.originalTranscript || null,
+    ...(params.demoOnly ? { demoOnly: true } : {}),
+    detectedLanguage: params.voiceCapture?.detectedLanguage || params.detectedLanguage || null,
+    originalTranscript: params.voiceCapture?.originalTranscript || params.originalTranscript || null,
     englishTranslation: params.voiceCapture?.englishTranslation || null
   };
 }
@@ -222,8 +234,9 @@ export function getStatusTimestamp(item: PendingSOSItem, status: SOSDeliveryStat
 }
 
 /**
- * Create a queued SOS item from an explicit user consent action.
- * The consent timestamp is preserved as the lifecycle `confirmedAt`.
+ * Create a queued SOS item from an explicit user confirmation.
+ * LOCAL_ONLY confirmation permits storage, not partner upload; partner records
+ * require their own transmission approval. The confirmation time is retained.
  */
 export function createQueuedSOSItem(params: {
   sosPackage: SOSPackage;
@@ -233,7 +246,8 @@ export function createQueuedSOSItem(params: {
   const item: PendingSOSItem = {
     sosPackage: params.sosPackage,
     targetPartner: params.targetPartner,
-    userApprovedForPartnerTransmission: true,
+    // A local save is not consent to ANY partner transmission.
+    userApprovedForPartnerTransmission: params.targetPartner.providerType !== 'LOCAL_ONLY',
     userConsentTimestamp: params.userConsentTimestamp,
     status: 'PENDING_LOCAL',
     statusHistory: [
@@ -297,29 +311,9 @@ export function normalizePendingSOSItem(raw: any): PendingSOSItem {
   return item;
 }
 
-// Get setting: "Send pending SOS when connection returns".
-// Default: ON. An SOS is only queued after the user explicitly confirmed
-// transmission in the consent modal, so resuming that already-approved
-// transmission when connectivity returns is the expected emergency behavior.
-// Users can still switch this OFF to require a manual retry instead.
-export function getAutoSendSetting(): boolean {
-  try {
-    const val = localStorage.getItem(AUTOSEND_SETTING_KEY);
-    if (val === 'false') return false;
-    return true;
-  } catch {
-    return true;
-  }
-}
-
-// Set setting: "Send pending SOS when connection returns"
-export function setAutoSendSetting(enabled: boolean): void {
-  try {
-    localStorage.setItem(AUTOSEND_SETTING_KEY, enabled ? 'true' : 'false');
-  } catch {
-    // ignore
-  }
-}
+// The legacy lifeline_autosend_pending_sos preference is deliberately ignored.
+// Even an old stored "true" cannot authorize a background/reconnect upload;
+// manual sharing requires a fresh, user-initiated action for each send.
 
 // ==========================================
 // Session-start recovery (interrupted transmissions)
@@ -405,21 +399,28 @@ export function getPendingQueue(): PendingSOSItem[] {
 }
 
 // Save or update a pending SOS item
-export function savePendingSOS(item: PendingSOSItem): void {
+export function savePendingSOS(item: PendingSOSItem): boolean {
   try {
     const current = getPendingQueue();
     const existingIndex = current.findIndex((i) => i.sosPackage.sosId === item.sosPackage.sosId);
-    let updated: PendingSOSItem[];
-    if (existingIndex >= 0) {
-      updated = [...current];
-      updated[existingIndex] = item;
-    } else {
-      updated = [item, ...current].slice(0, MAX_QUEUE_ITEMS);
-    }
-    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(updated));
+    const updated = [...current];
+    if (existingIndex >= 0) updated[existingIndex] = item;
+    else updated.unshift(item);
+
+    // Keep every untransmitted record, even if there are more than five. Drop
+    // old completed history only. If storage is full, setItem throws and the
+    // caller can display a real failure instead of claiming the SOS was saved.
+    let completedKept = 0;
+    const retained = updated.filter((entry) => {
+      if (!SOS_DELIVERY_STATUS_META[entry.status]?.terminal) return true;
+      return ++completedKept <= MAX_COMPLETED_QUEUE_ITEMS;
+    });
+    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(retained));
     notifyQueueListeners();
+    return true;
   } catch (err) {
     console.warn('Failed to save pending SOS to localStorage:', err);
+    return false;
   }
 }
 
@@ -451,6 +452,17 @@ export async function sendSOSToPartner(
 ): Promise<PartnerAcknowledgment> {
   const { sosPackage, targetPartner } = item;
 
+  // Never upload locally saved user SOS data to the demonstration endpoint.
+  // Only the synthetic sample generated in the partner directory can use TEST.
+  if (targetPartner.providerType === 'LOCAL_ONLY') {
+    throw new Error('LOCAL ONLY — this SOS stays on the device. Use manual device sharing; no API dispatch is configured.');
+  }
+  if (targetPartner.providerType === 'TEST' && sosPackage.demoOnly !== true) {
+    throw new Error('REAL SOS NOT SENT TO DEMO — share manually or choose a configured authorized partner.');
+  }
+  if (targetPartner.providerType !== 'TEST' && targetPartner.providerType !== 'AUTHORIZED_API' && targetPartner.providerType !== 'PUBLIC_CONTACT') {
+    throw new Error('Unknown emergency partner type — no network request made.');
+  }
   // Prevent sending to public contact or disabled API
   if (targetPartner.providerType === 'PUBLIC_CONTACT') {
     throw new Error(
@@ -464,10 +476,15 @@ export async function sendSOSToPartner(
     );
   }
 
-  // Filter media upload if provider does NOT explicitly support media
+  // Only metadata is in this queue. Never include legacy dataUrl/bytes, even
+  // when a provider advertises media upload support: no recording survives here.
   const includeMedia = Boolean(targetPartner.supportsMediaUpload);
-  const photosToSend = includeMedia ? sosPackage.photos : [];
-  const videoToSend = includeMedia ? sosPackage.video : null;
+  const photosToSend = includeMedia
+    ? (sosPackage.photos || []).map(({ type, name, mimeType, sizeBytes }) => ({ type, name, mimeType, sizeBytes }))
+    : [];
+  const videoToSend = includeMedia && sosPackage.video
+    ? (({ type, name, mimeType, sizeBytes }) => ({ type, name, mimeType, sizeBytes }))(sosPackage.video)
+    : null;
 
   const endpoint = targetPartner.apiBaseUrl || '/api/emergency-partner/dispatch';
 
@@ -488,6 +505,7 @@ export async function sendSOSToPartner(
     englishTranslation: sosPackage.englishTranslation || null,
     partnerId: targetPartner.id,
     providerType: targetPartner.providerType,
+    demoOnly: targetPartner.providerType === 'TEST' && sosPackage.demoOnly === true,
     userConsentConfirmed: item.userApprovedForPartnerTransmission
   };
 
@@ -504,8 +522,8 @@ export async function sendSOSToPartner(
       signal: controller.signal
     });
 
-    clearTimeout(timeoutId);
-
+    // Keep the timeout active while reading the body too: a server can send
+    // headers promptly and then stall indefinitely on its acknowledgment.
     if (!response.ok) {
       const errText = await response.text().catch(() => 'Server error');
       throw new Error(`Partner endpoint returned HTTP ${response.status}: ${errText.slice(0, 200)}`);
@@ -520,6 +538,11 @@ export async function sendSOSToPartner(
     }
 
     const ack: PartnerAcknowledgment = json.data;
+    if (ack.success !== true || typeof ack.referenceId !== 'string' || !ack.referenceId.trim() ||
+        ack.providerType !== targetPartner.providerType) {
+      throw new Error('Partner response did not verify acceptance for this destination. Delivery is unconfirmed.');
+    }
+    clearTimeout(timeoutId);
     return ack;
   } catch (err: any) {
     clearTimeout(timeoutId);
@@ -558,6 +581,16 @@ export function isSOSInFlight(sosId: string): boolean {
 export async function transmitSingleSOSItem(
   item: PendingSOSItem
 ): Promise<{ attempted: boolean; success: boolean; error?: string }> {
+  if (!navigator.onLine) {
+    return { attempted: false, success: false, error: 'Device is offline. No transmission attempted.' };
+  }
+  if (item.targetPartner.providerType === 'LOCAL_ONLY' ||
+      (item.targetPartner.providerType === 'TEST' && item.sosPackage.demoOnly !== true)) {
+    return { attempted: false, success: false, error: 'Stored locally: real SOS records cannot be uploaded to TEST/DEMO. Share manually.' };
+  }
+  if (!item.userApprovedForPartnerTransmission) {
+    return { attempted: false, success: false, error: 'User consent for this SOS is required.' };
+  }
   if (inFlightSOSIds.has(item.sosPackage.sosId)) {
     return { attempted: false, success: false, error: 'Transmission already in progress for this SOS.' };
   }
@@ -567,30 +600,42 @@ export async function transmitSingleSOSItem(
     recordTransition(item, 'SENDING');
     item.attempts += 1;
     item.lastAttemptTimestamp = new Date().toISOString();
-    savePendingSOS(item);
+    if (!savePendingSOS(item)) {
+      // Never send a record whose in-flight state cannot be persisted: on
+      // restart it could be lost or sent twice without an audit trail.
+      return { attempted: false, success: false, error: 'Cannot save SOS locally (storage full or unavailable). No network request was made.' };
+    }
 
     try {
       const ack = await sendSOSToPartner(item);
       item.acknowledgment = ack;
       item.errorMessage = undefined;
-      if (ack.responderAcknowledged === true) {
+      if (item.targetPartner.providerType === 'AUTHORIZED_API' && ack.responderAcknowledged === true) {
         // Only real configured integrations may set this flag.
         item.acknowledgedAt = ack.timestamp || new Date().toISOString();
         recordTransition(item, 'ACKNOWLEDGED');
-      } else if (ack.deliveryConfirmed === true) {
+      } else if (item.targetPartner.providerType === 'AUTHORIZED_API' && ack.deliveryConfirmed === true) {
         // Only real configured integrations may set this flag.
         item.deliveredAt = ack.timestamp || new Date().toISOString();
         recordTransition(item, 'DELIVERED');
       } else {
         recordTransition(item, 'SENT');
       }
-      savePendingSOS(item);
+      if (!savePendingSOS(item)) {
+        // The endpoint may have accepted the SOS, but the receipt is not durable.
+        // Never claim a confirmed local SENT status or auto-retry on restart.
+        return { attempted: true, success: false,
+          error: 'Endpoint may have accepted this SOS, but the device could not save its receipt. Verify with the destination before any manual retry; delivery is not confirmed here.' };
+      }
       return { attempted: true, success: true };
     } catch (err: any) {
       const message = err?.message || 'Transmission failed';
       recordTransition(item, 'FAILED', message);
       item.errorMessage = message;
-      savePendingSOS(item);
+      if (!savePendingSOS(item)) {
+        return { attempted: true, success: false,
+          error: `${message} The device also could not save the failure state. Verify before retrying.` };
+      }
       return { attempted: true, success: false, error: message };
     }
   } finally {
@@ -693,8 +738,8 @@ export function simulateDemoLifecycleAdvance(
 }
 
 /**
- * Manually retry one SOS record (explicit user action — bypasses the
- * auto-send setting but never the per-record consent requirement).
+ * Manually retry one previously consented partner record (explicit action).
+ * Local-only and legacy real-user TEST records are never API destinations.
  */
 export async function retrySingleSOS(sosId: string): Promise<{ attempted: boolean; success: boolean; error?: string }> {
   if (!navigator.onLine) {
@@ -717,10 +762,13 @@ export async function retrySingleSOS(sosId: string): Promise<{ attempted: boolea
 export async function processPendingQueue(options?: {
   forceManual?: boolean;
 }): Promise<{ processedCount: number; successCount: number; errors: string[] }> {
-  const autoSend = getAutoSendSetting();
-  const isOnline = navigator.onLine;
+  // Defense in depth: a reconnect, old preference, timer, or accidental caller
+  // must never upload anything. Only a user-triggered handler passes forceManual.
+  if (options?.forceManual !== true) {
+    return { processedCount: 0, successCount: 0, errors: [] };
+  }
 
-  if (!isOnline) {
+  if (!navigator.onLine) {
     return {
       processedCount: 0,
       successCount: 0,
@@ -742,11 +790,9 @@ export async function processPendingQueue(options?: {
     ) {
       return false;
     }
-    if (!item.userApprovedForPartnerTransmission) return false; // Privacy constraint: user must approve
-
-    // If autoSend setting is OFF, only process if forceManual was triggered by user action
-    if (!autoSend && !options?.forceManual) return false;
-
+    if (!item.userApprovedForPartnerTransmission) return false;
+    if (item.targetPartner.providerType === 'LOCAL_ONLY') return false;
+    if (item.targetPartner.providerType === 'TEST' && item.sosPackage.demoOnly !== true) return false;
     return true;
   });
 

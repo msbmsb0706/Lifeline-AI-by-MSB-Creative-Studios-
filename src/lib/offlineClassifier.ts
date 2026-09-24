@@ -43,7 +43,7 @@ function buildMatcher(keyword: string, suffix: string): RegExp | null {
  * English negation directly before a keyword ("no bleeding", "not unconscious",
  * "isn't stable", "no active bleeding"). Applies only to NEGATABLE_KEYWORDS.
  */
-const NEGATION_BEFORE = /(?:^|[^a-z0-9'])(?:no|not|isn't|wasn't|aren't|without|never)\s+(?:(?:active|more|visible|heavy|major|serious|further|any|signs?\s+of)\s+)?$/;
+const NEGATION_BEFORE = /(?:^|[^a-z0-9'])(?:no(?:\s+hay)?|not|isn't|wasn't|aren't|without|never|sin|sans|pas\s+de|pas\s+d')\s*(?:(?:active|more|visible|heavy|major|serious|further|any|signs?\s+of)\s+)?$/;
 /**
  * Only symptom / hazard words can be negated. Resource and need keywords
  * ("without drinking water", "no shelter", "no defibrillator") describe a
@@ -57,6 +57,10 @@ const NEGATABLE_KEYWORDS = new Set([
   'gas leak', 'fumes', 'strange odor', 'intruder', 'weapon', 'gun', 'knife', 'attacker', 'assault', 'violence',
   'seizure', 'convulsion', 'convulsing', 'poison', 'overdose', 'fracture', 'head injury', 'broken bone',
   'allergic reaction', 'electric shock',
+  // Explicit symptom/hazard words only; never resource-need phrases such as
+  // "sin agua potable" / "pas de nourriture" or "no respira" / "ne respire pas".
+  'sangre', 'sangrando', 'saigne', 'saignement', 'hemorragia', 'hemorragie',
+  'fuego', 'incendio', 'humo', 'feu', 'incendie', 'fumee', 'accidente',
   // severity modifiers
   'dying', 'critical', 'critically', 'arrest', 'fatal', 'fatally', 'stable', 'minor', 'mild'
 ]);
@@ -66,16 +70,51 @@ const KEYWORD_EXCLUSIONS: Record<string, RegExp> = {
   blood: /^\s+(?:pressure|sugar|tests?|group|type|report|donation|donor|bank|count)\b/
 };
 
+/** Indic negation is only applied to these hazard/symptom tokens, NOT needs or
+ * negative life-threatening phrases ("மூச்சு இல்லை", "सांस नहीं"). */
+const INDIC_NEGATABLE_KEYWORDS = new Set([
+  'தீ', 'மயக்கம்', 'வலிப்பு', 'ரத்தம்', 'இரத்தம்', 'மாரடைப்பு',
+  'आग', 'बेहोश', 'दुर्घटना', 'खून', 'ख़ून', 'हार्ट अटैक',
+  'మంటలు', 'రక్తం', 'ಬೆಂಕಿ', 'രക്തം', 'തീ', 'আগুন', 'রক্ত'
+]);
+const INDIC_ABSENCE_AFTER = /^\s*(?:இல்லை|இல்ல|नहीं|नाही|లేదు|లేవు|ಇಲ್ಲ|ഇല്ല|নেই|নাই)(?:$|[\s.!?।,;])/;
+const INDIC_FIRE_OUT_AFTER = /^\s*(?:அணைந்துவிட்டது|அணைந்தது|बुझ\s+गई|बुझ\s+गया)(?:$|[\s.!?।,;])/;
+/** "Le téléphone est mort" / "Mi teléfono está muerto" do not report a death. */
+const INANIMATE_DEATH_SUBJECT = /(?:telefono|telephone|telefon|phone|portable|celular|movil|bateria|battery|ordinateur|computadora|computer|voiture|coche)\s+$/;
+const RESOLVED_FIRE_AFTER: Record<string, RegExp> = {
+  fuego: /^\s+(?:(?:esta|ya\s+esta)\s+)?(?:apagado|extinguido)(?:\s+ahora)?(?:$|[\s,.!?;])/,
+  feu: /^\s+(?:(?:est|a\s+ete)\s+)?(?:eteint|maitrise)(?:\s+maintenant)?(?:$|[\s,.!?;])/
+};
+
 function hasAffirmedMatch(text: string, keyword: string, suffix: string): boolean {
   const kw = keyword.toLowerCase();
   const re = buildMatcher(kw, suffix);
-  if (!re) return text.includes(kw);
+  if (!re) {
+    let index = text.indexOf(kw);
+    while (index !== -1) {
+      const after = text.slice(index + kw.length);
+      const absent = INDIC_ABSENCE_AFTER.test(after);
+      const extinguished = (kw === 'தீ' || kw === 'आग') && INDIC_FIRE_OUT_AFTER.test(after);
+      if (!INDIC_NEGATABLE_KEYWORDS.has(kw) || (!absent && !extinguished)) {
+        return true;
+      }
+      index = text.indexOf(kw, index + kw.length);
+    }
+    return false;
+  }
   const exclusion = KEYWORD_EXCLUSIONS[kw];
   const negatable = NEGATABLE_KEYWORDS.has(kw);
   for (const m of text.matchAll(re)) {
     const index = m.index ?? 0;
     if (negatable && NEGATION_BEFORE.test(text.slice(Math.max(0, index - 30), index))) continue;
+    // No negation of "no respira" / "ne respire pas" (critical phrases).
+    if (negatable && (kw === 'saigne' || kw === 'saignement') &&
+        /^\s+pas\b/.test(text.slice(index + m[0].length)) &&
+        /\bne\s+$/.test(text.slice(Math.max(0, index - 20), index))) continue;
     if (exclusion && exclusion.test(text.slice(index + m[0].length))) continue;
+    if (RESOLVED_FIRE_AFTER[kw]?.test(text.slice(index + m[0].length))) continue;
+    if (['esta muerto', 'esta muerta', 'est mort', 'est morte'].includes(kw) &&
+        INANIMATE_DEATH_SUBJECT.test(text.slice(Math.max(0, index - 35), index))) continue;
     return true;
   }
   return false;
@@ -589,6 +628,94 @@ const EMERGENCY_RULES: EmergencyRule[] = [
   }
 ];
 
+/**
+ * Multilingual TYPED-input keywords (Spanish, French, Romanized Hindi
+ * "Hinglish", Romanized Tamil "Tanglish" and additional Indian-script
+ * phrases). Latin keywords are written without accents: input is
+ * accent-folded before matching, so "cardíaco" and "cardiaco" both match.
+ * Kept separate from the base rules so the original lists stay untouched;
+ * merged once at module load.
+ */
+const MULTILINGUAL_KEYWORDS: Record<string, string[]> = {
+  'Medical - Cardiac Emergency': [
+    // Spanish / French
+    'ataque al corazon', 'ataque cardiaco', 'infarto', 'paro cardiaco', 'no respira', 'ya no respira', 'dejo de respirar', 'inconsciente', 'se desmayo', 'dolor en el pecho', 'sin pulso',
+    'crise cardiaque', 'arret cardiaque', 'ne respire pas', 'ne respire plus', 'inconscient', 'douleur thoracique', 'douleur a la poitrine', 'evanoui', 'pas de pouls',
+    // Hinglish / Tanglish
+    'dil ka daura', 'saans nahi', 'sans nahi', 'saans nahi le raha', 'saans nahi le rahe', 'saans nahi le rahi', 'behosh', 'seene mein dard', 'seene me dard', 'chhati mein dard',
+    'nenju vali', 'nenjuvali', 'moochu vidala', 'moochu illa', 'mayakkam', 'maaradaippu', 'maradaippu',
+    // Indian scripts
+    'सांस नहीं', 'साँस नहीं', 'बेहोश', 'सीने में दर्द', 'हार्ट अटैक', 'मूच्छित', 'बेशुद्ध', 'श्वास घेत नाही',
+    'மூச்சு விடவில்லை', 'மூச்சு இல்லை', 'மயக்கம்', 'மாரடைப்பு', 'స్పృహ లేదు', 'ಪ್ರಜ್ಞೆ ಇಲ್ಲ', 'ബോധമില്ല', 'অজ্ঞান'
+  ],
+  'Medical - Acute Stroke Protocol': ['derrame cerebral', 'accidente cerebrovascular', 'avc', 'accident vasculaire', 'lakwa', 'lakva'],
+  'Medical - Airway Obstruction / Choking': [
+    'no puede respirar', 'atragantado', 'atragantada', 'ne peut pas respirer', 'il s\'etouffe', 'elle s\'etouffe', 'etouffement',
+    'dum ghut', 'dam ghut', 'gale mein atak', 'moochu thinaral', 'moochu thenaral', 'दम घुट', 'गले में अटक'
+  ],
+  'Trauma - Severe Hemorrhage': [
+    'sangre', 'sangrando', 'hemorragia', 'apunalado', 'apunalada', 'herida de bala', 'disparo',
+    'saigne', 'saignement', 'du sang', 'beaucoup de sang', 'hemorragie', 'poignarde', 'poignardee', 'blessure par balle',
+    'khoon', 'khun beh', 'khoon beh', 'ratham', 'rattham', 'raththam',
+    'खून', 'ख़ून', 'ரத்தம்', 'இரத்தம்', 'রক্ত', 'రక్తం', 'ರಕ್ತ', 'രക്തം'
+  ],
+  'Fire - Structure / Smoke Hazard': [
+    'incendio', 'fuego', 'humo', 'en llamas', 'incendie', 'feu', 'au feu', 'fumee', 'flammes',
+    'aag', 'aag lagi', 'aag lag gayi', 'neruppu', 'thee pidichiruchu', 'thee pidichirukku', 'thee pudichiruchu', 'theeppidippu',
+    'आग लगी', 'आग लागली', 'தீ பிடித்து', 'நெருப்பு'
+  ],
+  'Rescue - Vehicle Collision & Extrication': [
+    'accidente', 'choque', 'accidente de coche', 'accident de voiture', 'accident de la route',
+    'accident ho gaya', 'accident aayiduchu', 'accident aachu', 'दुर्घटना', 'एक्सीडेंट', 'अपघात', 'சாலை விபத்து', 'ആക്സിഡന്റ്'
+  ],
+  'Rescue - Structural Collapse / Urban Search & Rescue': ['derrumbe', 'edificio colapsado', 'effondrement', 'immeuble effondre', 'building gir gaya', 'इमारत गिर'],
+  'Disaster Relief - Acute Food & Infant Nutrition Distress': ['sin comida', 'no hay comida', 'pas de nourriture', 'khana nahi', 'saapadu illa', 'sapadu illa', 'भोजन नहीं'],
+  'Disaster Relief - Potable Water Failure & Dehydration': ['sin agua potable', 'no hay agua', 'pas d\'eau potable', 'pas d\'eau', 'paani nahi', 'pani nahi', 'thanni illa', 'kudi thanni illa', 'पीने का पानी नहीं'],
+  'Disaster Relief - Emergency Shelter & Refuge Need': ['sin refugio', 'necesitamos refugio', 'sans abri', 'besoin d\'abri', 'rehne ki jagah nahi', 'ghar toot gaya', 'veedu idinthu'],
+  'Search & Rescue - Missing Vulnerable Individual': ['desaparecido', 'desaparecida', 'nino perdido', 'nina perdida', 'secuestrado', 'disparu', 'disparue', 'enfant perdu', 'enleve', 'laapata', 'lapata', 'kho gaya', 'kho gayi', 'kaanavillai', 'kanavillai', 'गुम हो गया', 'अपहरण'],
+  'Hazardous Material / Toxic Gas': ['fuga de gas', 'olor a gas', 'fuite de gaz', 'odeur de gaz', 'gas leak ho raha', 'gas kasivu', 'गैस लीक', 'गॅस गळती'],
+  'Law Enforcement / Active Threat': [
+    'pistola', 'cuchillo', 'robo', 'asalto', 'ladron', 'secuestro', 'arme', 'couteau', 'agression', 'cambrioleur', 'voleur', 'pistolet',
+    'chaku', 'bandook', 'bandooq', 'goli chali', 'chor', 'maar raha', 'kathi', 'thirudan',
+    'चाकू', 'बंदूक', 'गोली', 'चोर', 'हमला', 'கத்தி', 'திருடன்', 'துப்பாக்கி'
+  ],
+  'Rescue - Drowning / Water Rescue': ['ahogamiento', 'se esta ahogando', 'noyade', 'se noie', 'il se noie', 'doob raha', 'doob rahi', 'doob gaya', 'doob gayi', 'moozhgi', 'moolgi', 'নিমজ্জিত', 'ডুবে', 'నీటిలో మునిగి', 'ಮುಳುಗ', 'മുങ്ങി', 'बुडत'],
+  'Medical - Seizure / Convulsion': ['convulsion', 'convulsiones', 'ataque epileptico', 'crise d\'epilepsie', 'crise epileptique', 'convulsions', 'mirgi', 'valippu', 'jhatke aa rahe'],
+  'Medical - Poisoning / Overdose': ['veneno', 'envenenado', 'envenenada', 'sobredosis', 'empoisonne', 'empoisonnee', 'zeher', 'zehar', 'jahar', 'visham', 'vishamm', 'poochi marundhu'],
+  'Medical - Snake / Animal Bite': ['mordedura de serpiente', 'mordio una serpiente', 'picadura de alacran', 'morsure de serpent', 'mordu par un serpent', 'saanp ne kaata', 'saap ne kata', 'saanp ne kata', 'saamp', 'paambu kadi', 'pambu kadi', 'paambu kadichiruchu', 'pambu kadichiruchu', 'naai kadi'],
+  'Medical - Childbirth / Labour': ['parto', 'dando a luz', 'trabajo de parto', 'se rompio la fuente', 'accouchement', 'elle accouche', 'perdu les eaux', 'contractions', 'prasav', 'prasav pida', 'prasava vali', 'delivery aagudhu'],
+  'Medical - Severe Allergic Reaction (Anaphylaxis)': ['reaccion alergica', 'choque anafilactico', 'reaction allergique', 'choc anaphylactique', 'gala sooj', 'allergy reaction'],
+  'Medical - Electric Shock': ['descarga electrica', 'electrocutado', 'electrocutada', 'electrocute', 'electrocutee', 'choc electrique', 'current laga', 'current lag gaya', 'current lagi', 'karant', 'current adichiruchu', 'current adichu', 'करंट लगा', 'शॉक लगा'],
+  'Medical - Fall / Head or Bone Injury': ['se cayo', 'fractura', 'hueso roto', 'est tombe', 'est tombee', 'jambe cassee', 'bras casse', 'gir gaya', 'gir gayi', 'haddi toot', 'haddi tut', 'keezha vizhunthu', 'keela vizhunthu', 'keezhe vizhundhutaar', 'எலும்பு முறிவு', 'हड्डी टूट'],
+  'Medical - Possible Death / Unresponsive Person': ['esta muerto', 'esta muerta', 'murio', 'est mort', 'est morte', 'decede', 'mar gaya', 'mar gayi', 'maut ho gayi', 'irandhuttar', 'iranthuttar', 'செத்துட்டார்', 'मृत्यू']
+};
+
+/** Urgent words (fallback severity 3) in typed Spanish / French / Hinglish / Tanglish / scripts. */
+const MULTILINGUAL_URGENT_WORDS = [
+  'ayuda', 'socorro', 'emergencia', 'urgente', 'au secours', 'aidez', 'urgence', 'a l\'aide',
+  'bachao', 'bachaao', 'madad', 'jaldi aao', 'kaapathunga', 'kapathunga', 'kaapaathunga', 'udhavi', 'udavi',
+  'मदद', 'உதவி', 'সাহায্য', 'సహాయం చేయండి', 'ಸಹಾಯ', 'സഹായം', 'वाचवा', 'मदत'
+];
+
+/** Critical-condition words (force severity 5) in typed Spanish / French / Hinglish. */
+const MULTILINGUAL_CRITICAL_WORDS = ['muriendo', 'se muere', 'estado critico', 'mourant', 'il meurt', 'elle meurt', 'etat critique', 'marne wala', 'mar raha', 'mar rahi', 'jaan khatre mein'];
+
+const MULTILINGUAL_KEYWORD_SET = new Set<string>();
+
+for (const rule of EMERGENCY_RULES) {
+  const extra = (MULTILINGUAL_KEYWORDS[rule.type] || []).filter((kw) => !rule.keywords.includes(kw));
+  extra.forEach((kw) => MULTILINGUAL_KEYWORD_SET.add(kw));
+  rule.keywords = [...rule.keywords, ...extra];
+}
+
+/** Fold Latin accents (á→a, é→e, ñ→n, ç→c, œ→oe) so typed Spanish/French match with or without accents. Non-Latin scripts are untouched. */
+function foldLatin(value: string): string {
+  return value
+    .replace(/[àáâãäå]/g, 'a').replace(/[èéêë]/g, 'e').replace(/[ìíîï]/g, 'i')
+    .replace(/[òóôõö]/g, 'o').replace(/[ùúûü]/g, 'u').replace(/ñ/g, 'n').replace(/ç/g, 'c')
+    .replace(/œ/g, 'oe').replace(/ÿ/g, 'y');
+}
+
 export function classifyEmergencyOffline(
   text: string,
   locationHint?: string,
@@ -598,9 +725,13 @@ export function classifyEmergencyOffline(
   // Narrow English denial handling: remove only a complete explicit fire-denial
   // clause, not emergency negations ("no pulse") or "no fire extinguisher".
   // Keep the original text for display and translation. Other hazards still score.
-  const normalizedInput = text.toLowerCase().trim().replace(/[\u2018\u2019\u02bc]/g, "'");
+  const normalizedInput = foldLatin(text.toLowerCase().trim().replace(/[\u2018\u2019\u02bc]/g, "'"));
   let normalized = normalizedInput.replace(
     /(^|[.!?;,]|\bbut\b)\s*(?:there\s+is\s+no\s+(?:active\s+)?fire|no\s+(?:active\s+)?fire|(?:the\s+)?fire\s+(?:is|was|has\s+been)\s+(?:(?:now|already|completely|fully)\s+)?(?:out|extinguished|put\s+out)(?:\s+now)?)(?=\s*(?:$|[.!?;,]|\bbut\b|\band\b))/g,
+    '$1 '
+  );
+  normalized = normalized.replace(
+    /(^|[.!?;,])\s*(?:no\s+hay\s+(?:fuego|incendio)|(?:el\s+)?fuego\s+(?:(?:ya\s+)?esta\s+)?(?:apagado|extinguido)(?:\s+ahora)?|(?:il\s+n'y\s+a\s+)?pas\s+(?:de\s+|d')(?:feu|incendie)|(?:le\s+)?feu\s+est\s+(?:eteint|maitrise)(?:\s+maintenant)?)(?=\s*(?:$|[.!?;,]|\b(?:pero|mais|et|y)\b))/g,
     '$1 '
   );
   const hasExplicitFireDenial = normalized !== normalizedInput;
@@ -618,8 +749,15 @@ export function classifyEmergencyOffline(
     for (const kw of rule.keywords) {
       // A keyword embedded in another matched keyword of the same rule still
       // scores (e.g. "fire" inside "wildfire"), preserving the original weighting.
+      // Multilingual additions score only on a direct match that is not part
+      // of a longer matched keyword, so they never alter existing tie-breaks.
       const lower = kw.toLowerCase();
-      if (matched.includes(kw) || matched.some(m => m !== kw && m.toLowerCase().includes(lower))) {
+      if (MULTILINGUAL_KEYWORD_SET.has(kw)) {
+        if (matched.includes(kw) && !matched.some(m => m !== kw && m.toLowerCase().includes(lower))) score += 2;
+        continue;
+      }
+      const baseMatched = matched.filter(m => !MULTILINGUAL_KEYWORD_SET.has(m));
+      if (baseMatched.includes(kw) || baseMatched.some(m => m !== kw && m.toLowerCase().includes(lower))) {
         score += 2;
       }
     }
@@ -632,7 +770,7 @@ export function classifyEmergencyOffline(
   // Fallback if no specific keyword matched
   if (!bestRule || bestScore === 0) {
     const category = standardizeCategory(hasExplicitFireDenial ? normalized : text);
-    const hasUrgentWords = ['urgent', 'emergency', 'help', 'now', 'hurt', 'pain', 'danger', 'sos', 'காப்பாத்துங்க', 'बचाओ', 'సహాయం', 'ಕಾಪಾಡಿ', 'രക്ഷിക്കൂ', 'বাঁচাও'].some(w => containsWordStart(normalized, w));
+    const hasUrgentWords = ['urgent', 'emergency', 'help', 'now', 'hurt', 'pain', 'danger', 'sos', 'காப்பாத்துங்க', 'बचाओ', 'సహాయం', 'ಕಾಪಾಡಿ', 'രക്ഷിക്കൂ', 'বাঁচাও', ...MULTILINGUAL_URGENT_WORDS].some(w => containsWordStart(normalized, w));
     
     clarificationOnly = hasExplicitFireDenial && !hasUrgentWords;
     bestRule = {
@@ -675,7 +813,7 @@ export function classifyEmergencyOffline(
   // Calculate dynamic severity
   let severity = bestRule.defaultSeverity;
   if (
-    ['unconscious', 'dying', 'critical', 'critically', 'arrest', 'fatal', 'fatally', 'not breathing', 'stopped breathing', "isn't breathing", 'no breathing']
+    ['unconscious', 'dying', 'critical', 'critically', 'arrest', 'fatal', 'fatally', 'not breathing', 'stopped breathing', "isn't breathing", 'no breathing', ...MULTILINGUAL_CRITICAL_WORDS]
       .some(word => containsExactWord(normalized, word)) ||
     normalized.includes('உயிருக்கு ஆபத்து') ||
     normalized.includes('गंभीर') ||

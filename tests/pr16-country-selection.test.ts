@@ -124,7 +124,7 @@ section('PR16-FIX audit cleanups');
 
 const deliverySrc = readRepoSource('../src/components/SOSDeliveryStatus.tsx');
 assert(
-  deliverySrc.includes('[effectiveStatus, simulatedFinal]'),
+  deliverySrc.includes('[effectiveStatus, simulatedFinal, item?.targetPartner.providerType]'),
   'delivery-card memo lists simulatedFinal in its dependencies'
 );
 const partnerConfigSrc = readRepoSource('../server/partnerConfig.ts');

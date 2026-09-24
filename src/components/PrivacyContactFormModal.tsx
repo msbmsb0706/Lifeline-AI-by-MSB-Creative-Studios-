@@ -17,6 +17,7 @@ import { CheckCircle2, Loader2, Mail, MessageSquareText, Send, ShieldCheck, Wifi
 interface PrivacyContactFormModalProps {
   isOpen: boolean;
   onClose: () => void;
+  offlineMode?: boolean;
 }
 
 const NAME_MAX = 100;
@@ -27,7 +28,7 @@ const EMAIL_PATTERN = /^[^\s@<>()[\]\\,;:"]{1,64}@[^\s@<>()[\]\\,;:"]+\.[A-Za-z0
 
 type SubmitStatus = 'idle' | 'submitting' | 'success' | 'error';
 
-export const PrivacyContactFormModal: React.FC<PrivacyContactFormModalProps> = ({ isOpen, onClose }) => {
+export const PrivacyContactFormModal: React.FC<PrivacyContactFormModalProps> = ({ isOpen, onClose, offlineMode = false }) => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
@@ -86,6 +87,11 @@ export const PrivacyContactFormModal: React.FC<PrivacyContactFormModalProps> = (
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorText(null);
+    if (offlineMode || !navigator.onLine) {
+      setStatus('error');
+      setErrorText('Privacy contact is unavailable offline. Nothing was submitted; reconnect and try again. This form is NOT for emergencies.');
+      return;
+    }
 
     if (!emailValid) {
       setErrorText('Please enter a valid email address so we can reply to you.');
@@ -227,7 +233,7 @@ export const PrivacyContactFormModal: React.FC<PrivacyContactFormModalProps> = (
                 </span>
               </div>
 
-              {!isOnline && (
+              {(offlineMode || !isOnline) && (
                 <div className="p-3 rounded-xl bg-amber-950/70 border border-amber-700 text-amber-200 flex items-start gap-2">
                   <WifiOff className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>You appear to be offline. Sending this form requires an internet connection.</span>

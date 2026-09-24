@@ -50,20 +50,21 @@ const AUTHORIZED_PROVIDER: EmergencyPartnerProvider = {
   supportsMediaUpload: false
 };
 
-function makeSOSPkg(message = 'Test distress message') {
+function makeSOSPkg(message = 'Test distress message', demoOnly = false) {
   return createSOSPackage({
     emergencyType: 'MEDICAL',
     category: 'MEDICAL',
     severity: 3,
     message,
     gps: null,
-    source: 'online'
+    source: 'online',
+    demoOnly
   });
 }
 
 function queueItem(partner: EmergencyPartnerProvider, message?: string) {
   return createQueuedSOSItem({
-    sosPackage: makeSOSPkg(message),
+    sosPackage: makeSOSPkg(message, partner.providerType === 'TEST'),
     targetPartner: partner,
     userConsentTimestamp: new Date().toISOString()
   });

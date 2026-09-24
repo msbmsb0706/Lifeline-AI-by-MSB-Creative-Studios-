@@ -274,7 +274,9 @@ const child: ChildProcess = spawn(TSX.command, TSX.args, {
     NODE_ENV: 'production',
     NEBIUS_BASE_URI: `http://127.0.0.1:${upstreamPort}/v1`,
     NEBIUS_API_KEY: 'fixture-key-not-a-real-credential',
-    NEBIUS_MODEL: 'fixture/online-model'
+    NEBIUS_MODEL: 'fixture/online-model',
+    AUTHORIZED_PARTNER_API_URL: '',
+    AUTHORIZED_PARTNER_API_KEY: ''
   },
   stdio: ['ignore', 'pipe', 'pipe']
 });
@@ -518,6 +520,50 @@ if (ready) {
   assertEqual(dispatchSource.status, 400, 'generated dispatch text as source → HTTP 400');
   assertEqual(dispatchSource.json?.code, 'TRANSLATION_INVALID_SOURCE', 'generated dispatch source → TRANSLATION_INVALID_SOURCE');
   assertEqual(translationRequests, 0, 'no upstream translation call for an invalid source');
+}
+
+// ---------------------------------------------------------------------------
+// Manual-only policy — real HTTP partner dispatch must fail closed.
+// Only the fixed synthetic directory fixture may reach the demo endpoint.
+// No real responder or external partner is configured in this child process.
+// ---------------------------------------------------------------------------
+section('Manual-only partner API boundary — real Express routes');
+if (ready) {
+  const endpoint = `${base}/api/emergency-partner/dispatch`;
+  const fixture = {
+    sosId: 'QA-NON-EMERGENCY', emergencyType: 'QA PLACEHOLDER',
+    message: 'QA fixture only — not a real emergency', providerType: 'TEST',
+    partnerId: 'test-partner-demo', userConsentConfirmed: true
+  };
+  const realTest = await postJson(endpoint, fixture);
+  assertEqual(realTest.status, 403, 'real message cannot be sent to TEST/DEMO endpoint');
+  assertEqual(realTest.json?.success, false, 'demo rejection is explicit');
+  const local = await postJson(endpoint, { ...fixture, providerType: 'LOCAL_ONLY' });
+  assertEqual(local.status, 403, 'LOCAL_ONLY records cannot use any API dispatch route');
+  const leakedGps = await postJson(endpoint, { ...fixture, demoOnly: true,
+    emergencyType: 'MEDICAL EMERGENCY (DEMO)',
+    message: 'TEST / DEMO SOS transmission — Simulated distress alert for system validation.',
+    gps: { latitude: 13.0827, longitude: 80.2707 }
+  });
+  assertEqual(leakedGps.status, 403, 'demo endpoint rejects user GPS even with the demo text');
+  const leakedMedia = await postJson(endpoint, { ...fixture, demoOnly: true,
+    emergencyType: 'MEDICAL EMERGENCY (DEMO)',
+    message: 'TEST / DEMO SOS transmission — Simulated distress alert for system validation.',
+    photos: [{ name: 'real-person.png', dataUrl: 'data:image/png;base64,PRIVATE' }]
+  });
+  assertEqual(leakedMedia.status, 403, 'demo endpoint rejects user photo/bytes even with the demo text');
+  const fakeConsent = await postJson(endpoint, { ...fixture, userConsentConfirmed: 'true' });
+  assertEqual(fakeConsent.status, 403, 'consent must be a strict boolean true, not a truthy string');
+  const noAuth = await postJson(endpoint, { ...fixture, providerType: 'AUTHORIZED_API' });
+  assertEqual(noAuth.status, 400, 'authorized API is disabled without configured server credentials');
+  const demo = await postJson(endpoint, {
+    ...fixture, demoOnly: true, emergencyType: 'MEDICAL EMERGENCY (DEMO)',
+    message: 'TEST / DEMO SOS transmission — Simulated distress alert for system validation.'
+  });
+  assertEqual(demo.status, 200, 'fixed synthetic example reaches only the local demo endpoint');
+  assertEqual(demo.json?.data?.providerType, 'TEST', 'synthetic response is labeled TEST, never real partner');
+  assertEqual(demo.json?.data?.deliveryConfirmed, undefined, 'demo has no real delivery confirmation');
+  assertEqual(demo.json?.data?.responderAcknowledged, undefined, 'demo has no responder acknowledgment');
 }
 
 // ---------------------------------------------------------------------------

@@ -206,6 +206,10 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Multilingual typing: while an IME / transliteration keyboard (Tamil,
+    // Hindi, Gboard transliteration, etc.) is composing, Enter confirms the
+    // word — it must never submit a half-typed SOS.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || (e.key === 'Enter' && !e.shiftKey)) {
       e.preventDefault();
       if (transcript.trim() && !isAnalyzing) {
@@ -276,6 +280,9 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
           value={transcript}
           onChange={(e) => onTranscriptChange(e.target.value)}
           onKeyDown={handleKeyDown}
+          dir="auto"
+          lang="mul"
+          autoComplete="off"
           placeholder="Speak into microphone or describe the emergency in any language (English, தமிழ், हिन्दी, తెలుగు, ಕನ್ನಡ, മലയാളം, বাংলা, मराठी, Español, Français)..."
           rows={4}
           disabled={isAnalyzing}

@@ -214,7 +214,7 @@ export function detectLanguage(text: string): DetectedLanguage {
   // Devanagari could be Marathi or Hindi
   if (devanagariRegex.test(raw)) {
     // Distinct Marathi indicators: 'ळ', 'आहे', 'नाही', 'मदत', 'वाचवा', 'अपघात', 'इथे'
-    const marathiMarkers = ['ळ', 'आहे', 'नाही', 'मदत', 'वाचवा', 'अपघात', 'इथे', 'लवकर', 'आम्ही', 'पोलीस', 'रुग्ण'];
+    const marathiMarkers = ['ळ', 'आहे', 'नाही', 'मदत', 'वाचवा', 'अपघात', 'इथे', 'लवकर', 'आम्ही', 'पोलीस', 'रुग्ण', 'लागली', 'छातीत'];
     const isMarathi = marathiMarkers.some((m) => raw.includes(m));
     if (isMarathi) {
       return { code: 'mr', name: 'Marathi', confidence: 0.95 };
@@ -229,12 +229,12 @@ export function detectLanguage(text: string): DetectedLanguage {
   const hasMarkerWord = (text: string, word: string): boolean =>
     new RegExp(`(^|[^\\p{L}\\p{M}])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^\\p{L}\\p{M}])`, 'u').test(text);
 
-  const romanizedTamil = ['kapathunga', 'udavi', 'thee', 'maruthuva', 'vali', 'appadiye', 'vanthudunga', 'tamil'];
+  const romanizedTamil = ['kapathunga', 'kaapathunga', 'udavi', 'thee', 'maruthuva', 'vali', 'nenju', 'moochu', 'paambu', 'valippu', 'pidichiruchu', 'appadiye', 'vanthudunga', 'tamil'];
   if (romanizedTamil.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'ta', name: 'Tamil', confidence: 0.88 };
   }
 
-  const romanizedHindi = ['bachao', 'madad', 'aag', 'chot', 'dard', 'aspataal', 'saans', 'jaldi', 'gadi'];
+  const romanizedHindi = ['bachao', 'madad', 'aag', 'chot', 'dard', 'aspataal', 'saans', 'jaldi', 'gadi', 'dil ka daura', 'khoon', 'ho gaya', 'saanp', 'mirgi', 'zehar', 'zeher'];
   if (romanizedHindi.some((w) => hasMarkerWord(lower, w))) {
     return { code: 'hi', name: 'Hindi', confidence: 0.88 };
   }
@@ -264,30 +264,39 @@ export function detectLanguage(text: string): DetectedLanguage {
     return { code: 'mr', name: 'Marathi', confidence: 0.88 };
   }
 
+  // French markers are counted before the Spanish decision so that French
+  // text with an accent shared with Spanish (é) is not claimed by Spanish.
+  const frenchMarkers = [
+    // 'sang' removed (audit FAIL-2): English past tense of "sing" made
+    // "They sang songs…" detect as French. French blood-injury phrasing is
+    // still covered by 'blessé', 'secours', 'douleur', accent rules, etc.
+    'aide', 'secours', 'urgence', 'feu', 'douleur', 'blessé', 'respirer',
+    // 'accident' removed: identical spelling in English made "Car accident on
+    // highway" (and Hinglish "accident ho gaya") detect as French.
+    'hôpital', 'pompiers', 'étouffement', 'poitrine', 's\'il vous plaît',
+    // Common typed French emergency words (whole-word matched below).
+    'respire', 'père', 'mère', 'incendie', 'cardiaque', 'aidez', 'voiture', 'fumée', 'saigne', 'au secours', 'téléphone', 'se noie', 'noyade', 'nourriture', 'eau potable'
+  ];
+  const frenchChars = /[àèêëîïôùûçœ]/i;
+  const frenchHits = frenchMarkers.filter((w) => hasMarkerWord(lower, w)).length;
   // 3. Spanish markers
   const spanishMarkers = [
     'ayuda', 'socorro', 'fuego', 'dolor', 'emergencia', 'herido', 'sangre', 'respirar',
     // 'hospital' removed (audit FAIL-2): identical spelling in English made
     // "…heart attack at the hospital" detect as Spanish. Spanish is still
     // covered by 'ambulancia', 'emergencia', 'accidente', accent rules, etc.
-    'ambulancia', 'accidente', 'urgente', 'incendio', 'pecho', 'por favor'
+    'ambulancia', 'accidente', 'urgente', 'incendio', 'pecho', 'por favor',
+    // Common typed Spanish emergency words (whole-word matched below).
+    'respira', 'padre', 'madre', 'corazon', 'corazón', 'ataque', 'hijo', 'hija', 'humo', 'choque', 'sangrando', 'ahogando', 'ahogado', 'parto', 'agua', 'comida'
   ];
   const spanishChars = /[áéíóúñ¿¡]/i;
-  const spanishHits = spanishMarkers.filter((w) => lower.includes(w)).length;
-  if (spanishHits >= 1 || (spanishChars.test(raw) && (lower.includes('el') || lower.includes('la') || lower.includes('de')))) {
+  // Whole-word matching: a marker inside a longer word (or an identical
+  // English word) must not flip the language.
+  const spanishHits = spanishMarkers.filter((w) => hasMarkerWord(lower, w)).length;
+  if ((spanishHits >= 1 && spanishHits >= frenchHits) || (frenchHits === 0 && spanishChars.test(raw) && (lower.includes('el') || lower.includes('la') || lower.includes('de')))) {
     return { code: 'es', name: 'Spanish', confidence: 0.92 };
   }
 
-  // 4. French markers
-  const frenchMarkers = [
-    // 'sang' removed (audit FAIL-2): English past tense of "sing" made
-    // "They sang songs…" detect as French. French blood-injury phrasing is
-    // still covered by 'blessé', 'secours', 'douleur', accent rules, etc.
-    'aide', 'secours', 'urgence', 'feu', 'douleur', 'blessé', 'respirer',
-    'hôpital', 'pompiers', 'accident', 'étouffement', 'poitrine', 's\'il vous plaît'
-  ];
-  const frenchChars = /[àèêëîïôùûçœ]/i;
-  const frenchHits = frenchMarkers.filter((w) => lower.includes(w)).length;
   if (frenchHits >= 1 || (frenchChars.test(raw) && (lower.includes('le') || lower.includes('la') || lower.includes('est') || lower.includes('du')))) {
     return { code: 'fr', name: 'French', confidence: 0.92 };
   }

@@ -1,16 +1,20 @@
 # Offline QA Report — 2026-09-24
 
-Scope: `src/lib/offlineClassifier.ts` (used by the offline path in `App.tsx` and by `SilentSOS.tsx`).
-Method: `fetch` blocked throughout, 0 network calls, no messages sent.
+Scope: offline triage, production PWA startup, interrupted SOS recovery, local-only/manual sharing, TEST/DEMO protection, and multilingual typed input. Offline tests block `fetch` or emulate airplane mode; **online** endpoint tests use isolated mock fixtures only. No real emergency responder received a message.
 
-| Status | |
+| Check | Result |
 |---|---|
-| Full offline QA (automated) | **PASS**: 87 cases × 500 repetitions (87,000 classifications), 0 fetch calls, deterministic |
-| Full regression suite | **PASS**: 3660 passed, 0 failed, stable across 10 consecutive full runs |
-| `tsc --noEmit` / `npm run build` | **PASS** |
-| Real-device QA | **PENDING ⏳**: needs a phone in airplane mode (see checklist below) |
+| Repeated offline classification | **PASS:** 143 cases × 500 runs × 2 classifications = **143,000** classifications; 0 `fetch` calls, stable results (`tests/offline-qa-500.test.ts`) |
+| Repeated PWA airplane-mode startup | **PASS:** 500 cached shell + JS/CSS navigations with **0 network calls**; missing-asset and failed-update checks (`tests/offline-shell.test.ts`) |
+| Repeated failure / queue guards | **PASS:** 500 offline Tamil AI attempts, 500 dropped-online attempts using a mock, 500 offline queue reads, and 500 reconnect queue scans with legacy `auto-send=true` and **0 partner uploads** (`tests/online-triage-fallback.test.ts`, `tests/offline-resilience.test.ts`) |
+| Full regression suite | **PASS:** **3,882 passed, 0 failed** (`npm test`, after manual-only policy changes) |
+| Typecheck and production bundle | **PASS:** `npx tsc --noEmit`, `npm run build`; `git diff --check` clean |
+| Headless production browser (Chromium 153) | **PASS:** offline reload from worker (HTTP 200), Tamil SOS priority 5, 0 offline `/api/` requests, LOCAL_ONLY record retained after reconnect/restart, 0 partner uploads despite legacy preference TRUE, exact Tamil words passed to a **stubbed** device share sheet; no browser exceptions |
+| Real phone, OS lock/battery/reboot, and actual partner delivery | **NOT TESTED:** physical device and a configured authorized partner are unavailable |
 
-## Fixed
+The 500-run checks are controlled automated repetitions, **not** 500 real devices. The previous classifier-only pass (87 × 500 cases, 3,660 tests across 10 runs) was captured before the improvements below.
+
+## Earlier classifier fixes (retained and rechecked)
 
 ### OFFLINE-BUG-002: absent breathing under-prioritized (HIGH)
 | Input | Before | After |
@@ -56,11 +60,37 @@ New rules for drowning (5), seizure (4), poisoning/overdose (5), snake/animal bi
 ### OFFLINE-BUG-007: a person collapsing → Structural Collapse / USAR (MEDIUM)
 "My grandmother collapsed" / "She suddenly collapsed at the gym" → Cardiac rule (check breathing, CPR). Building, roof, bridge and similar collapses stay USAR, including "The building collapsed on my father".
 
-## Remaining limitations
-- Negation and person-collapse handling are English-only. Indian-language inputs behave as before.
-- Other Indian languages (Telugu, Kannada, Malayalam, Bengali, Marathi) have no keywords yet for the new rule types.
+## Current round — input, observed bug, expected result, verification
+
+| Input / trigger | Before this round (actual) | Expected and verified now | Evidence |
+|---|---|---|---|
+| Previously visited production site, then airplane mode and reload | No reliable cached app shell; offline startup depended on browser/network | Versioned worker serves **matching HTML + JS + CSS**; offline reload HTTP 200 from worker, zero offline `/api/` requests. A first-ever offline visit **still cannot load**. | `tests/offline-shell.test.ts` (500 cached launches, failed update rollback); Chromium browser smoke |
+| Online AI stalls, no API key, or network fails while typing “அப்பா மூச்சு விடவில்லை” | Error/no usable SOS; user had to switch modes | After a 4-second-bounded online attempt (immediately in airplane mode), local MEDICAL **5** with visible offline-fallback notice; no responder contact | `tests/online-triage-fallback.test.ts` (500 failed-signal simulations); browser smoke |
+| Manual OFFLINE switch → reload/recharge/reopen | Mode preference lost | Offline-mode choice restored from browser storage when available | `src/App.tsx`; source/queue restart checks |
+| Confirm 8 SOS records offline; fill storage | Former queue kept only 5; write failures could be shown as saved | All 8 unsent records retained; quota failure returns FALSE and UI says **SAVE FAILED — NOT SENT** | `tests/offline-resilience.test.ts` |
+| Partner endpoint replies but local receipt cannot be stored | Receipt persistence was ignored; UI could claim SENT despite a stuck SENDING record | UI warns handoff may have occurred but receipt is unverified; recovery leaves it for manual verification, never auto-resends | `tests/offline-resilience.test.ts` (quota after mock handoff, restart) |
+| Legacy `lifeline_autosend_pending_sos=true`, reconnect or restart with saved consent | Default was ON, and reopening/reconnect could upload to TEST without a new action | **No automatic upload**, even with legacy TRUE: 500 queue scans, zero requests; browser restart leaves SOS pending | `tests/offline-resilience.test.ts`; Chromium browser smoke |
+| Save real Tamil SOS in main card or Silent SOS, online or offline | Partner button could POST real text to a TEST/DEMO endpoint | Saves **LOCAL_ONLY**, partner approval FALSE, no endpoint. User may manually share saved text/location via device/clipboard. Legacy real TEST records cannot be resent to demo. | Queue unit tests; browser smoke; real HTTP test `TEST → 403`, `LOCAL_ONLY → 403` |
+| Manually press TEST directory example | Demo receipt could read like responder success | Only a fixed **synthetic** example reaches the mock endpoint. `SENT TO TEST/DEMO ONLY — NO RESPONDER` and simulated final statuses; never a real delivery confirmation. | `tests/sos-lifecycle.test.ts`, `tests/pr16-corrective.test.ts`, real HTTP `synthetic → 200` |
+| Reopen after interrupted `SENDING` / battery recovery | Record could remain stuck in SENDING | Restored to PENDING_LOCAL or WAITING_FOR_CONNECTION; original message preserved; **manual share/send only**, never a background promise | `tests/offline-resilience.test.ts` (simulated restart) |
+| Type “அப்பா மூச்சு விடவில்லை” / “Mi padre no respira” / “papa saans nahi le rahe” / “Il y a un incendie” | Many typed script, Spanish/French and romanized inputs fell back to generic OTHER 2 | Specific MEDICAL 5 / FIRE 5, with original Unicode text retained. IME Enter does not submit unfinished composition. | `tests/offline-qa-500.test.ts`, `tests/language-detection-regression.test.ts`, `src/components/TranscriptArea.tsx` |
+| Record a 10-second Silent SOS video; close the tab | Recording not durable; offline queue held only file details | Explicit **SAVE VIDEO TO DEVICE** option and disclosure. Video is **not** uploaded by queue or recoverable after close unless saved manually. | Silent SOS code and source assertion in resilience tests; no physical phone media test |
+
+Classifier differential against the prior version: 50 changed among 3,568 sampled inputs; checked changes were the intended multilingual/negation behavior and English controls were unchanged. Examples measured prior → current: “அப்பா மூச்சு விடவில்லை” OTHER 2 → MEDICAL 5; “Mi padre no respira” OTHER 2 → MEDICAL 5; “No hay fuego, todo está bien” OTHER 2 → OTHER 1. The full current 143-case set repeats each input 500 times without a fetch.
+
+**Partner API status (this deployment):** `GET /api/emergency-partner/config?country=IN` returned `NOT_CONFIGURED`. Manual `AUTHORIZED_API` POST returned **HTTP 400**; `TEST` real-text/`LOCAL_ONLY` POSTs returned **HTTP 403**. The only **HTTP 200** was the synthetic demo example, with no delivery/responder flags. An online directory visit may make an informational **GET** to read configuration; it is not an SOS upload. Tests use dummy text and mocked/disabled providers — no actual responder integration was exercised.
+
+## Remaining limitations and safety warnings
+- **No lock-screen or zero-battery guarantee:** web pages are suspended by browsers/OS, so nothing runs while the battery is drained. A cached app can reopen after charging **if** browser storage survives. Cache/storage may be evicted; first use needs one successful online PWA installation.
+- **No offline delivery:** airplane mode means no partner upload, SMS, or guaranteed share-sheet delivery. Phone calls need service. Use the correct local emergency number directly in immediate danger; no country-independent 911/112/108 fallback is assumed.
+- **No real responder API:** only a disabled authorized template is present. TEST/DEMO is synthetic; no record here proves delivery to an emergency organization. Exactly-once sending after a crash cannot be guaranteed without partner idempotency by `sosId`.
+- **Media bytes are tab-only:** the SOS queue stores names/types/sizes, never photo/video content. Manually save video or share files while the tab remains open; device share-sheet/file support varies. Online *voice transcription*, if separately configured and activated, is a distinct feature that can send microphone audio to its ASR backend; type in offline mode to avoid that path.
+- **Heuristic language and clinical limitations:** offline typed-language matching is rule-based, not exhaustive; related dialects/transliterations can be missed or misread. Negation and collapse disambiguation do not cover every language/wording. Nine new first-aid rule sets still need clinician sign-off. Offline translation is a fixed phrasebook, not a free-form multilingual interpreter.
+- **Privacy of local storage:** SOS text/coordinates in browser storage are not encrypted by this app and may be visible on a shared device. Browser quota/privacy settings may block saves; do not treat it as a durable evidence vault.
 
 ## Real-device checklist (pending)
-Airplane mode → open the installed PWA → enter "My father is not breathing" and "The patient is stable" → confirm priority 5 / priority 1, no network activity, and no SMS/partner send without confirmation. Repeat in Silent SOS.
+1. On Android Chrome and iOS Safari/PWA, open once online, verify offline-ready indicator, then enable airplane mode and cold-launch/reload. Confirm Tamil/Hindi/Spanish typed cases, priority, and zero app API requests; repeat with forced Offline mode; on a fresh unprepared browser with no cached worker, expect the browser's offline error (the app cannot start), never a fabricated sent status.
+2. Save a real SOS and (separately) a 10-second video; background/lock/unlock/restart/charge. Verify SOS text survives **if storage persists**, no auto-upload, manual sharing requires a new tap, video only survives if explicitly saved to the device.
+3. Reconnect; confirm nothing is sent, then test a manual device share, canceled share, and clipboard fallback. Verify no app confirmation is interpreted as responder delivery. Only test authorized API integration after an organization supplies credentials and an endpoint.
 
-Re-run: `npm test` (includes `tests/offline-qa-500.test.ts`).
+Re-run: `npm test`, `npx tsc --noEmit`, `npm run build`. Browser/physical device checks are separate from the Node test suite.

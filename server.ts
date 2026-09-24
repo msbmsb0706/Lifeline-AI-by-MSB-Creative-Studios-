@@ -969,13 +969,14 @@ CONSTRAINTS:
       video,
       partnerId,
       providerType,
+      demoOnly,
       userConsentConfirmed,
       detectedLanguage,
       originalTranscript,
       englishTranslation
     } = req.body || {};
 
-    if (!userConsentConfirmed) {
+    if (userConsentConfirmed !== true) {
       res.status(403).json({
         success: false,
         error: 'Explicit user review and consent is required prior to emergency partner transmission.'
@@ -1007,17 +1008,29 @@ CONSTRAINTS:
       const partnerApiUrl = process.env.AUTHORIZED_PARTNER_API_URL;
       const partnerApiKey = process.env.AUTHORIZED_PARTNER_API_KEY;
 
-      if (!partnerApiUrl || !partnerApiKey) {
+      if (!partnerApiUrl || !partnerApiKey || getEmergencyPartnerConfig('GLOBAL', process.env).status !== 'CONFIGURED') {
         res.status(400).json({
           success: false,
-          error: 'AUTHORIZED API DISPATCH — No authorized provider API endpoint or credentials are configured in server environment.'
+          error: 'AUTHORIZED API DISPATCH — A valid authorized HTTPS endpoint and server credentials are not configured.'
         });
         return;
       }
 
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        // Old clients may still send dataUrl fields: strip all media contents
+        // before proxying. This integration currently supports metadata ONLY.
+        const mediaMetadata = (raw: any) => ({
+          type: raw?.type === 'video' ? 'video' : 'image',
+          name: typeof raw?.name === 'string' ? raw.name.slice(0, 180) : '',
+          mimeType: typeof raw?.mimeType === 'string' ? raw.mimeType.slice(0, 100) : '',
+          ...(Number.isFinite(raw?.sizeBytes) ? { sizeBytes: raw.sizeBytes } : {})
+        });
+        const safePhotos = Array.isArray(photos) ? photos.slice(0, 2).map(mediaMetadata) : [];
+        const safeVideo = video && typeof video === 'object' ? mediaMetadata(video) : null;
 
         const response = await fetch(partnerApiUrl, {
           method: 'POST',
@@ -1032,8 +1045,8 @@ CONSTRAINTS:
             severity,
             message,
             gps,
-            photos,
-            video,
+            photos: safePhotos,
+            video: safeVideo,
             // Bilingual voice context: original-language transcript is authoritative,
             // English translation (when present) is an interoperability aid.
             detectedLanguage: typeof detectedLanguage === 'object' && detectedLanguage ? detectedLanguage : null,
@@ -1044,8 +1057,8 @@ CONSTRAINTS:
           signal: controller.signal
         });
 
-        clearTimeout(timeoutId);
-
+        // Keep the deadline active through response.text()/json(), not just
+        // headers; a stalled partner body must not hang a manual SOS attempt.
         if (!response.ok) {
           const errText = await response.text();
           res.status(response.status).json({
@@ -1056,12 +1069,19 @@ CONSTRAINTS:
         }
 
         const partnerJson = await response.json();
+        if (typeof partnerJson?.referenceId !== 'string' || !partnerJson.referenceId.trim()) {
+          res.status(502).json({
+            success: false,
+            error: 'Authorized partner did not return a verifiable reference ID. Handoff unconfirmed; verify before retrying.'
+          });
+          return;
+        }
         res.json({
           success: true,
           data: {
             success: true,
             status: 'ACKNOWLEDGED',
-            referenceId: partnerJson.referenceId || `AUTH-ACK-${Date.now().toString(36).toUpperCase()}`,
+            referenceId: partnerJson.referenceId,
             timestamp: new Date().toISOString(),
             message: partnerJson.message || 'SOS package acknowledged by authorized partner API.',
             partnerId: partnerId || 'authorized-partner',
@@ -1083,11 +1103,29 @@ CONSTRAINTS:
           error: `Failed to dispatch to authorized partner API: ${err.message}`
         });
         return;
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
       }
     }
 
-    // 3. TEST / DEMO PROVIDER
-    // Local mock emergency partner endpoint for demonstration
+    // 3. TEST / DEMO PROVIDER. Never accept real user text, coordinates or
+    // evidence here (including old queued TEST records). Only the fixed
+    // synthetic directory example is allowed; no partner receives it.
+    const syntheticGps = !gps || (gps.latitude === 37.7749 && gps.longitude === -122.4194);
+    const syntheticPhotos = !photos || (Array.isArray(photos) && photos.length <= 1 &&
+      photos.every((photo: any) => photo?.name === 'test-evidence-1.jpg' && !photo.dataUrl));
+    const syntheticVideo = !video || (video.name === 'test-sos-video-10s.webm' && !video.dataUrl);
+    if (providerType !== 'TEST' || demoOnly !== true || partnerId !== 'test-partner-demo' ||
+        emergencyType !== 'MEDICAL EMERGENCY (DEMO)' ||
+        message !== 'TEST / DEMO SOS transmission — Simulated distress alert for system validation.' ||
+        originalTranscript || englishTranslation || detectedLanguage ||
+        !syntheticGps || !syntheticPhotos || !syntheticVideo) {
+      res.status(403).json({
+        success: false,
+        error: 'TEST endpoint accepts synthetic partner-directory examples ONLY. Real SOS records stay local for manual sharing.'
+      });
+      return;
+    }
     const mockReferenceId = `DEMO-ACK-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
     console.log(`[Emergency Partner Dispatch] TEST DEMO Acknowledgment generated: ${mockReferenceId} in ${Date.now() - startTime}ms`);
@@ -1127,6 +1165,12 @@ CONSTRAINTS:
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    // The offline worker has a per-build revision. Do not let HTTP caches pin
+    // an older worker after a new release; the worker's own app assets are cached.
+    app.get('/sw.js', (_req, res, next) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      next();
+    });
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
