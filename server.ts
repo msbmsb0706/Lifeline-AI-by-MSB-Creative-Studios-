@@ -13,6 +13,7 @@ import {
 import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, DetectedLanguage } from './src/types.ts';
 import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
 import { getEmergencyPartnerConfig } from './server/partnerConfig.ts';
+import { createPartnerTrackingRouter, getPartnerTrackingCapabilities, issueCaseAccessToken } from './server/partnerTracking.ts';
 import { looksLikeGeneratedDispatch } from './src/lib/translationSafety.ts';
 import {
   resolveEmergencyTranslation,
@@ -945,7 +946,11 @@ CONSTRAINTS:
         return;
       }
       const country = typeof req.query.country === 'string' ? req.query.country : 'GLOBAL';
-      res.json({ success: true, data: getEmergencyPartnerConfig(country, process.env) });
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: {
+        ...getEmergencyPartnerConfig(country, process.env),
+        ...getPartnerTrackingCapabilities(process.env)
+      } });
     } catch {
       res.status(503).json({
         success: false,
@@ -955,8 +960,13 @@ CONSTRAINTS:
     }
   });
 
+  // Case/status/GPS routes exist ONLY for a configured authorized partner.
+  // TEST, local-only and public contacts have no case tokens or tracking path.
+  app.use('/api/emergency-partner', createPartnerTrackingRouter({ env: process.env }));
+
   // Dedicated Emergency Partner Dispatch Endpoint
   app.post('/api/emergency-partner/dispatch', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
     const startTime = Date.now();
     const {
       sosId,
@@ -965,6 +975,7 @@ CONSTRAINTS:
       severity,
       message,
       gps,
+      gpsConsentConfirmed,
       photos,
       video,
       partnerId,
@@ -1005,6 +1016,13 @@ CONSTRAINTS:
 
     // 2. AUTHORIZED API PROVIDER
     if (providerType === 'AUTHORIZED_API') {
+      if (gps && (gpsConsentConfirmed !== true || typeof gps !== 'object' ||
+          !Number.isFinite(gps.latitude) || gps.latitude < -90 || gps.latitude > 90 ||
+          !Number.isFinite(gps.longitude) || gps.longitude < -180 || gps.longitude > 180)) {
+        res.status(403).json({ success: false,
+          error: 'Separate, valid one-time GPS consent is required before sending location to an authorized partner.' });
+        return;
+      }
       const partnerApiUrl = process.env.AUTHORIZED_PARTNER_API_URL;
       const partnerApiKey = process.env.AUTHORIZED_PARTNER_API_KEY;
 
@@ -1045,6 +1063,7 @@ CONSTRAINTS:
             severity,
             message,
             gps,
+            gpsConsentConfirmed: gpsConsentConfirmed === true,
             photos: safePhotos,
             video: safeVideo,
             // Bilingual voice context: original-language transcript is authoritative,
@@ -1076,12 +1095,17 @@ CONSTRAINTS:
           });
           return;
         }
+        // A case-status capability is issued only after a real configured
+        // authorized partner produced a reference ID. It is not a case number
+        // or proof that a responder accepted the incident.
+        const caseAccess = issueCaseAccessToken(process.env, sosId, partnerJson.referenceId);
         res.json({
           success: true,
           data: {
             success: true,
             status: 'ACKNOWLEDGED',
             referenceId: partnerJson.referenceId,
+            ...(caseAccess ? { caseAccessToken: caseAccess.token, caseAccessExpiresAt: caseAccess.expiresAt } : {}),
             timestamp: new Date().toISOString(),
             message: partnerJson.message || 'SOS package acknowledged by authorized partner API.',
             partnerId: partnerId || 'authorized-partner',

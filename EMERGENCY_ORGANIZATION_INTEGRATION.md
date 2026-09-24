@@ -137,8 +137,7 @@ documented fields are:
 
 - Location is requested **once** for the active Silent SOS session
   (`getCurrentPosition`).
-- There is **no** continuous `watchPosition`, no background location
-  tracking, and no movement tracking.
+- There is no continuous tracking in ordinary SOS capture. The existing AUTHORIZED_API case flow may use a separate `watchPosition` only after a verified partner case, assigned responder, partner tracking acceptance, and a second explicit user consent. It runs only while the queue panel is open, online, visible, and the app is open; never in background, offline, or after reconnect.
 - GPS is device geolocation; it is not inferred from video.
 - Device GPS can be acquired offline if location hardware is available.
 - A location privacy confirmation is shown before coordinates are included

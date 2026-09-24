@@ -25,7 +25,8 @@ import {
   processPendingQueue,
   retrySingleSOS,
   createSOSPackage,
-  savePendingSOS
+  savePendingSOS,
+  transmitSingleSOSItem
 } from '../lib/emergencyPartnerQueue.ts';
 import {
   fetchPartnerConfigState,
@@ -35,6 +36,7 @@ import {
 } from '../lib/partnerConfig.ts';
 import { getSelectedCountry, setSelectedCountry } from '../lib/emergencyNumbers.ts';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
+import { PartnerCaseTrackingPanel } from './PartnerCaseTrackingPanel.tsx';
 import {
   ShieldAlert,
   X,
@@ -84,6 +86,9 @@ export const EmergencyPartnersManagerModal: React.FC<
   // Consent modal state for demo dispatch
   const [consentTargetProvider, setConsentTargetProvider] = useState<EmergencyPartnerProvider | null>(null);
   const [demoSOSPackage, setDemoSOSPackage] = useState<any | null>(null);
+  // A separate, user-initiated handoff of a LOCAL_ONLY record, available only
+  // after the server confirms an authorized partner endpoint is configured.
+  const [authorizedReviewItem, setAuthorizedReviewItem] = useState<PendingSOSItem | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -95,7 +100,7 @@ export const EmergencyPartnersManagerModal: React.FC<
   // whenever the directory is visible and online. Failures (503, timeout,
   // malformed) surface as "unavailable" — never as "not configured".
   useEffect(() => {
-    if (!isOpen || activeTab !== 'providers' || isOffline) {
+    if (!isOpen || isOffline) {
       if (isOffline) setAuthConfigLoading(false);
       return;
     }
@@ -242,7 +247,7 @@ export const EmergencyPartnersManagerModal: React.FC<
     setConsentTargetProvider(provider);
   };
 
-  const handleConfirmDemoConsent = async () => {
+  const handleConfirmDemoConsent = async (_options?: { includeGps: boolean }) => {
     if (!consentTargetProvider || !demoSOSPackage) return;
 
     const targetProvider = consentTargetProvider;
@@ -290,6 +295,67 @@ export const EmergencyPartnersManagerModal: React.FC<
     } finally {
       setIsProcessingQueue(false);
       setActiveTab('queue');
+    }
+  };
+
+  const authorizedTemplate = EMERGENCY_PARTNER_PROVIDERS.find(
+    (provider) => provider.providerType === 'AUTHORIZED_API' && provider.country === selectedCountry
+  );
+  const verifiedAuthorizedConfig = !isOffline && !authConfigLoading &&
+    authConfig?.state === 'CONFIGURED' && authConfig.country === selectedCountry;
+
+  const handleAuthorizeLocalRecord = (item: PendingSOSItem) => {
+    if (!verifiedAuthorizedConfig || !authorizedTemplate || !navigator.onLine ||
+        item.targetPartner.providerType !== 'LOCAL_ONLY' || item.sosPackage.demoOnly === true) {
+      setQueueNotice('No verified authorized partner for this country/connection. The SOS remains local; nothing was sent.');
+      return;
+    }
+    setAuthorizedReviewItem(item);
+  };
+
+  const handleConfirmAuthorizedHandoff = async ({ includeGps }: { includeGps: boolean }) => {
+    const reviewed = authorizedReviewItem;
+    setAuthorizedReviewItem(null);
+    if (!reviewed || !verifiedAuthorizedConfig || !authorizedTemplate || !navigator.onLine) {
+      setQueueNotice('Partner configuration/connection changed. Nothing was sent; please review again.');
+      return;
+    }
+    // Re-read immediately before sending: stale modals must not transmit a
+    // deleted or changed record. LOCAL_ONLY becomes AUTHORIZED_API only after
+    // this specific review/consent, never on startup or reconnect.
+    const current = getPendingQueue().find((saved) => saved.sosPackage.sosId === reviewed.sosPackage.sosId);
+    if (!current || current.targetPartner.providerType !== 'LOCAL_ONLY' ||
+        current.sosPackage.demoOnly === true ||
+        !['PENDING_LOCAL', 'WAITING_FOR_CONNECTION', 'FAILED'].includes(current.status)) {
+      setQueueNotice('Local SOS changed or was deleted. Nothing was sent; review it again.');
+      return;
+    }
+    const at = new Date().toISOString();
+    const approved: PendingSOSItem = {
+      ...current,
+      targetPartner: { ...authorizedTemplate, apiEnabled: true },
+      userApprovedForPartnerTransmission: true,
+      gpsApprovedForPartnerTransmission: includeGps && Boolean(current.sosPackage.gps),
+      userConsentTimestamp: at,
+      statusHistory: [...(current.statusHistory || []), {
+        status: 'PENDING_LOCAL', timestamp: at,
+        detail: `User explicitly approved authorized-partner handoff; one-time GPS ${includeGps ? 'approved' : 'excluded'}. Live GPS not approved.`
+      }]
+    };
+    if (!savePendingSOS(approved)) {
+      setQueueNotice('Device could not save the reviewed handoff. NO partner request was made. Share manually or free storage.');
+      return;
+    }
+    refreshQueue();
+    setIsProcessingQueue(true);
+    try {
+      const result = await transmitSingleSOSItem(approved);
+      refreshQueue();
+      setQueueNotice(result.success
+        ? `Partner endpoint acknowledged handoff for SOS ${approved.sosPackage.sosId}. Case number, responder and ETA require separate partner confirmation; refresh case status below.`
+        : `Authorized handoff not confirmed: ${result.error || 'unknown error'}. Verify directly before any manual retry.`);
+    } finally {
+      setIsProcessingQueue(false);
     }
   };
 
@@ -722,6 +788,17 @@ export const EmergencyPartnersManagerModal: React.FC<
                               </span>
                             )}
 
+                            {item.targetPartner.providerType === 'LOCAL_ONLY' && verifiedAuthorizedConfig && authorizedTemplate && (
+                              <button
+                                onClick={() => handleAuthorizeLocalRecord(item)}
+                                className="px-2 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-emerald-100 flex items-center gap-1"
+                                title="Review this local SOS for one-time authorized-partner handoff"
+                                aria-label={`Review SOS ${item.sosPackage.sosId} for authorized partner handoff`}
+                              >
+                                <ShieldCheck className="w-3.5 h-3.5" />
+                                <span className="text-[10px] font-bold">Review partner handoff</span>
+                              </button>
+                            )}
                             <button
                               onClick={() => void handleShareItem(item.sosPackage.sosId)}
                               className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-amber-300 hover:text-white flex items-center gap-1"
@@ -835,6 +912,15 @@ export const EmergencyPartnersManagerModal: React.FC<
                           </div>
                         )}
 
+                        {item.targetPartner.providerType === 'AUTHORIZED_API' && item.acknowledgment?.caseAccessToken && (
+                          <PartnerCaseTrackingPanel
+                            item={item}
+                            isOffline={isOffline}
+                            isVisible={isOpen && activeTab === 'queue'}
+                            onCaseUpdated={refreshQueue}
+                          />
+                        )}
+
                         {item.errorMessage && (
                           <div className="p-2 rounded bg-red-950/80 border border-red-700 text-[11px] text-red-300">
                             <b>Error:</b> {item.errorMessage}
@@ -850,6 +936,19 @@ export const EmergencyPartnersManagerModal: React.FC<
         </div>
       </div>
 
+      {/* Authorized partner handoff review — distinct from local save and live GPS consent. */}
+      {authorizedReviewItem && authorizedTemplate && (
+        <PartnerConsentModal
+          isOpen={true}
+          provider={authorizedTemplate}
+          sosPackage={authorizedReviewItem.sosPackage}
+          isOffline={isOffline}
+          allowGpsSelection={true}
+          onCancel={() => setAuthorizedReviewItem(null)}
+          onConfirm={handleConfirmAuthorizedHandoff}
+        />
+      )}
+
       {/* Demo Consent Modal */}
       {consentTargetProvider && demoSOSPackage && (
         <PartnerConsentModal
@@ -857,6 +956,7 @@ export const EmergencyPartnersManagerModal: React.FC<
           provider={consentTargetProvider}
           sosPackage={demoSOSPackage}
           isOffline={isOffline}
+          allowGpsSelection={false}
           onCancel={() => {
             setConsentTargetProvider(null);
             setDemoSOSPackage(null);

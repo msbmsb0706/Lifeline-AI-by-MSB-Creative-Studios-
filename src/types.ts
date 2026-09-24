@@ -303,12 +303,31 @@ export interface PartnerAcknowledgment {
   deliveryConfirmed?: boolean;
   /** true ONLY when a human/configured organization explicitly acknowledged the SOS. */
   responderAcknowledged?: boolean;
+  /** Short-lived, signed case-status capability from this server; never a partner API credential. */
+  caseAccessToken?: string;
+  caseAccessExpiresAt?: string;
+}
+
+/** Partner-provided case facts. Never infer these from a handoff receipt or GPS. */
+export interface PartnerCaseStatus {
+  sosId: string;
+  referenceId: string;
+  partnerAccepted: boolean;
+  trackingAccepted: boolean;
+  caseNumber?: string;
+  assignedResponder?: { id: string; name: string };
+  distanceKm?: number;
+  etaMinutes?: number;
+  stage?: 'ACCEPTED' | 'ASSIGNED' | 'EN_ROUTE' | 'ARRIVED' | 'CLOSED';
+  updatedAt: string;
 }
 
 export interface PendingSOSItem {
   sosPackage: SOSPackage;
   targetPartner: EmergencyPartnerProvider;
   userApprovedForPartnerTransmission: boolean;
+  /** Separate opt-in for sending saved one-time GPS with an authorized handoff. */
+  gpsApprovedForPartnerTransmission?: boolean;
   /** Confirmation time for local save or, for an approved partner record, transmission consent. */
   userConsentTimestamp: string;
   /** Typed delivery lifecycle state — see SOSDeliveryStatus. */
@@ -323,6 +342,8 @@ export interface PendingSOSItem {
   lastAttemptTimestamp?: string;
   errorMessage?: string;
   acknowledgment?: PartnerAcknowledgment;
+  /** Last *partner-confirmed* case facts; display as last-known, never as a live offline ETA. */
+  caseStatus?: PartnerCaseStatus;
 }
 
 export interface CountryInfo {

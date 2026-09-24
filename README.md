@@ -18,7 +18,7 @@ LifeLine AI enforces a strict architectural separation between **Online AI** mod
 |                                                                                         |
 |   +-----------------------+     +-----------------------+     +---------------------+   |
 |   | Voice / Audio Input   |     | Text Input            |     | Silent SOS Flow     |   |
-|   | • Configurable ASR    |     | • 10 Languages        |     | • One-time GPS      |   |
+|   | • Configurable ASR    |     | • 10 Languages        |     | Partner-only GPS      |   |
 |   | • Web Speech Fallback |     | • Script Detection    |     | • 2 Images + 10s Vid|   |
 |   +-----------------------+     +-----------------------+     +---------------------+   |
 |               │                             │                            │              |
@@ -134,7 +134,7 @@ LifeLine AI supports multilingual distress communication across **10 languages**
 Silent SOS provides a non-verbal emergency workflow for active threats, entrapment, or severe respiratory distress:
 
 1. **Explicit User Activation:** Activated solely upon user selection; there is no passive monitoring or background audio capture.
-2. **One-Time GPS Geolocation:** The application queries device GPS once (`navigator.geolocation.getCurrentPosition`) only upon user initiation. There is **no continuous tracking**, **no `watchPosition`**, and **no background GPS monitoring**. Geolocation errors (Permission Denied, Position Unavailable, Timeout) are diagnosed and displayed clearly.
+2. **GPS Boundary:** The normal SOS flow acquires GPS once (`navigator.geolocation.getCurrentPosition`). Only the existing authorized emergency-partner integration can use a separate, explicit, revocable live-tracking consent after the partner confirms a case and assigned responder. That watcher runs only while the partner queue panel is open, online, visible, and the app is open; there is no background or reconnect-resumed tracking. Geolocation errors (Permission Denied, Position Unavailable, Timeout) are diagnosed and displayed clearly.
 3. **Optional Evidence Capture:**
    - **Up to 2 Still Photos:** Captured via device camera or local file selection.
    - **Optional 10-Second SOS Video:** Dedicated recording that stops automatically at 10 seconds (or upon manual stop). Camera and microphone hardware tracks are immediately closed and released upon completion.
@@ -188,7 +188,7 @@ To maintain technical integrity and user safety, LifeLine AI enforces the follow
 
 - **No Automatic Dispatch:** LifeLine AI is a triage and alert-formulation tool. It does not automatically dispatch first responders or contact government agencies.
 - **No Government Endorsement:** LifeLine AI does not claim official government approval, certification, or affiliation.
-- **No Continuous Tracking:** Location is polled once upon explicit user action; continuous background GPS is not supported.
+- **Tracking boundary:** Location is polled once for ordinary SOS use. Continuous GPS exists only in the authorized-partner case flow after dual acceptance; it is foreground-only, revocable, never queued, and never resumed automatically.
 - **No Automated Media Classification:** Photos and videos are attached as visual evidence for human responders and are not processed via computer vision.
 - **Configurable ASR Only:** Server-side NVIDIA Whisper ASR operates only when valid server credentials are provisioned. In all other cases, browser-native speech recognition or text input is used.
 

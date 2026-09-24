@@ -248,6 +248,7 @@ export function createQueuedSOSItem(params: {
     targetPartner: params.targetPartner,
     // A local save is not consent to ANY partner transmission.
     userApprovedForPartnerTransmission: params.targetPartner.providerType !== 'LOCAL_ONLY',
+    gpsApprovedForPartnerTransmission: false,
     userConsentTimestamp: params.userConsentTimestamp,
     status: 'PENDING_LOCAL',
     statusHistory: [
@@ -495,7 +496,12 @@ export async function sendSOSToPartner(
     category: sosPackage.category,
     severity: sosPackage.severity,
     message: sosPackage.message,
-    gps: sosPackage.gps,
+    // A saved one-time location is NOT permission to send it to a partner.
+    // Old queued records lack this flag and therefore send no GPS.
+    gps: targetPartner.providerType === 'AUTHORIZED_API' && item.gpsApprovedForPartnerTransmission === true
+      ? sosPackage.gps : null,
+    gpsConsentConfirmed: targetPartner.providerType === 'AUTHORIZED_API' &&
+      item.gpsApprovedForPartnerTransmission === true && Boolean(sosPackage.gps),
     photos: photosToSend,
     video: videoToSend,
     source: sosPackage.source,

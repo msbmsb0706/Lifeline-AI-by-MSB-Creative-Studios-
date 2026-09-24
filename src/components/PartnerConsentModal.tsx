@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   EmergencyPartnerProvider,
   SOSPackage,
@@ -25,7 +25,9 @@ interface PartnerConsentModalProps {
   sosPackage: SOSPackage;
   isOffline: boolean;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (options: { includeGps: boolean }) => void;
+  /** True only for a separately reviewed, configured authorized-partner handoff. */
+  allowGpsSelection?: boolean;
 }
 
 export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
@@ -34,8 +36,11 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
   sosPackage,
   isOffline,
   onCancel,
-  onConfirm
+  onConfirm,
+  allowGpsSelection = false
 }) => {
+  const [includeGps, setIncludeGps] = useState(false);
+  useEffect(() => { setIncludeGps(false); }, [isOpen, provider.id, sosPackage.sosId]);
   if (!isOpen) return null;
 
   const isTestProvider = provider.providerType === 'TEST';
@@ -123,6 +128,18 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
             </div>
           )}
 
+          {isAuthorizedApi && allowGpsSelection && (
+            <div className="p-3 rounded-xl bg-amber-950/70 border border-amber-600 text-amber-100 text-xs space-y-2">
+              <label className="flex gap-2 items-start font-bold">
+                <input type="checkbox" checked={includeGps} disabled={!sosPackage.gps || isOffline}
+                  onChange={(event) => setIncludeGps(event.target.checked)} />
+                Include this saved ONE-TIME GPS fix in the authorized partner handoff.
+                {sosPackage.gps ? ' Off by default.' : ' No saved fix available.'}
+              </label>
+              <p>Live GPS tracking is separate and stays OFF unless you later opt in again AND a verified partner accepts an assigned case.</p>
+            </div>
+          )}
+
           {/* Test or Public Contact Notice Banner */}
           {isTestProvider && (
             <div className="p-3 rounded-xl bg-purple-950/80 border-2 border-purple-600 text-purple-200 flex items-start gap-2.5">
@@ -204,7 +221,9 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span>
                   <b>GPS location:</b>{' '}
-                  {sosPackage.gps
+                  {isAuthorizedApi && allowGpsSelection && !includeGps
+                    ? 'Not sent (opt-in unchecked)'
+                    : sosPackage.gps
                     ? `${sosPackage.gps.latitude.toFixed(4)}, ${sosPackage.gps.longitude.toFixed(4)}`
                     : 'Not available'}
                 </span>
@@ -270,7 +289,7 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
             <button
               id="consent-confirm-send-btn"
               type="button"
-              onClick={onConfirm}
+              onClick={() => onConfirm({ includeGps: isAuthorizedApi && allowGpsSelection && includeGps && Boolean(sosPackage.gps) })}
               className="py-3 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-red-950 transition-colors"
             >
               {isOffline || isLocalOnly ? (
