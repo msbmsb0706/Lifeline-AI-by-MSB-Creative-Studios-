@@ -308,7 +308,16 @@ export function classifyEmergencyOffline(
   preferredLanguage: string = 'English',
   targetLanguageCode?: string
 ): NemotronEmergencyResponse {
-  const normalized = text.toLowerCase().trim();
+  // Narrow English denial handling: remove only a complete explicit fire-denial
+  // clause, not emergency negations ("no pulse") or "no fire extinguisher".
+  // Keep the original text for display and translation. Other hazards still score.
+  const normalizedInput = text.toLowerCase().trim();
+  const normalized = normalizedInput.replace(
+    /(^|[.!?;,]|\bbut\b)\s*(?:there\s+is\s+no\s+(?:active\s+)?fire|no\s+(?:active\s+)?fire)(?=\s*(?:$|[.!?;,]|\bbut\b|\band\b))/g,
+    '$1 '
+  );
+  const hasExplicitFireDenial = normalized !== normalizedInput;
+  let clarificationOnly = false;
   const detected = detectLanguage(text);
 
   // Find matching rule with highest keyword matches
@@ -330,9 +339,10 @@ export function classifyEmergencyOffline(
 
   // Fallback if no specific keyword matched
   if (!bestRule || bestScore === 0) {
-    const category = standardizeCategory(text);
+    const category = standardizeCategory(hasExplicitFireDenial ? normalized : text);
     const hasUrgentWords = ['urgent', 'emergency', 'help', 'now', 'hurt', 'pain', 'danger', 'sos', 'காப்பாத்துங்க', 'बचाओ', 'సహాయం', 'ಕಾಪಾಡಿ', 'രക്ഷിക്കൂ', 'বাঁচাও'].some(w => normalized.includes(w));
     
+    clarificationOnly = hasExplicitFireDenial && !hasUrgentWords;
     bestRule = {
       keywords: [],
       type: hasUrgentWords ? `${category} Emergency - Evaluation Required` : `General ${category} Incident`,
@@ -355,6 +365,21 @@ export function classifyEmergencyOffline(
     };
   }
 
+  if (clarificationOnly) {
+    bestRule = {
+      keywords: [],
+      type: 'No active fire reported — clarification required',
+      category: 'OTHER',
+      defaultSeverity: 1,
+      needs: [],
+      badgeColor: 'YELLOW',
+      prioritySymbol: 'ALERT_TRIANGLE',
+      actionSteps: ['If you need assistance, describe the current hazard or symptoms.'],
+      firstAid: [],
+      responderInstructions: 'The user explicitly denies fire. No active hazard was identified by local rules; clarify before escalation.'
+    };
+  }
+
   // Calculate dynamic severity
   let severity = bestRule.defaultSeverity;
   if (
@@ -374,7 +399,9 @@ export function classifyEmergencyOffline(
 
   // Formulate dispatch message
   const locString = locationHint ? ` [Location: ${locationHint}]` : '';
-  const dispatchMessage = `DISPATCH ALERT: Priority ${severity}/5 - [${bestRule.category}] ${bestRule.type}. Details: "${text.trim()}".${locString} Required Assets: ${bestRule.needs.join(', ')}. Action: Dispatch nearest units immediately.`;
+  const dispatchMessage = clarificationOnly
+    ? `CLARIFICATION REQUIRED: No active fire reported. Details: "${text.trim()}".${locString} Describe any current hazard or symptoms if assistance is needed.`
+    : `DISPATCH ALERT: Priority ${severity}/5 - [${bestRule.category}] ${bestRule.type}. Details: "${text.trim()}".${locString} Required Assets: ${bestRule.needs.join(', ')}. Action: Dispatch nearest units immediately.`;
 
   const baseResponse: NemotronEmergencyResponse = {
     transcript: text.trim(),
