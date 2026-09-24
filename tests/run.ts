@@ -14,6 +14,7 @@ process.stdout.write('LifeLine AI regression tests\n');
 
 // Ordered imports — each module runs its assertions on load.
 await import('./languages.test.ts');
+await import('./speech.test.ts');
 await import('./language-detection-regression.test.ts');
 await import('./translation.test.ts');
 await import('./offline-fire-denial.test.ts');
@@ -28,6 +29,8 @@ await import('./pr16-country-selection.test.ts');
 await import('./online-translation.test.ts');
 await import('./online-translation-routes.test.ts');
 await import('./partner-tracking.test.ts');
+await import('./speech-capture-android.test.ts');
+await import('./ui-visibility.test.ts');
 
 const failures = summarize();
 process.exit(failures > 0 ? 1 : 0);

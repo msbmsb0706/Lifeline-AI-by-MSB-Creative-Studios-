@@ -26,8 +26,10 @@ import {
 } from './lib/emergencyPartnerQueue.ts';
 import { playPing } from './lib/audio.ts';
 import { getCountryEmergencyNumber, getSelectedCountry } from './lib/emergencyNumbers.ts';
+import { buildSpokenEmergencyBrief, speakText, stopSpeaking } from './lib/speech.ts';
 import { checkOfflineShellReady } from './lib/offlineShell.ts';
 import { attemptOnlineTriage } from './lib/onlineTriage.ts';
+import { SHOW_TECH_DETAILS } from './lib/uiVisibility.ts';
 import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send, Mail } from 'lucide-react';
 
 /** Keep a weak/failed online AI connection from blocking an on-device SOS. */
@@ -68,7 +70,14 @@ export default function App() {
   const [voiceCapture, setVoiceCapture] = useState<VoiceCaptureMetadata | null>(null);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [asrConfigured, setAsrConfigured] = useState<boolean | null>(null);
+  const [isSpeakingAnswer, setIsSpeakingAnswer] = useState(false);
   const asrProbeRef = useRef<{ at: number; configured: boolean } | null>(null);
+  const voiceOriginRef = useRef(false);
+  const voiceCaptureRef = useRef<VoiceCaptureMetadata | null>(null);
+  const pendingVoiceTextRef = useRef<string | null>(null);
+  const analyzeRef = useRef<(text?: string) => void>(() => undefined);
+  const [voiceSubmitTick, setVoiceSubmitTick] = useState(0);
+  voiceCaptureRef.current = voiceCapture;
 
   /**
    * Resolved at explicit voice-button activation so Offline/Resilience mode stays
@@ -95,7 +104,7 @@ export default function App() {
   }, [offlineForce]);
 
   const voiceModeNotice = !offlineForce && asrConfigured === false
-    ? 'Multilingual server voice not configured — browser voice (selected language) active. Typed text is detected in any language.'
+    ? 'Live microphone speaks answers in any supported language. Browser voice follows what you speak, not a typed box.'
     : null;
 
   /**
@@ -134,10 +143,15 @@ export default function App() {
         timestamp: new Date().toISOString()
       };
 
-      // Original-language transcript is loaded into the editable transcript box
-      // and preserved verbatim in the voice capture metadata.
+      // Original-language transcript is preserved, then spoken triage starts
+      // immediately — do not wait for an English aid translation, and do not
+      // leave the person with only a typed box.
+      voiceOriginRef.current = true;
+      voiceCaptureRef.current = capture;
       setTranscript(data.transcript);
       setVoiceCapture(capture);
+      pendingVoiceTextRef.current = data.transcript;
+      setVoiceSubmitTick((tick) => tick + 1);
 
       if (detected.code === 'en') {
         // English speech needs no English aid translation.
@@ -156,14 +170,18 @@ export default function App() {
         if (!tRes.ok || !tJson.success || !tJson.data?.english_translation) {
           throw new Error(tJson.error || `English translation failed (HTTP ${tRes.status}).`);
         }
-        setVoiceCapture({
+        const enriched: VoiceCaptureMetadata = {
           ...capture,
           englishTranslation: tJson.data.english_translation,
           translationFailed: false
-        });
+        };
+        voiceCaptureRef.current = enriched;
+        setVoiceCapture(enriched);
       } catch (tErr: any) {
         console.warn('English translation failed; preserving original transcript:', tErr);
-        setVoiceCapture({ ...capture, translationFailed: true });
+        const failed: VoiceCaptureMetadata = { ...capture, translationFailed: true };
+        voiceCaptureRef.current = failed;
+        setVoiceCapture(failed);
         setVoiceNotice('English translation unavailable — the original-language transcript is preserved and can still be triaged.');
       } finally {
         setAsrPhase('idle');
@@ -339,16 +357,44 @@ export default function App() {
     const textToAnalyze = inputText.trim();
     const startedAt = Date.now();
     const detectedLang = detectLanguage(textToAnalyze);
+    const activeVoiceCapture = voiceCaptureRef.current;
+
+    const announceVoiceAnswer = (result: EmergencyAnalysisResult) => {
+      if (!voiceOriginRef.current || !soundEnabled) return;
+      const languageCode =
+        result.voice_capture?.detectedLanguage?.code ||
+        result.detected_language?.code ||
+        activeVoiceCapture?.detectedLanguage?.code ||
+        detectedLang.code;
+      const brief = buildSpokenEmergencyBrief({
+        languageCode,
+        category: result.emergency_category || result.emergency_type,
+        severity: result.severity,
+        emergencyNumber: getCountryEmergencyNumber(getSelectedCountry())
+      });
+      const spoken = speakText(brief, {
+        languageCode,
+        interrupt: true,
+        onEnd: () => setIsSpeakingAnswer(false)
+      });
+      setIsSpeakingAnswer(spoken.started);
+      if (!spoken.started) {
+        setVoiceNotice('This browser cannot speak answers aloud. The emergency guidance is on screen.');
+      } else if (spoken.voiceMatched === false) {
+        const name = result.detected_language?.name || languageCode.toUpperCase();
+        setVoiceNotice(`No ${name} speaking voice is installed on this device. The answer is on screen. Add a ${name} voice in system settings to hear it.`);
+      }
+    };
 
     // Bilingual voice context (detected language + original transcript + optional
     // English translation) travels with the triage request when voice was used.
-    const voiceCapturePayload = voiceCapture
+    const voiceCapturePayload = activeVoiceCapture
       ? {
-          asrProvider: voiceCapture.asrProvider,
-          asrModel: voiceCapture.asrModel,
-          detectedLanguage: voiceCapture.detectedLanguage,
-          originalTranscript: voiceCapture.originalTranscript,
-          ...(voiceCapture.englishTranslation ? { englishTranslation: voiceCapture.englishTranslation } : {})
+          asrProvider: activeVoiceCapture.asrProvider,
+          asrModel: activeVoiceCapture.asrModel,
+          detectedLanguage: activeVoiceCapture.detectedLanguage,
+          originalTranscript: activeVoiceCapture.originalTranscript,
+          ...(activeVoiceCapture.englishTranslation ? { englishTranslation: activeVoiceCapture.englishTranslation } : {})
         }
       : undefined;
 
@@ -358,7 +404,7 @@ export default function App() {
       const offlineClassified = classifyEmergencyOffline(
         textToAnalyze,
         locationInfo || undefined,
-        voiceCapture?.detectedLanguage?.name || detectedLang.name,
+        activeVoiceCapture?.detectedLanguage?.name || detectedLang.name,
         selectedLanguage
       );
       const fallbackResult: EmergencyAnalysisResult = {
@@ -370,12 +416,13 @@ export default function App() {
         latency_ms: Math.max(0, Date.now() - startedAt),
         raw_transcript: textToAnalyze,
         location_coordinates: locationCoords,
-        voice_capture: voiceCapture ?? undefined
+        voice_capture: activeVoiceCapture ?? undefined
       };
       setNebiusConnected(false);
       setCurrentResult(fallbackResult);
       saveReportToHistory(fallbackResult);
       if (soundEnabled) playPing('sos');
+      announceVoiceAnswer(fallbackResult);
       setIsAnalyzing(false);
       return;
     }
@@ -388,7 +435,7 @@ export default function App() {
       const offlineClassified = classifyEmergencyOffline(
         textToAnalyze,
         locationInfo || undefined,
-        voiceCapture?.detectedLanguage?.name || detectedLang.name,
+        activeVoiceCapture?.detectedLanguage?.name || detectedLang.name,
         selectedLanguage
       );
       const onDeviceResult: EmergencyAnalysisResult = {
@@ -400,13 +447,14 @@ export default function App() {
         latency_ms: Math.max(0, Date.now() - startedAt),
         raw_transcript: textToAnalyze,
         location_coordinates: locationCoords,
-        voice_capture: voiceCapture ?? undefined
+        voice_capture: activeVoiceCapture ?? undefined
       };
       setNebiusConnected(false);
       setError(null);
       setCurrentResult(onDeviceResult);
       saveReportToHistory(onDeviceResult);
       if (soundEnabled) playPing(onDeviceResult.severity >= 4 ? 'alert' : 'sos');
+      announceVoiceAnswer(onDeviceResult);
       setIsAnalyzing(false);
     };
 
@@ -430,9 +478,10 @@ export default function App() {
 
       const result = attempt.data;
       setNebiusConnected(result.source === 'nebius_nemotron' || Boolean(result.nebius_connected));
-      if (voiceCapture && !result.voice_capture) result.voice_capture = voiceCapture;
+      if (activeVoiceCapture && !result.voice_capture) result.voice_capture = activeVoiceCapture;
       setCurrentResult(result);
       saveReportToHistory(result);
+      announceVoiceAnswer(result);
       // A successful ONLINE analysis can carry an explicit ONLINE translation
       // error. Never replace that with a fabricated offline translation.
       if (result.translation_status === 'error' && result.translation_error) {
@@ -449,6 +498,15 @@ export default function App() {
       setIsAnalyzing(false);
     }
   };
+  analyzeRef.current = handleAnalyzeEmergency;
+
+  // Server ASR finishes outside the tap. Speak the answer from the latest analyzer.
+  useEffect(() => {
+    if (!voiceSubmitTick) return;
+    const text = pendingVoiceTextRef.current;
+    pendingVoiceTextRef.current = null;
+    if (text) analyzeRef.current(text);
+  }, [voiceSubmitTick]);
 
   // Dedicated "Translate SOS" Handler
   const handleTranslateSOS = async (targetLangCode: string) => {
@@ -628,7 +686,13 @@ export default function App() {
         highContrast={highContrast}
         onToggleHighContrast={() => setHighContrast((prev) => !prev)}
         soundEnabled={soundEnabled}
-        onToggleSound={() => setSoundEnabled((prev) => !prev)}
+        onToggleSound={() => setSoundEnabled((prev) => {
+          if (prev) {
+            stopSpeaking();
+            setIsSpeakingAnswer(false);
+          }
+          return !prev;
+        })}
         onShowSplash={() => setShowSplash(true)}
         onOpenPrivacyModal={() => setShowPrivacyModal(true)}
         onOpenPartnersModal={() => setShowPartnersModal(true)}
@@ -697,14 +761,28 @@ export default function App() {
           </div>
         </div>
 
-        {/* Explicit mode status */}
-        <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${localOnlyMode ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
+        {/* Explicit mode status (technical — debug builds only) */}
+        {SHOW_TECH_DETAILS && <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${localOnlyMode ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
           {localOnlyMode
             ? 'LOCAL SOS TRIAGE — typed messages work without internet. Nothing is automatically sent; browser voice may need a network.'
             : 'ONLINE AI selected — on-device SOS takes over if unreachable. Dispatch requires separate consent and a real supported partner.'}
-        </div>
+        </div>}
 
-        {offlineShellReady !== null && (
+        {/* Simple "what to do" guide for everyone */}
+        <ol id="how-it-works-steps" aria-label="How to use LifeLine AI"
+          className="mb-3 flex items-stretch justify-between gap-1 text-[11px] sm:text-xs font-semibold text-neutral-200">
+          {['Tap to speak or type what happened', 'Tap Analyze', 'Follow the steps & call for help'].map((label, i, all) => (
+            <React.Fragment key={label}>
+              <li className="flex-1 flex items-center gap-1.5 px-2 py-2 rounded-lg bg-neutral-900 border border-neutral-800">
+                <span className="w-5 h-5 shrink-0 rounded-full bg-red-600 text-white text-[11px] font-black flex items-center justify-center">{i + 1}</span>
+                <span className="leading-tight">{label}</span>
+              </li>
+              {i < all.length - 1 && <span aria-hidden="true" className="self-center text-red-400 font-black">→</span>}
+            </React.Fragment>
+          ))}
+        </ol>
+
+        {SHOW_TECH_DETAILS && offlineShellReady !== null && (
           <div id="offline-shell-readiness" aria-live="polite"
             className={`mb-3 px-3 py-2 rounded-lg border text-xs ${offlineShellReady ? 'border-emerald-800 bg-emerald-950/40 text-emerald-200' : 'border-amber-700 bg-amber-950/50 text-amber-200'}`}>
             {offlineShellReady
@@ -727,6 +805,10 @@ export default function App() {
         {/* Big Emergency Voice Push Button */}
         <EmergencyVoiceButton
           onTranscriptChange={handleTranscriptVoiceChange}
+          onSubmitEmergency={(text) => {
+            voiceOriginRef.current = true;
+            void handleAnalyzeEmergency(text);
+          }}
           isAnalyzing={isAnalyzing}
           offlineMode={localOnlyMode}
           soundEnabled={soundEnabled}
@@ -736,6 +818,8 @@ export default function App() {
           onVoiceRecordingStopped={handleVoiceRecordingStopped}
           voicePhase={asrPhase}
           voiceModeNotice={voiceNotice || voiceModeNotice}
+          isSpeakingAnswer={isSpeakingAnswer}
+          onCancelSpeech={() => setIsSpeakingAnswer(false)}
         />
 
         {/* Speech-to-Text Transcript Area & Presets */}
@@ -743,11 +827,15 @@ export default function App() {
           transcript={transcript}
           onTranscriptChange={(text) => {
             setTranscript(text);
+            // Typing is the fallback, not the microphone path — do not speak a
+            // typed edit as if it were a live voice answer.
+            voiceOriginRef.current = false;
             // ANY manual transcript change (typing, presets, clearing)
             // invalidates the previous bilingual voice capture so it can never
             // be attached to an analysis it did not produce. The server voice
             // path updates the transcript directly and is not affected.
             setVoiceCapture(null);
+            voiceCaptureRef.current = null;
             setVoiceNotice(null);
           }}
           onSubmitEmergency={handleAnalyzeEmergency}
@@ -783,9 +871,9 @@ export default function App() {
               <div>
                 <div className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
                   <span>Emergency Analysis Error</span>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-900/90 text-red-200 border border-red-700">
+                  {SHOW_TECH_DETAILS && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-900/90 text-red-200 border border-red-700">
                     Nebius Token Factory
-                  </span>
+                  </span>}
                 </div>
                 <div className="text-xs text-red-300 mt-1 leading-relaxed">
                   {error}
@@ -957,7 +1045,7 @@ export default function App() {
         <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <img
-              src="/file_00000000f3ec8211ba741b84f232a029.png"
+              src="/logo.png"
               alt="LifeLine AI"
               className="w-5 h-5 rounded object-cover"
               onError={(e) => {
@@ -991,9 +1079,9 @@ export default function App() {
               <span>Contact Privacy Team</span>
             </button>
             <span className="text-neutral-600 hidden sm:inline">•</span>
-            <div className="text-[10px] text-neutral-400">
+            {SHOW_TECH_DETAILS && <div className="text-[10px] text-neutral-400">
               {offlineForce ? 'Offline local rules • Bundled emergency phrasebook' : 'NVIDIA Nemotron via Nebius Token Factory • Online emergency translation'}
-            </div>
+            </div>}
           </div>
         </div>
       </footer>

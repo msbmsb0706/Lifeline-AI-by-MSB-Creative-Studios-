@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Shield, ShieldCheck, Wifi, WifiOff, Info, Sun, Moon, Volume2, VolumeX, Sparkles, X, Lock } from 'lucide-react';
 import { SystemStatus } from '../types.ts';
+import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
 
 interface HeaderProps {
   systemStatus: SystemStatus | null;
@@ -53,7 +54,7 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             <img
-              src="/file_00000000f3ec8211ba741b84f232a029.png"
+              src="/logo.png"
               alt="LifeLine AI by MSB Creative Studios"
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover"
@@ -83,7 +84,7 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Right side controls: Mode Pill, High Contrast, Sound, Info */}
         <div className="flex items-center gap-1.5 sm:gap-2">
           {/* Connection Indicator: ONLY when an actual successful API request has been completed */}
-          {nebiusConnected && (
+          {SHOW_TECH_DETAILS && nebiusConnected && (
             <div
               id="nebius-connection-indicator"
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-950/90 text-emerald-300 border border-emerald-500 shadow-sm transition-all"
@@ -98,7 +99,7 @@ export const Header: React.FC<HeaderProps> = ({
           )}
 
           {/* Clearly separated Online / Offline mode selector */}
-          <div className="hidden lg:flex flex-col items-end leading-tight mr-1" aria-label="Current analysis mode">
+          <div className={`${SHOW_TECH_DETAILS ? 'hidden lg:flex' : 'hidden'} flex-col items-end leading-tight mr-1`} aria-label="Current analysis mode">
             <span className="text-[9px] font-black tracking-widest text-neutral-500">{offlineForce ? 'OFFLINE / RESILIENCE' : 'ONLINE AI'}</span>
             <span className={`text-[9px] font-semibold ${offlineForce ? 'text-amber-400' : 'text-emerald-400'}`}>{offlineForce ? 'No Internet • No API Key' : 'Nebius • Nemotron'}</span>
           </div>
@@ -200,7 +201,7 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex items-center gap-3 mb-3">
               <div className="w-11 h-11 rounded-xl overflow-hidden border border-neutral-700 bg-neutral-950 flex-shrink-0">
                 <img
-                  src="/file_00000000f3ec8211ba741b84f232a029.png"
+                  src="/logo.png"
                   alt="LifeLine AI by MSB Creative Studios"
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover"

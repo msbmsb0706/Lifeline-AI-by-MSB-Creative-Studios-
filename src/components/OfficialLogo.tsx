@@ -34,7 +34,7 @@ export const OfficialLogo: React.FC<OfficialLogoProps> = ({
       >
         {!imgError ? (
           <img
-            src="/file_00000000f3ec8211ba741b84f232a029.png"
+            src="/logo.png"
             alt="LifeLine AI by MSB Creative Studios"
             referrerPolicy="no-referrer"
             onError={() => setImgError(true)}
