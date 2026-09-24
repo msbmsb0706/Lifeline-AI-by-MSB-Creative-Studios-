@@ -119,15 +119,18 @@ LifeLine AI supports multilingual distress communication across **10 languages**
 - **Original Transcript Preservation:** Original spoken or typed distress text is preserved verbatim in its source language for on-device review and optional manual sharing (subject to browser storage availability).
 - **English Translation as an Interpretation Aid:** When an online translation is configured/available, it can supplement the original text. Offline wording uses a fixed emergency phrasebook; unsupported free-form sentences remain in the original language rather than getting a fabricated translation. Multilingual typed matching is heuristic, not a certified medical interpreter.
 
-#### Speech-to-Text (ASR) Capabilities
+#### Speech in, speech out (real time)
+- **Speak, don’t type:** The microphone is the primary emergency input. It listens live and speaks the emergency guidance aloud in the language that was heard. Typing remains only as a fallback when the person cannot speak or the browser has no speech recognizer.
+- **Any supported language, live:** Recognition starts from the selected language or the device language, then retargets as soon as another supported language is clearly heard. A language chip can lock Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, Marathi, Spanish, French, or English. A short pause speaks the answer; the microphone is closed first so the speaker is not transcribed back into the transcript.
+- **On-device speaking:** Answers use the browser speech synthesizer and a bundled emergency phrasebook. No audio of the spoken answer is uploaded. A phone number is spoken only when that country already has a configured public emergency number — numbers are never invented.
 - **Optional Multilingual ASR (NVIDIA Whisper NIM):**
   - When server-side ASR credentials are explicitly configured (`ASR_PROVIDER=nvidia_nim`, `ASR_BASE_URL`, `ASR_API_KEY`/`NVIDIA_API_KEY`, and `ASR_MODEL=openai/whisper-large-v3`), browser audio recordings are transmitted to the backend proxy (`POST /api/transcribe-speech`) for transcription with automatic multilingual detection (`language=multi`).
   - Audio is processed transiently in memory: audio buffers are **never written to disk** and are **never persisted**.
   - Nebius Token Factory does not host speech or audio endpoints; therefore, multilingual ASR connects to dedicated NVIDIA NIM infrastructure when configured.
   - *ASR Accuracy Notice:* Server-side NVIDIA Whisper ASR is an optional/configurable capability. It is active **only** when the required ASR credentials are configured on the server.
-- **Browser Speech-Recognition Fallback:**
-  - When server-side ASR is not configured or unavailable, the client automatically falls back to the browser's built-in Web Speech API (where supported by the user's browser).
-  - Users can also type distress reports directly in any of the 10 supported languages at any time.
+- **Browser Speech-Recognition (real-time path):**
+  - The microphone prefers the browser Web Speech API so captions and the spoken answer happen live, including when server ASR is configured. Server recording is the fallback only when the browser cannot listen in real time.
+  - Users can also type distress reports directly in any of the 10 supported languages at any time. Typed text is not auto-spoken; the SOS card Speak button reads it aloud in the correct language voice.
 
 ### 4. Silent SOS & Evidence Capture
 

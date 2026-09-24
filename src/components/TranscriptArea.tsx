@@ -235,7 +235,7 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
             htmlFor="emergency-transcript-input"
             className="text-xs sm:text-sm font-bold text-neutral-200 flex items-center gap-1.5"
           >
-            <span>Emergency Distress Transcript & Details</span>
+            <span>Heard speech — type only if you cannot speak</span>
           </label>
           {transcript && (
             <span className="text-[10px] font-mono text-neutral-400">
@@ -283,7 +283,7 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
           dir="auto"
           lang="mul"
           autoComplete="off"
-          placeholder="Speak into microphone or describe the emergency in any language (English, தமிழ், हिन्दी, తెలుగు, ಕನ್ನಡ, മലയാളം, বাংলা, मराठी, Español, Français)..."
+          placeholder="Fallback typing only. Prefer the microphone — it listens live and speaks the answer in any language (English, தமிழ், हिन्दी, తెలుగు, ಕನ್ನಡ, മലയാളം, বাংলা, मराठी, Español, Français)..."
           rows={4}
           disabled={isAnalyzing}
           className={`w-full text-sm sm:text-base p-3 sm:p-3.5 rounded-xl border transition-all resize-none outline-none leading-relaxed ${

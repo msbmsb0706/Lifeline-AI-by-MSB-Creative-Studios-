@@ -1174,7 +1174,7 @@ CONSTRAINTS:
   });
 
   // Serve official logo directly with cache headers
-  const logoPath = path.join(process.cwd(), 'public', 'file_00000000f3ec8211ba741b84f232a029.png');
+  const logoPath = path.join(process.cwd(), 'public', 'logo.png');
   app.get(['/file_00000000f3ec8211ba741b84f232a029.png', '/logo.png', '/assets/logo.png', '/assets/file_00000000f3ec8211ba741b84f232a029.png'], (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=86400');
     res.sendFile(logoPath);
