@@ -24,10 +24,10 @@ import { section, assert, assertEqual } from './helpers.ts';
  * for module resolution, so the installed file path is used directly).
  */
 function resolveTsxRunner(): { command: string; args: string[] } {
-  const bin = path.resolve(process.cwd(), 'node_modules', '.bin', 'tsx');
-  if (existsSync(bin)) return { command: bin, args: ['server.ts'] };
   const cli = path.resolve(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
   if (existsSync(cli)) return { command: process.execPath, args: [cli, 'server.ts'] };
+  const bin = path.resolve(process.cwd(), 'node_modules', '.bin', 'tsx');
+  if (existsSync(bin)) return { command: bin, args: ['server.ts'] };
   return { command: process.execPath, args: ['server.ts'] };
 }
 
@@ -536,3 +536,4 @@ assert(true, 'isolated upstream fixture and application server were shut down');
 if (!ready) {
   process.stdout.write(`  ! application server did not start; server log:\n${serverLog.slice(-2000)}\n`);
 }
+
