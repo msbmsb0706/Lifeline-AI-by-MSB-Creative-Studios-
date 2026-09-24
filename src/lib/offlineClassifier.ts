@@ -11,6 +11,52 @@ import {
   getLanguageByCodeOrName
 } from './languages.ts';
 
+/**
+ * English/ASCII keywords must start on a word boundary and end on a word
+ * boundary or a simple inflection (s, es, d, ed, ing, ...). This prevents
+ * mid-word false positives such as "stable" -> "stab", "begun" -> "gun",
+ * "paediatric" -> "aed" and "know"/"snow" -> "now". Non-ASCII (Indic)
+ * keywords keep plain substring matching, since JS word boundaries do not
+ * understand those scripts.
+ */
+const ASCII_KEYWORD = /^[a-z0-9 '\-]+$/;
+const INFLECTION = "(?:s|es|d|ed|ing|ings|er|ers)?";
+const matcherCache = new Map<string, RegExp | null>();
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildMatcher(keyword: string, suffix: string): RegExp | null {
+  const kw = keyword.toLowerCase();
+  const cacheKey = `${suffix}|${kw}`;
+  if (!matcherCache.has(cacheKey)) {
+    matcherCache.set(
+      cacheKey,
+      ASCII_KEYWORD.test(kw) ? new RegExp(`(?<![a-z0-9])${escapeRegExp(kw)}${suffix}(?![a-z0-9])`) : null
+    );
+  }
+  return matcherCache.get(cacheKey)!;
+}
+
+/** Rule keyword match: whole word (+ simple inflection) for ASCII keywords. */
+function containsKeyword(text: string, keyword: string): boolean {
+  const re = buildMatcher(keyword, INFLECTION);
+  return re ? re.test(text) : text.includes(keyword.toLowerCase());
+}
+
+/** Prefix match for ASCII words ("help" matches "helpless", "now" does not match "know"). */
+function containsWordStart(text: string, word: string): boolean {
+  const re = buildMatcher(word, '[a-z0-9]*');
+  return re ? re.test(text) : text.includes(word.toLowerCase());
+}
+
+/** Exact whole-word match for ASCII words ("arrest" does not match "arrested"). */
+function containsExactWord(text: string, word: string): boolean {
+  const re = buildMatcher(word, '');
+  return re ? re.test(text) : text.includes(word.toLowerCase());
+}
+
 interface EmergencyRule {
   keywords: string[];
   type: string;
@@ -27,7 +73,7 @@ interface EmergencyRule {
 const EMERGENCY_RULES: EmergencyRule[] = [
   // 1. MEDICAL
   {
-    keywords: ['heart attack', 'chest pain', 'cardiac', 'defibrillator', 'aed', 'no pulse', 'passed out', 'unconscious', 'left arm pain', 'நெஞ்சு வலி', 'दिल का दौरा', 'గుండె నొప్పి', 'ಹೃದಯಾಘಾತ', 'ഹൃദയാഘാതം', 'হার্ট অ্যাটাক', 'छातीत दुखणे'],
+    keywords: ['heart attack', 'chest pain', 'cardiac', 'defibrillator', 'aed', 'no pulse', 'passed out', 'unconscious', 'not breathing', 'stopped breathing', "isn't breathing", 'is not breathing', 'no breathing', 'unresponsive', 'not responding', 'fainted', 'left arm pain', 'நெஞ்சு வலி', 'दिल का दौरा', 'గుండె నొప్పి', 'ಹೃದಯಾಘಾತ', 'ഹൃദയാഘാതം', 'হার্ট অ্যাটাক', 'छातीत दुखणे'],
     type: 'Medical - Cardiac Emergency',
     category: 'MEDICAL',
     defaultSeverity: 5,
@@ -67,7 +113,7 @@ const EMERGENCY_RULES: EmergencyRule[] = [
     responderInstructions: 'Suspected acute ischemic or hemorrhagic stroke. Urgent stroke center transport window.'
   },
   {
-    keywords: ['choking', 'cannot breathe', 'gasping', 'throat blocked', 'heimlich', 'asphyxia', 'மூச்சு திணறல்', 'सांस रुकना', 'శ్వాస ఆడటం లేదు', 'ಉಸಿರುಗಟ್ಟುವಿಕೆ', 'ശ്വാസംമുട്ടൽ', 'দম বন্ধ'],
+    keywords: ['choking', 'cannot breathe', "can't breathe", 'cant breathe', 'unable to breathe', 'gasping', 'throat blocked', 'heimlich', 'asphyxia', 'மூச்சு திணறல்', 'सांस रुकना', 'శ్వాస ఆడటం లేదు', 'ಉಸಿರುಗಟ್ಟುವಿಕೆ', 'ശ്വാസംമുട്ടൽ', 'দম বন্ধ'],
     type: 'Medical - Airway Obstruction / Choking',
     category: 'MEDICAL',
     defaultSeverity: 5,
@@ -87,7 +133,7 @@ const EMERGENCY_RULES: EmergencyRule[] = [
     responderInstructions: 'Severe upper airway obstruction. Responders should prepare video laryngoscopy and surgical cricothyroid kit.'
   },
   {
-    keywords: ['bleeding', 'blood', 'hemorrhage', 'stab', 'gunshot', 'deep cut', 'arterial', 'ரத்தப்போக்கு', 'रक्तस्राव', 'రక్తస్రావం', 'ರಕ್ತಸ್ರಾವ', 'രക്തസ്രാവം', 'রক্তপাত'],
+    keywords: ['bleeding', 'blood', 'hemorrhage', 'stab', 'stabbed', 'stabbing', 'gunshot', 'deep cut', 'arterial', 'ரத்தப்போக்கு', 'रक्तस्राव', 'రక్తస్రావం', 'ರಕ್ತಸ್ರಾವ', 'രക്തസ്രാവം', 'রক্তপাত'],
     type: 'Trauma - Severe Hemorrhage',
     category: 'MEDICAL',
     defaultSeverity: 5,
@@ -109,7 +155,7 @@ const EMERGENCY_RULES: EmergencyRule[] = [
 
   // 2. FIRE
   {
-    keywords: ['fire', 'flames', 'burning', 'smoke', 'explosion', 'wildfire', 'arson', 'தீ', 'आग', 'మంటలు', 'ಬೆಂಕಿ', 'തീ', 'আগুন', 'विस्फोट'],
+    keywords: ['fire', 'flames', 'burning', 'smoke', 'explosion', 'wildfire', 'arson', 'firefighter', 'தீ', 'आग', 'మంటలు', 'ಬೆಂಕಿ', 'തീ', 'আগুন', 'विस्फोट'],
     type: 'Fire - Structure / Smoke Hazard',
     category: 'FIRE',
     defaultSeverity: 5,
@@ -311,7 +357,7 @@ export function classifyEmergencyOffline(
   // Narrow English denial handling: remove only a complete explicit fire-denial
   // clause, not emergency negations ("no pulse") or "no fire extinguisher".
   // Keep the original text for display and translation. Other hazards still score.
-  const normalizedInput = text.toLowerCase().trim();
+  const normalizedInput = text.toLowerCase().trim().replace(/[\u2018\u2019\u02bc]/g, "'");
   const normalized = normalizedInput.replace(
     /(^|[.!?;,]|\bbut\b)\s*(?:there\s+is\s+no\s+(?:active\s+)?fire|no\s+(?:active\s+)?fire)(?=\s*(?:$|[.!?;,]|\bbut\b|\band\b))/g,
     '$1 '
@@ -326,8 +372,12 @@ export function classifyEmergencyOffline(
 
   for (const rule of EMERGENCY_RULES) {
     let score = 0;
+    const matched = rule.keywords.filter(kw => containsKeyword(normalized, kw));
     for (const kw of rule.keywords) {
-      if (normalized.includes(kw.toLowerCase())) {
+      // A keyword embedded in another matched keyword of the same rule still
+      // scores (e.g. "fire" inside "wildfire"), preserving the original weighting.
+      const lower = kw.toLowerCase();
+      if (matched.includes(kw) || matched.some(m => m !== kw && m.toLowerCase().includes(lower))) {
         score += 2;
       }
     }
@@ -340,7 +390,7 @@ export function classifyEmergencyOffline(
   // Fallback if no specific keyword matched
   if (!bestRule || bestScore === 0) {
     const category = standardizeCategory(hasExplicitFireDenial ? normalized : text);
-    const hasUrgentWords = ['urgent', 'emergency', 'help', 'now', 'hurt', 'pain', 'danger', 'sos', 'காப்பாத்துங்க', 'बचाओ', 'సహాయం', 'ಕಾಪಾಡಿ', 'രക്ഷിക്കൂ', 'বাঁচাও'].some(w => normalized.includes(w));
+    const hasUrgentWords = ['urgent', 'emergency', 'help', 'now', 'hurt', 'pain', 'danger', 'sos', 'காப்பாத்துங்க', 'बचाओ', 'సహాయం', 'ಕಾಪಾಡಿ', 'രക്ഷിക്കൂ', 'বাঁচাও'].some(w => containsWordStart(normalized, w));
     
     clarificationOnly = hasExplicitFireDenial && !hasUrgentWords;
     bestRule = {
@@ -383,17 +433,14 @@ export function classifyEmergencyOffline(
   // Calculate dynamic severity
   let severity = bestRule.defaultSeverity;
   if (
-    normalized.includes('unconscious') ||
-    normalized.includes('dying') ||
-    normalized.includes('critical') ||
-    normalized.includes('arrest') ||
-    normalized.includes('fatal') ||
+    ['unconscious', 'dying', 'critical', 'critically', 'arrest', 'fatal', 'fatally', 'not breathing', 'stopped breathing', "isn't breathing", 'no breathing']
+      .some(word => containsExactWord(normalized, word)) ||
     normalized.includes('உயிருக்கு ஆபத்து') ||
     normalized.includes('गंभीर') ||
     normalized.includes('ప్రాణాపాయం')
   ) {
     severity = 5;
-  } else if (normalized.includes('stable') || normalized.includes('minor') || normalized.includes('mild')) {
+  } else if (['stable', 'minor', 'mild'].some(word => containsExactWord(normalized, word))) {
     severity = Math.max(1, severity - 1) as SeverityLevel;
   }
 
