@@ -47,6 +47,28 @@ assertEqual(code('Sahayikku, ente achanu vedana, rakshikku vaa.'), 'ml', 'Romani
 assertEqual(code('Shahajjo! Rokto porchche, shonko bereche.'), 'bn', 'Romanized Bengali');
 assertEqual(code('Vachva! Madat hava, apghaat jhala, police bolva.'), 'mr', 'Romanized Marathi');
 
+section('Typed multilingual detection — mixed scripts, romanization, language labels');
+for (const [message, expected] of [
+  ['Mi padre no respira', 'es'],
+  ['No hay agua potable', 'es'],
+  ['Se está ahogando', 'es'],
+  ['Mon père ne respire pas', 'fr'],
+  ['Le téléphone est mort', 'fr'],
+  ['Pas de nourriture', 'fr'],
+  ['La personne se noie', 'fr'],
+  ['bahut khoon beh raha hai', 'hi'],
+  ['accident ho gaya', 'hi'],
+  ['dil ka daura', 'hi'],
+  ['appa moochu vidala', 'ta'],
+  ['kaapathunga', 'ta'],
+  ['घराला आग लागली', 'mr'],
+  ['छातीत दुखणे', 'mr'],
+  ['Car accident on highway', 'en'],
+  ['My father is having a heart attack at the hospital.', 'en']
+] as const) {
+  assertEqual(code(message), expected, `typed language: "${message}" -> ${expected}`);
+}
+
 section('FAIL-1 — tolerant identifiers, no silent English');
 for (const id of ['ta', 'TA', 'Tamil', 'தமிழ்', 'ta-IN', 'ta_in', 'tam', 'Tamil language', 'Tamil (India)']) {
   assertEqual(resolveDetectedSourceLanguage(id, EN_TEXT).code, 'ta', `sourceLanguage '${id}' -> ta`);

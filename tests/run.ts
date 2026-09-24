@@ -17,12 +17,17 @@ await import('./languages.test.ts');
 await import('./language-detection-regression.test.ts');
 await import('./translation.test.ts');
 await import('./offline-fire-denial.test.ts');
+await import('./offline-qa-500.test.ts');
+await import('./offline-shell.test.ts');
+await import('./online-triage-fallback.test.ts');
 await import('./sos-lifecycle.test.ts');
+await import('./offline-resilience.test.ts');
 await import('./app-call-sites.test.ts');
 await import('./pr16-corrective.test.ts');
 await import('./pr16-country-selection.test.ts');
 await import('./online-translation.test.ts');
 await import('./online-translation-routes.test.ts');
+await import('./partner-tracking.test.ts');
 
 const failures = summarize();
 process.exit(failures > 0 ? 1 : 0);

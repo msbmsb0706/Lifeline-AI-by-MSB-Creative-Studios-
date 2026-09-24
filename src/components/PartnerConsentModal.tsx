@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   EmergencyPartnerProvider,
   SOSPackage,
@@ -25,7 +25,9 @@ interface PartnerConsentModalProps {
   sosPackage: SOSPackage;
   isOffline: boolean;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (options: { includeGps: boolean }) => void;
+  /** True only for a separately reviewed, configured authorized-partner handoff. */
+  allowGpsSelection?: boolean;
 }
 
 export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
@@ -34,11 +36,15 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
   sosPackage,
   isOffline,
   onCancel,
-  onConfirm
+  onConfirm,
+  allowGpsSelection = false
 }) => {
+  const [includeGps, setIncludeGps] = useState(false);
+  useEffect(() => { setIncludeGps(false); }, [isOpen, provider.id, sosPackage.sosId]);
   if (!isOpen) return null;
 
   const isTestProvider = provider.providerType === 'TEST';
+  const isLocalOnly = provider.providerType === 'LOCAL_ONLY';
   const isPublicContact = provider.providerType === 'PUBLIC_CONTACT';
   const isAuthorizedApi = provider.providerType === 'AUTHORIZED_API';
 
@@ -65,7 +71,7 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
                 USER REVIEW & CONSENT
               </div>
               <h2 id="consent-modal-title" className="text-lg sm:text-xl font-black">
-                EMERGENCY PARTNER
+                {isLocalOnly ? 'SAVE SOS ON THIS DEVICE' : 'EMERGENCY PARTNER'}
               </h2>
             </div>
           </div>
@@ -82,7 +88,7 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
           {/* Destination Provider Box */}
           <div className="p-3.5 rounded-xl bg-neutral-900 border border-neutral-800 space-y-2">
             <div className="text-[10px] font-bold tracking-wider text-neutral-400 uppercase">
-              Destination Provider
+              {isLocalOnly ? 'Save destination — no partner' : 'Destination Provider'}
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="font-extrabold text-white text-base">
@@ -90,14 +96,18 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
               </div>
               <span
                 className={`text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${
-                  isTestProvider
+                  isLocalOnly
+                    ? 'bg-amber-950 text-amber-300 border-amber-700'
+                    : isTestProvider
                     ? 'bg-purple-950 text-purple-300 border-purple-700'
                     : isAuthorizedApi
                     ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
                     : 'bg-blue-950 text-blue-300 border-blue-700'
                 }`}
               >
-                {isTestProvider
+                {isLocalOnly
+                  ? 'LOCAL ONLY — NOT SENT'
+                  : isTestProvider
                   ? 'TEST / DEMO'
                   : isAuthorizedApi
                   ? 'AUTHORIZED API'
@@ -108,6 +118,27 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
               {provider.description}
             </p>
           </div>
+
+          {/* Local records never receive transmission approval or a partner destination. */}
+          {isLocalOnly && (
+            <div className="p-3 rounded-xl bg-amber-950/80 border-2 border-amber-600 text-amber-100 text-xs font-bold">
+              LOCAL SAVE ONLY — Nothing will be sent to any partner, TEST/DEMO endpoint, or emergency service.
+              Reconnecting and reopening will never upload this SOS. You can share the saved text manually from the queue.
+              Save a video to your device separately before closing this page.
+            </div>
+          )}
+
+          {isAuthorizedApi && allowGpsSelection && (
+            <div className="p-3 rounded-xl bg-amber-950/70 border border-amber-600 text-amber-100 text-xs space-y-2">
+              <label className="flex gap-2 items-start font-bold">
+                <input type="checkbox" checked={includeGps} disabled={!sosPackage.gps || isOffline}
+                  onChange={(event) => setIncludeGps(event.target.checked)} />
+                Include this saved ONE-TIME GPS fix in the authorized partner handoff.
+                {sosPackage.gps ? ' Off by default.' : ' No saved fix available.'}
+              </label>
+              <p>Live GPS tracking is separate and stays OFF unless you later opt in again AND a verified partner accepts an assigned case.</p>
+            </div>
+          )}
 
           {/* Test or Public Contact Notice Banner */}
           {isTestProvider && (
@@ -140,13 +171,13 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
           )}
 
           {/* Offline Notice Banner */}
-          {isOffline && (
+          {isOffline && !isLocalOnly && (
             <div className="p-3 rounded-xl bg-amber-950/80 border border-amber-700 text-amber-200 flex items-start gap-2.5">
               <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
               <div>
                 <div className="font-black uppercase text-xs">OFFLINE MODE ACTIVE</div>
                 <div className="text-xs mt-0.5">
-                  OFFLINE — SOS will be saved locally. It will be sent when a supported connection becomes available.
+                  OFFLINE — only SOS text/metadata is saved here; it is NOT sent now. Reopening on a network never uploads it. Manually choose an authorized destination if one becomes available. No emergency service receives TEST/DEMO alerts.
                 </div>
               </div>
             </div>
@@ -155,7 +186,7 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
           {/* Data That May Be Sent Checklist */}
           <div className="p-3.5 rounded-xl bg-neutral-900 border border-neutral-800 space-y-2.5">
             <div className="text-[10px] font-bold tracking-wider text-neutral-400 uppercase">
-              Data that may be sent:
+              {isLocalOnly ? 'Data saved on this device (not sent):' : 'Data that may be sent:'}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
@@ -179,12 +210,20 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
                   <b>Message:</b> "{sosPackage.message}"
                 </span>
               </div>
+              {sosPackage.originalTranscript && (
+                <div className="text-emerald-300 col-span-1 sm:col-span-2" dir="auto">
+                  <b>Original typed/spoken words ({sosPackage.detectedLanguage?.name || 'as entered'}):</b>{' '}
+                  {sosPackage.originalTranscript}
+                </div>
+              )}
 
               <div className="flex items-center gap-2 text-emerald-300">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span>
                   <b>GPS location:</b>{' '}
-                  {sosPackage.gps
+                  {isAuthorizedApi && allowGpsSelection && !includeGps
+                    ? 'Not sent (opt-in unchecked)'
+                    : sosPackage.gps
                     ? `${sosPackage.gps.latitude.toFixed(4)}, ${sosPackage.gps.longitude.toFixed(4)}`
                     : 'Not available'}
                 </span>
@@ -206,9 +245,9 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
                 <span>
                   <b>Up to 2 photos:</b>{' '}
                   {photosCount > 0
-                    ? `${photosCount} photo(s) attached`
+                    ? `${photosCount} photo(s) selected — file details only, NOT the images`
                     : 'No photos'}
-                  {!mediaSupported && photosCount > 0 && (
+                  {!mediaSupported && !isLocalOnly && photosCount > 0 && (
                     <span className="text-amber-400 text-[10px] block">
                       (Excluded: destination does not support photo uploads)
                     </span>
@@ -220,8 +259,8 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span>
                   <b>10-second video:</b>{' '}
-                  {hasVideo ? 'Video recorded' : 'No video'}
-                  {!mediaSupported && hasVideo && (
+                  {hasVideo ? 'Video selected — file details only, NOT the recording' : 'No video'}
+                  {!mediaSupported && !isLocalOnly && hasVideo && (
                     <span className="text-amber-400 text-[10px] block">
                       (Excluded: destination does not support video uploads)
                     </span>
@@ -230,6 +269,10 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
               </div>
             </div>
           </div>
+
+          <p className="p-2.5 rounded-lg border border-amber-700 bg-amber-950/60 text-amber-200 text-xs">
+            Photo/video bytes are NOT saved to this partner queue and cannot be uploaded later from it, even if the destination supports media. Use the device share sheet while the files are still open, or save the video locally first.
+          </p>
 
           {/* Buttons */}
           <div className="grid grid-cols-2 gap-3 pt-2">
@@ -246,10 +289,10 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
             <button
               id="consent-confirm-send-btn"
               type="button"
-              onClick={onConfirm}
+              onClick={() => onConfirm({ includeGps: isAuthorizedApi && allowGpsSelection && includeGps && Boolean(sosPackage.gps) })}
               className="py-3 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-red-950 transition-colors"
             >
-              {isOffline ? (
+              {isOffline || isLocalOnly ? (
                 <>
                   <Save className="w-4 h-4" />
                   <span>CONFIRM & SAVE LOCAL</span>

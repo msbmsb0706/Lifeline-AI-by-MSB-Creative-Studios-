@@ -36,6 +36,8 @@ interface SOSDeliveryStatusProps {
   sosId: string | null;
   /** Called after a user-initiated retry attempt finishes (for parent toasts/counters). */
   onRetryFinished?: () => void;
+  /** User-forced offline mode blocks retries even if the OS reports online. */
+  offlineMode?: boolean;
 }
 
 /**
@@ -54,7 +56,7 @@ interface SOSDeliveryStatusProps {
  *   network and stamps every transition as simulated). The normal TEST / DEMO
  *   dispatch path never fabricates these states.
  */
-export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId, onRetryFinished }) => {
+export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId, onRetryFinished, offlineMode = false }) => {
   const [item, setItem] = useState<PendingSOSItem | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
@@ -107,7 +109,7 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
       case 'WAITING_FOR_CONNECTION':
         return {
           dot: '🔴',
-          heading: 'SOS CONFIRMED',
+          heading: item?.targetPartner.providerType === 'LOCAL_ONLY' ? 'SAVED ON DEVICE — NOT SENT' : 'SOS CONFIRMED',
           container: 'border-red-700/80 bg-red-950/60',
           headingClass: 'text-red-300',
           pulse: false
@@ -122,8 +124,8 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
         };
       case 'SENT':
         return {
-          dot: '🟢',
-          heading: 'SENT',
+          dot: item?.targetPartner.providerType === 'TEST' ? '🟣' : '🟢',
+          heading: item?.targetPartner.providerType === 'TEST' ? 'TEST / DEMO ONLY — NO RESPONDER' : 'SENT',
           container: 'border-emerald-700/80 bg-emerald-950/50',
           headingClass: 'text-emerald-300',
           pulse: false
@@ -159,19 +161,18 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
       default:
         return null;
     }
-  }, [effectiveStatus, simulatedFinal]);
+  }, [effectiveStatus, simulatedFinal, item?.targetPartner.providerType]);
 
   if (!item || !effectiveStatus || !visual) return null;
 
   const isTestProvider = item.targetPartner.providerType === 'TEST';
   const recipientLabel = isTestProvider ? 'TEST / DEMO' : item.targetPartner.providerName;
-  const canRetry =
-    effectiveStatus === 'FAILED' && !isOnline
-      ? false // pointless while offline — auto-retry happens on reconnect
-      : effectiveStatus === 'FAILED';
+  const canRetry = effectiveStatus === 'FAILED' && isOnline && !offlineMode &&
+    (item.targetPartner.providerType === 'AUTHORIZED_API' ||
+      (isTestProvider && item.sosPackage.demoOnly === true));
 
   const handleRetry = async () => {
-    if (isRetrying) return;
+    if (isRetrying || offlineMode || !navigator.onLine) return;
     setIsRetrying(true);
     try {
       await retrySingleSOS(item.sosPackage.sosId);
@@ -200,7 +201,7 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
   // Lifecycle detail lines (labels fixed for emergency readability).
   const transmissionLabel =
     effectiveStatus === 'PENDING_LOCAL'
-      ? 'Pending'
+      ? item.targetPartner.providerType === 'LOCAL_ONLY' ? 'Not sent — stored here for manual sharing' : 'Pending'
       : effectiveStatus === 'WAITING_FOR_CONNECTION'
       ? 'Pending (waiting for connection)'
       : effectiveStatus === 'SENDING'
@@ -263,12 +264,14 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
                 ? SIMULATED_DELIVERY_EXPLANATION
                 : simulatedFinal && effectiveStatus === 'ACKNOWLEDGED'
                 ? SIMULATED_ACK_EXPLANATION
+                : item.targetPartner.providerType === 'LOCAL_ONLY'
+                ? 'Saved on this device only. Use Share via device to send manually; no partner API is used.'
                 : effectiveStatus === 'WAITING_FOR_CONNECTION'
-                ? 'Waiting for connection'
+                ? 'Waiting for connection — manual send required'
                 : effectiveStatus === 'FAILED'
                 ? item.errorMessage || 'Retry available'
                 : effectiveStatus === 'SENT'
-                ? 'Handed off to configured destination'
+                ? isTestProvider ? 'Sent to TEST / DEMO ONLY — no real emergency service received it.' : 'Handed off to configured destination'
                 : meta!.detail}
             </div>
           </div>

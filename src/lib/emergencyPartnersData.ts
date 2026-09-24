@@ -202,6 +202,21 @@ export function getProvidersByCountry(countryCode: string): EmergencyPartnerProv
   );
 }
 
+// A real SOS is saved here for manual device sharing. It is NOT a partner,
+// endpoint, or background upload destination; exclude it from the directory.
+export const LOCAL_ONLY_PROVIDER: EmergencyPartnerProvider = {
+  id: 'local-device-only',
+  country: 'GLOBAL',
+  countryName: 'This device',
+  providerName: 'This device — manual sharing only',
+  providerType: 'LOCAL_ONLY',
+  serviceType: 'GENERAL_EMERGENCY',
+  apiEnabled: false,
+  requiresUserConfirmation: false,
+  supportsMediaUpload: false,
+  description: 'Saved only in this browser on this device. No partner, demo endpoint, or responder receives it. You can review and manually share the text after reopening the app.'
+};
+
 export function getTestProvider(): EmergencyPartnerProvider {
   return (
     EMERGENCY_PARTNER_PROVIDERS.find((p) => p.id === 'test-partner-demo') ||

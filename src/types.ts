@@ -175,7 +175,7 @@ export interface QuickPreset {
 // EMERGENCY PARTNER INTEGRATION FRAMEWORK
 // ==========================================
 
-export type PartnerProviderType = 'AUTHORIZED_API' | 'PUBLIC_CONTACT' | 'TEST';
+export type PartnerProviderType = 'AUTHORIZED_API' | 'PUBLIC_CONTACT' | 'TEST' | 'LOCAL_ONLY';
 
 export type PartnerServiceType =
   | 'POLICE'
@@ -226,6 +226,8 @@ export interface SOSPackage {
   video?: MediaAttachmentInfo | null;
   source: 'online' | 'offline';
   offlineCreated?: boolean;
+  /** Only synthetic partner-directory fixtures may be sent to the TEST endpoint. */
+  demoOnly?: boolean;
   /** Bilingual voice context — present when the emergency was captured via multilingual voice ASR. */
   detectedLanguage?: { code: string; name: string } | null;
   /** Original-language transcript (authoritative user speech), never overwritten by translation. */
@@ -237,9 +239,10 @@ export interface SOSPackage {
 /**
  * Explicit SOS communication lifecycle for a queued SOS package.
  *
- * ONLINE path:  SOS CONFIRMED → PENDING_LOCAL → SENDING → SENT
- * OFFLINE path: SOS CONFIRMED → PENDING_LOCAL → WAITING_FOR_CONNECTION
- *               → (connection returns) → SENDING → SENT
+ * Local-only SOS: SOS SAVED → PENDING_LOCAL (no automatic upload).
+ * Explicit authorized-partner send: PENDING_LOCAL → SENDING → SENT.
+ * Offline partner record: PENDING_LOCAL → WAITING_FOR_CONNECTION
+ *                         → (user manually sends after reconnect) → SENDING → SENT.
  *
  * SENT / DELIVERED / ACKNOWLEDGED are distinct trust levels:
  * - SENT          : the app handed the SOS to the configured destination endpoint.
@@ -300,13 +303,32 @@ export interface PartnerAcknowledgment {
   deliveryConfirmed?: boolean;
   /** true ONLY when a human/configured organization explicitly acknowledged the SOS. */
   responderAcknowledged?: boolean;
+  /** Short-lived, signed case-status capability from this server; never a partner API credential. */
+  caseAccessToken?: string;
+  caseAccessExpiresAt?: string;
+}
+
+/** Partner-provided case facts. Never infer these from a handoff receipt or GPS. */
+export interface PartnerCaseStatus {
+  sosId: string;
+  referenceId: string;
+  partnerAccepted: boolean;
+  trackingAccepted: boolean;
+  caseNumber?: string;
+  assignedResponder?: { id: string; name: string };
+  distanceKm?: number;
+  etaMinutes?: number;
+  stage?: 'ACCEPTED' | 'ASSIGNED' | 'EN_ROUTE' | 'ARRIVED' | 'CLOSED';
+  updatedAt: string;
 }
 
 export interface PendingSOSItem {
   sosPackage: SOSPackage;
   targetPartner: EmergencyPartnerProvider;
   userApprovedForPartnerTransmission: boolean;
-  /** Explicit user confirmation timestamp (acts as confirmedAt for the lifecycle). */
+  /** Separate opt-in for sending saved one-time GPS with an authorized handoff. */
+  gpsApprovedForPartnerTransmission?: boolean;
+  /** Confirmation time for local save or, for an approved partner record, transmission consent. */
   userConsentTimestamp: string;
   /** Typed delivery lifecycle state — see SOSDeliveryStatus. */
   status: SOSDeliveryStatus;
@@ -320,6 +342,8 @@ export interface PendingSOSItem {
   lastAttemptTimestamp?: string;
   errorMessage?: string;
   acknowledgment?: PartnerAcknowledgment;
+  /** Last *partner-confirmed* case facts; display as last-known, never as a live offline ETA. */
+  caseStatus?: PartnerCaseStatus;
 }
 
 export interface CountryInfo {

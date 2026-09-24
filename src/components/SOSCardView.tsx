@@ -50,13 +50,11 @@ import {
 import { ShareAlertConfirmModal } from './ShareAlertConfirmModal.tsx';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
 import { SOSDeliveryStatusCard } from './SOSDeliveryStatus.tsx';
-import { getTestProvider } from '../lib/emergencyPartnersData.ts';
+import { LOCAL_ONLY_PROVIDER } from '../lib/emergencyPartnersData.ts';
 import {
   createSOSPackage,
   createQueuedSOSItem,
-  markWaitingForConnection,
-  savePendingSOS,
-  processPendingQueue
+  savePendingSOS
 } from '../lib/emergencyPartnerQueue.ts';
 
 interface SOSCardViewProps {
@@ -65,6 +63,8 @@ interface SOSCardViewProps {
   soundEnabled: boolean;
   onTranslateSOS?: (targetLangCode: string) => Promise<void>;
   isTranslating?: boolean;
+  /** Manual OFFLINE mode never sends to a partner, even if the OS reports online. */
+  offlineMode?: boolean;
 }
 
 export const SOSCardView: React.FC<SOSCardViewProps> = ({
@@ -72,7 +72,8 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   highContrast,
   soundEnabled,
   onTranslateSOS,
-  isTranslating = false
+  isTranslating = false,
+  offlineMode = false
 }) => {
   const [copiedOriginal, setCopiedOriginal] = useState(false);
   const [copiedTranslated, setCopiedTranslated] = useState(false);
@@ -93,8 +94,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   const [showPartnerConsent, setShowPartnerConsent] = useState(false);
   const [shareToast, setShareToast] = useState<string | null>(null);
 
-  // SOS record confirmed for partner dispatch from THIS card — its delivery
-  // lifecycle status is rendered directly on the card (no extra button needed).
+  // A saved local SOS is shown directly on this card, clearly marked NOT SENT.
   const [dispatchedSosId, setDispatchedSosId] = useState<string | null>(null);
 
   // View mode for SOS card: 'translated' (if available) or 'original' or 'side-by-side'
@@ -349,7 +349,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           title: `EMERGENCY ALERT: ${activeHeadline}`,
           text: sharePayload
         });
-        setShareToast('Alert transmission initiated successfully');
+        setShareToast('Device share sheet completed. Recipient delivery is NOT verified; check the app you chose.');
         setTimeout(() => setShareToast(null), 3000);
         return;
       } catch (err) {
@@ -367,8 +367,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     }
   };
 
-  const handleConfirmPartnerDispatch = async () => {
-    const testPartner = getTestProvider();
+  const handleSaveLocalSOS = () => {
     const sosPkg = createSOSPackage({
       emergencyType: result.emergency_type,
       category: result.emergency_category,
@@ -376,6 +375,8 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
       message: showTranslated && safeTranslatedMessage ? safeTranslatedMessage : result.message,
       gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
       source: result.source === 'nebius_nemotron' ? 'online' : 'offline',
+      originalTranscript: result.raw_transcript || result.transcript || undefined,
+      detectedLanguage: result.detected_language || undefined,
       voiceCapture: result.voice_capture
         ? {
             detectedLanguage: result.voice_capture.detectedLanguage,
@@ -388,34 +389,18 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     const consentTimestamp = new Date().toISOString();
     const pendingItem = createQueuedSOSItem({
       sosPackage: sosPkg,
-      targetPartner: testPartner,
+      targetPartner: LOCAL_ONLY_PROVIDER,
       userConsentTimestamp: consentTimestamp
     });
 
-    savePendingSOS(pendingItem);
-    setShowPartnerConsent(false);
-    // Show the live delivery status directly on this SOS card.
-    setDispatchedSosId(sosPkg.sosId);
-
-    if (!navigator.onLine) {
-      // Offline: record stays safely stored locally, explicitly waiting for
-      // connection. It transmits automatically when connectivity returns
-      // (unless the user disabled auto-resume in the queue manager).
-      markWaitingForConnection(pendingItem, 'Device offline — waiting for connection.');
-      setShareToast('OFFLINE — SOS saved locally (PENDING LOCAL). It will be sent when a supported connection becomes available.');
+    if (!savePendingSOS(pendingItem)) {
+      setShowPartnerConsent(false);
+      setShareToast('SAVE FAILED — device storage is unavailable or full. This SOS was NOT queued or sent. Call your local emergency number directly.');
       return;
     }
-
-    try {
-      const res = await processPendingQueue({ forceManual: true });
-      if (res.successCount > 0) {
-        setShareToast('TEST / DEMO SUCCESS — SOS transmitted to TEST Emergency Partner. Reference ID acknowledged.');
-      } else if (res.errors.length > 0) {
-        setShareToast(`Partner transmission error: ${res.errors.join('; ')}`);
-      }
-    } catch (err: any) {
-      setShareToast(`Transmission error: ${err.message}`);
-    }
+    setShowPartnerConsent(false);
+    setDispatchedSosId(sosPkg.sosId);
+    setShareToast('SAVED ON THIS DEVICE ONLY — NOT SENT. Nothing uploads on reconnect or restart. Review the saved text in the queue or use Share Alert to send it manually.');
   };
 
   return (
@@ -494,15 +479,15 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             <Volume2 className="w-4 h-4" />
           </button>
 
-          {/* Emergency Partner Demo button */}
+          {/* Store this real SOS locally; never send private text to TEST/DEMO. */}
           <button
-            id="partner-demo-dispatch-btn"
+            id="save-local-sos-btn"
             onClick={() => setShowPartnerConsent(true)}
-            title="Review and dispatch to TEST Emergency Partner"
+            title="Review and save SOS on this device — not sent"
             className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-700/80 flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
           >
             <Shield className="w-3.5 h-3.5 text-red-400" />
-            <span className="hidden sm:inline">Partner Demo</span>
+            <span className="hidden sm:inline">Save SOS Locally</span>
           </button>
 
           {/* Share Alert button with explicit privacy review */}
@@ -530,7 +515,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
 
       {/* Live SOS delivery lifecycle status — always visible after confirmation,
           expandable for delivery details. No extra button required. */}
-      <SOSDeliveryStatusCard sosId={dispatchedSosId} />
+      <SOSDeliveryStatusCard sosId={dispatchedSosId} offlineMode={offlineMode} />
 
       {/* Multilingual Emergency Translation Control Bar */}
       <div
@@ -1090,22 +1075,24 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         onConfirmShare={handleConfirmedShare}
       />
 
-      {/* Emergency Partner Review & Consent Modal */}
+      {/* Explicit local save; no partner or demo endpoint is used. */}
       {showPartnerConsent && (
         <PartnerConsentModal
           isOpen={showPartnerConsent}
-          provider={getTestProvider()}
+          provider={LOCAL_ONLY_PROVIDER}
           sosPackage={createSOSPackage({
             emergencyType: result.emergency_type,
             category: result.emergency_category,
             severity: result.severity,
             message: showTranslated && safeTranslatedMessage ? safeTranslatedMessage : result.message,
             gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
-            source: result.source === 'nebius_nemotron' ? 'online' : 'offline'
+            source: result.source === 'nebius_nemotron' ? 'online' : 'offline',
+            originalTranscript: result.raw_transcript || result.transcript || undefined,
+            detectedLanguage: result.detected_language || undefined
           })}
-          isOffline={!navigator.onLine}
+          isOffline={offlineMode || !navigator.onLine}
           onCancel={() => setShowPartnerConsent(false)}
-          onConfirm={handleConfirmPartnerDispatch}
+          onConfirm={handleSaveLocalSOS}
         />
       )}
     </div>

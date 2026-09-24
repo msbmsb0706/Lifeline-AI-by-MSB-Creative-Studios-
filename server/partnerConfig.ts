@@ -39,7 +39,14 @@ export function getEmergencyPartnerConfig(
   const country = (countryCode || 'GLOBAL').toUpperCase().slice(0, 16);
   const apiUrl = (env.AUTHORIZED_PARTNER_API_URL || '').trim();
   const apiKey = (env.AUTHORIZED_PARTNER_API_KEY || '').trim();
-  const configured = Boolean(apiUrl && apiKey);
+  // A missing/malformed/insecure URL is not an authorized HTTPS integration.
+  let secureEndpoint = false;
+  try {
+    const parsed = new URL(apiUrl);
+    secureEndpoint = parsed.protocol === 'https:' && Boolean(parsed.hostname) &&
+      !parsed.username && !parsed.password;
+  } catch { /* not a usable URL */ }
+  const configured = Boolean(secureEndpoint && apiKey);
 
   return {
     status: configured ? 'CONFIGURED' : 'NOT_CONFIGURED',

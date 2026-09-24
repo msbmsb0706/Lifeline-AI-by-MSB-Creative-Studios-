@@ -328,7 +328,8 @@ installBrowserStub({
       category: 'MEDICAL',
       severity: 3,
       message: 'PR16 simulation label check',
-      source: 'online'
+      source: 'online',
+      demoOnly: true
     }),
     targetPartner: getTestProvider(),
     userConsentTimestamp: new Date().toISOString()
@@ -337,7 +338,8 @@ installBrowserStub({
   await transmitSingleSOSItem(item);
   assertEqual(refind(item.sosPackage.sosId)?.status, 'SENT', 'fixture reaches SENT before simulation');
   assertEqual(isSimulatedFinalStatus(refind(item.sosPackage.sosId)), false, 'SENT is not a simulated final state');
-  assertEqual(getDeliveryDisplayLabel(refind(item.sosPackage.sosId)!), 'SENT', 'SENT label unchanged');
+  assertEqual(getDeliveryDisplayLabel(refind(item.sosPackage.sosId)!), 'SENT TO TEST/DEMO ONLY — NO RESPONDER',
+    'TEST endpoint receipt is never displayed as real responder delivery');
 
   // From here on the simulator must perform ZERO network requests.
   let simFetchCalls = 0;
@@ -589,6 +591,15 @@ assertEqual(
 
   const partial = getEmergencyPartnerConfig('US', { AUTHORIZED_PARTNER_API_URL: 'https://x.example' });
   assertEqual(partial.status, 'NOT_CONFIGURED', 'URL without key is still NOT_CONFIGURED');
+  const insecure = getEmergencyPartnerConfig('US', {
+    AUTHORIZED_PARTNER_API_URL: 'http://insecure.example/dispatch',
+    AUTHORIZED_PARTNER_API_KEY: 'fixture-key'
+  });
+  assertEqual(insecure.status, 'NOT_CONFIGURED', 'plain HTTP URL is not a configured authorized partner');
+  const malformed = getEmergencyPartnerConfig('US', {
+    AUTHORIZED_PARTNER_API_URL: 'not a URL', AUTHORIZED_PARTNER_API_KEY: 'fixture-key'
+  });
+  assertEqual(malformed.status, 'NOT_CONFIGURED', 'malformed partner URL is not configured');
 }
 
 // Client lookup: success paths.
