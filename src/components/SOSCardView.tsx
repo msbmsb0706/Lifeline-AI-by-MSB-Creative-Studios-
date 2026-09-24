@@ -56,6 +56,7 @@ import { LOCAL_ONLY_PROVIDER } from '../lib/emergencyPartnersData.ts';
 import {
   createSOSPackage,
   createQueuedSOSItem,
+  markWaitingForConnection,
   savePendingSOS
 } from '../lib/emergencyPartnerQueue.ts';
 
@@ -396,6 +397,9 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
       setShareToast('SAVE FAILED — device storage is unavailable or full. This SOS was NOT queued or sent. Call your local emergency number directly.');
       return;
     }
+    // Confirmed while offline: say so in the record's own lifecycle instead of
+    // leaving a bare PENDING_LOCAL. Nothing is transmitted either way.
+    if (!navigator.onLine) markWaitingForConnection(pendingItem, 'Device offline when the SOS was confirmed — stored, not sent.');
     setShowPartnerConsent(false);
     setDispatchedSosId(sosPkg.sosId);
     setShareToast('SAVED ON THIS DEVICE ONLY — NOT SENT. Nothing uploads on reconnect or restart. Review the saved text in the queue or use Share Alert to send it manually.');

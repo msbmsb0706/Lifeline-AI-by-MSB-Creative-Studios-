@@ -263,6 +263,10 @@ npm run build
 
 # Start production server
 npm run start
+
+# Run the regression suite (includes the jsdom DOM suites that drive the real
+# components against a simulated Chrome/Android SpeechRecognition)
+npm test
 ```
 
 The application will be accessible at:

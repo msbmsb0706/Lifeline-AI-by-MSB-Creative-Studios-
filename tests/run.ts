@@ -30,6 +30,8 @@ await import('./online-translation.test.ts');
 await import('./online-translation-routes.test.ts');
 await import('./partner-tracking.test.ts');
 await import('./speech-capture-android.test.ts');
+await import('./voice-android-lifecycle.test.ts');
+await import('./offline-sos-android-flow.test.ts');
 await import('./ui-visibility.test.ts');
 
 const failures = summarize();

@@ -9,7 +9,7 @@ import {
   shouldSwitchRecognitionLanguage,
   stopSpeaking
 } from '../lib/speech.ts';
-import { mergeFinalChunk, speechErrorMessage } from '../lib/speechCapture.ts';
+import { mergeFinalChunk, buildTranscript, speechErrorMessage } from '../lib/speechCapture.ts';
 import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
 
 interface EmergencyVoiceButtonProps {
@@ -58,6 +58,21 @@ interface SpeechRecognitionEvent {
 
 const MAX_RECORDING_MS = 60_000; // safety cap — capture is always user-activated
 const SILENCE_COMMIT_MS = 1_600;
+/**
+ * Chrome/Android ends a continuous recognition session on its own speech
+ * end-point. Restarting is correct, but a browser that keeps ending the
+ * session without hearing anything (no-speech loop, offline, muted mic) must
+ * NOT be restarted forever: the microphone would stay open indefinitely and
+ * drain the battery while the UI claims "Listening".
+ */
+const MAX_AUTO_RESTARTS = 3;
+const AUTO_RESTART_DELAY_MS = 150;
+/**
+ * Errors after which Chrome will not continue this session anyway. Auto-restart
+ * is pointless (and a silent infinite loop on Android), so the session is
+ * finished with whatever was already heard.
+ */
+const FATAL_RECOGNITION_ERRORS = ['network', 'audio-capture', 'language-not-supported'];
 
 function pickSupportedAudioMimeType(): string {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
@@ -145,9 +160,24 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   const lockedLangRef = useRef<string | null>(null);
   const restartForLangRef = useRef(false);
   const autoSwitchedRef = useRef(false);
+  /**
+   * Consecutive times Chrome ended the session BY ITSELF without any speech
+   * being heard. Reset whenever real speech arrives or the user starts a new
+   * session — deliberately NOT reset in onstart, otherwise the cap below can
+   * never be reached and the restart loop runs forever.
+   */
   const restartCountRef = useRef(0);
   const silenceTimerRef = useRef<number | null>(null);
   const browserCapTimerRef = useRef<number | null>(null);
+  const submitFallbackTimerRef = useRef<number | null>(null);
+  const pendingStartTimerRef = useRef<number | null>(null);
+  /**
+   * The recognizer's REAL state, mirrored from onstart/onend. A tap decides
+   * from this instead of from React state, which lags by a render: after
+   * Chrome ends a session the button can still say "Listening" for a moment,
+   * and that stale label must never swallow the next tap.
+   */
+  const runningRef = useRef(false);
   // A tap that arrived while Chrome was still closing the previous session.
   const pendingStartRef = useRef(false);
   const startBrowserSessionRef = useRef<(() => void) | null>(null);
@@ -176,6 +206,65 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       window.clearTimeout(browserCapTimerRef.current);
       browserCapTimerRef.current = null;
     }
+    if (submitFallbackTimerRef.current !== null) {
+      window.clearTimeout(submitFallbackTimerRef.current);
+      submitFallbackTimerRef.current = null;
+    }
+    if (pendingStartTimerRef.current !== null) {
+      window.clearTimeout(pendingStartTimerRef.current);
+      pendingStartTimerRef.current = null;
+    }
+  };
+
+  const clearPendingStartTimer = () => {
+    if (pendingStartTimerRef.current !== null) {
+      window.clearTimeout(pendingStartTimerRef.current);
+      pendingStartTimerRef.current = null;
+    }
+  };
+
+  /**
+   * Start the recognizer, tolerating Chrome's "the previous session is still
+   * closing" InvalidStateError with a short retry instead of dropping the
+   * session silently.
+   */
+  const startRecognizer = (langCode: string, delayMs: number, attemptsLeft = 3): void => {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+    window.setTimeout(() => {
+      if (!sessionActiveRef.current || userStopRef.current || runningRef.current) return;
+      try {
+        recognition.lang = getSpeechRecognitionLocale(langCode);
+        recognition.start();
+        return;
+      } catch (err: any) {
+        if (err?.name !== 'InvalidStateError') {
+          console.warn('Mic restart failed:', err);
+        }
+      }
+      if (attemptsLeft <= 1) {
+        // Chrome will not release the microphone in this tab. End the session
+        // honestly instead of leaving a dead "Listening" state that no tap can
+        // clear.
+        userStopRef.current = true;
+        sessionActiveRef.current = false;
+        runningRef.current = false;
+        setIsListening(false);
+        setMicError('Could not restart the microphone. Tap the microphone to speak again.');
+        submitOnce();
+        return;
+      }
+      startRecognizer(langCode, 250, attemptsLeft - 1);
+    }, delayMs);
+  };
+
+  /** Run a start that was queued while Chrome was still closing a session. */
+  const runQueuedStart = () => {
+    if (!pendingStartRef.current) return;
+    pendingStartRef.current = false;
+    clearPendingStartTimer();
+    setIsListening(false);
+    window.setTimeout(() => startBrowserSessionRef.current?.(), 0);
   };
 
   const submitOnce = () => {
@@ -191,15 +280,22 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     userStopRef.current = true;
     sessionActiveRef.current = false;
     if (liveTextRef.current.trim()) committedRef.current = liveTextRef.current.trim();
+    // Reflect the stopped state immediately; onend can arrive a render later.
+    setIsListening(false);
+    // We asked the recognizer to stop, so it no longer counts as "running" for
+    // tap decisions: a tap in the same instant starts a fresh session (queued
+    // until Chrome reports the end) instead of being swallowed.
+    runningRef.current = false;
     try {
       if (recognitionRef.current) recognitionRef.current.stop();
     } catch {
-      setIsListening(false);
       if (soundEnabledRef.current) playPing('stop');
       submitOnce();
+      return;
     }
     // Some browsers never fire onend after stop(). Don't leave the answer unsaid.
-    window.setTimeout(() => {
+    submitFallbackTimerRef.current = window.setTimeout(() => {
+      submitFallbackTimerRef.current = null;
       if (!submittedRef.current && userStopRef.current) {
         setIsListening(false);
         submitOnce();
@@ -226,27 +322,30 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       );
 
       recognition.onstart = () => {
+        // Real microphone open. The auto-restart counter is intentionally NOT
+        // reset here: it must count Chrome's own end-pointing across restarts.
+        runningRef.current = true;
         setIsListening(true);
         setMicError(null);
-        restartCountRef.current = 0;
       };
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
-        let interim = '';
-        let finalChunk = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const text = event.results[i][0].transcript;
-          if (event.results[i].isFinal) finalChunk += text + ' ';
-          else interim += text;
+        // Read EVERY result, not only from resultIndex: Chrome/Android can
+        // report a stale resultIndex and silently drop an unheard final.
+        const { finalText, interimText } = buildTranscript(event.results);
+        if (finalText.trim() || interimText.trim()) {
+          // Real speech heard — the session is healthy, so the auto-restart
+          // budget starts over.
+          restartCountRef.current = 0;
         }
-        if (finalChunk.trim()) {
-          committedRef.current = mergeFinalChunk(committedRef.current, finalChunk);
+        if (finalText.trim()) {
+          committedRef.current = mergeFinalChunk(committedRef.current, finalText);
         }
-        const live = `${committedRef.current} ${interim}`.trim();
+        const live = `${committedRef.current} ${interimText}`.trim();
         liveTextRef.current = live;
         if (live) {
           setLiveCaption(live);
-          onTranscriptChangeRef.current(live, Boolean(finalChunk.trim()));
+          onTranscriptChangeRef.current(live, Boolean(finalText.trim()));
           if (silenceTimerRef.current !== null) window.clearTimeout(silenceTimerRef.current);
           silenceTimerRef.current = window.setTimeout(() => {
             if (sessionActiveRef.current) finishBrowserSession();
@@ -280,9 +379,13 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           // no-speech / aborted are normal (silence, our own restart/stop).
           const message = speechErrorMessage(err.error);
           if (message) setMicError(message);
-          if (err.error === 'audio-capture' || err.error === 'language-not-supported') {
+          if (FATAL_RECOGNITION_ERRORS.includes(err.error)) {
+            // Chrome ends this session by itself after one of these errors, and
+            // restarting would only repeat it (an endless, silent loop on
+            // Android). Finish the session with whatever was already heard.
             sessionActiveRef.current = false;
             userStopRef.current = true;
+            setIsListening(false);
           }
         }
       };
@@ -291,11 +394,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         // Chrome/Android may end at its speech end-point with only interim
         // text. Promote it so a restart or submit never loses what was heard.
         if (liveTextRef.current.trim()) committedRef.current = liveTextRef.current.trim();
+        runningRef.current = false;
         if (pendingStartRef.current) {
           // A new tap arrived while the old session was closing: start clean now.
-          pendingStartRef.current = false;
-          setIsListening(false);
-          window.setTimeout(() => startBrowserSessionRef.current?.(), 0);
+          runQueuedStart();
           return;
         }
         if (userStopRef.current || !sessionActiveRef.current) {
@@ -308,32 +410,23 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         }
         if (restartForLangRef.current) {
           restartForLangRef.current = false;
-          try {
-            recognition.lang = getSpeechRecognitionLocale(activeLangRef.current);
-            recognition.start();
-          } catch {
-            // The next tap can start a fresh session.
-          }
+          startRecognizer(activeLangRef.current, 0);
           return;
         }
-        if (restartCountRef.current >= 6) {
+        if (restartCountRef.current >= MAX_AUTO_RESTARTS) {
+          // Chrome keeps ending the session without hearing anything (its own
+          // end-pointing, a muted microphone, or an offline device). Stop
+          // instead of restarting forever, keep what was heard, and let the
+          // person tap again.
           userStopRef.current = true;
           sessionActiveRef.current = false;
           setIsListening(false);
-          setMicError('Listening paused. Tap the microphone to speak again.');
+          setMicError('Listening paused — the browser stopped hearing. Tap the microphone to speak again.');
           submitOnce();
           return;
         }
         restartCountRef.current += 1;
-        window.setTimeout(() => {
-          if (!sessionActiveRef.current || userStopRef.current) return;
-          try {
-            recognition.lang = getSpeechRecognitionLocale(activeLangRef.current);
-            recognition.start();
-          } catch {
-            // ignore
-          }
-        }, 150);
+        startRecognizer(activeLangRef.current, AUTO_RESTART_DELAY_MS);
       };
 
       recognitionRef.current = recognition;
@@ -345,6 +438,8 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     return () => {
       sessionActiveRef.current = false;
       userStopRef.current = true;
+      runningRef.current = false;
+      pendingStartRef.current = false;
       clearBrowserTimers();
       if (recognitionRef.current) {
         try {
@@ -499,6 +594,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     sessionActiveRef.current = true;
     restartForLangRef.current = false;
     autoSwitchedRef.current = false;
+    // A user-initiated session always gets a full restart budget.
     restartCountRef.current = 0;
     committedRef.current = '';
     liveTextRef.current = '';
@@ -517,13 +613,17 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       recognition.start();
     } catch (err: any) {
       if (err?.name === 'InvalidStateError') {
-        // Previous session still closing — restart from its onend.
+        // Previous session still closing — restart cleanly from its onend.
         pendingStartRef.current = true;
         try {
           recognition.abort();
         } catch {
           // ignore
         }
+        // A browser that never reports the end of the session it is closing
+        // must not swallow this tap: guarantee the queued start still runs.
+        clearPendingStartTimer();
+        pendingStartTimerRef.current = window.setTimeout(() => runQueuedStart(), 500);
         return;
       }
       console.warn('Mic start failed:', err);
@@ -564,7 +664,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     if (isAnalyzing || isBusyAsr) return;
 
     // Active capture → stop it and speak the answer (parent handles speech).
-    if (isListening || sessionActiveRef.current) {
+    // The recognizer's REAL state decides, not React state: Chrome can end a
+    // session a render before React notices, and a stale "Listening" label must
+    // never swallow the next tap.
+    if (runningRef.current) {
       finishBrowserSession();
       return;
     }
@@ -572,6 +675,21 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       stopServerRecording();
       return;
     }
+    // The recognizer is not open. Any session Chrome already ended (its speech
+    // end-point, an error, or a stop we issued) is replaced by this tap instead
+    // of being ignored — the person can always start speaking again.
+    if (sessionActiveRef.current) {
+      // Close the previous session. Anything it already heard is handed to the
+      // parent first: an emergency description must not be lost just because
+      // the person chose to speak again.
+      if (liveTextRef.current.trim()) committedRef.current = liveTextRef.current.trim();
+      userStopRef.current = true;
+      sessionActiveRef.current = false;
+      clearBrowserTimers();
+      submitOnce();
+    }
+    pendingStartRef.current = false;
+    clearPendingStartTimer();
 
     // SYNCHRONOUS start-lock: acquired before any await below. A rapid second
     // tap while startup (probe / getUserMedia) is still in flight is ignored,
