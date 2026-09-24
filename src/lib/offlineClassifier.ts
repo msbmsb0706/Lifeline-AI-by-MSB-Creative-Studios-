@@ -33,28 +33,84 @@ function buildMatcher(keyword: string, suffix: string): RegExp | null {
   if (!matcherCache.has(cacheKey)) {
     matcherCache.set(
       cacheKey,
-      ASCII_KEYWORD.test(kw) ? new RegExp(`(?<![a-z0-9])${escapeRegExp(kw)}${suffix}(?![a-z0-9])`) : null
+      ASCII_KEYWORD.test(kw) ? new RegExp(`(?<![a-z0-9])${escapeRegExp(kw)}${suffix}(?![a-z0-9])`, 'g') : null
     );
   }
   return matcherCache.get(cacheKey)!;
 }
 
-/** Rule keyword match: whole word (+ simple inflection) for ASCII keywords. */
+/**
+ * English negation directly before a keyword ("no bleeding", "not unconscious",
+ * "isn't stable", "no active bleeding"). Applies only to NEGATABLE_KEYWORDS.
+ */
+const NEGATION_BEFORE = /(?:^|[^a-z0-9'])(?:no|not|isn't|wasn't|aren't|without|never)\s+(?:(?:active|more|visible|heavy|major|serious|further|any|signs?\s+of)\s+)?$/;
+/**
+ * Only symptom / hazard words can be negated. Resource and need keywords
+ * ("without drinking water", "no shelter", "no defibrillator") describe a
+ * need and must never be suppressed.
+ */
+const NEGATABLE_KEYWORDS = new Set([
+  'bleeding', 'blood', 'hemorrhage', 'arterial', 'stab', 'stabbed', 'stabbing', 'gunshot', 'deep cut',
+  'unconscious', 'passed out', 'fainted', 'chest pain', 'left arm pain', 'heart attack', 'cardiac',
+  'stroke', 'facial droop', 'slurred speech', 'choking', 'gasping',
+  'fire', 'flames', 'burning', 'smoke', 'explosion', 'arson',
+  'gas leak', 'fumes', 'strange odor', 'intruder', 'weapon', 'gun', 'knife', 'attacker', 'assault', 'violence',
+  'seizure', 'convulsion', 'convulsing', 'poison', 'overdose', 'fracture', 'head injury', 'broken bone',
+  'allergic reaction', 'electric shock',
+  // severity modifiers
+  'dying', 'critical', 'critically', 'arrest', 'fatal', 'fatally', 'stable', 'minor', 'mild'
+]);
+
+/** Keyword-specific contexts that are not the emergency ("blood pressure"). */
+const KEYWORD_EXCLUSIONS: Record<string, RegExp> = {
+  blood: /^\s+(?:pressure|sugar|tests?|group|type|report|donation|donor|bank|count)\b/
+};
+
+function hasAffirmedMatch(text: string, keyword: string, suffix: string): boolean {
+  const kw = keyword.toLowerCase();
+  const re = buildMatcher(kw, suffix);
+  if (!re) return text.includes(kw);
+  const exclusion = KEYWORD_EXCLUSIONS[kw];
+  const negatable = NEGATABLE_KEYWORDS.has(kw);
+  for (const m of text.matchAll(re)) {
+    const index = m.index ?? 0;
+    if (negatable && NEGATION_BEFORE.test(text.slice(Math.max(0, index - 30), index))) continue;
+    if (exclusion && exclusion.test(text.slice(index + m[0].length))) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Rule keyword match: whole word (+ simple inflection) for ASCII keywords, not negated. */
 function containsKeyword(text: string, keyword: string): boolean {
-  const re = buildMatcher(keyword, INFLECTION);
-  return re ? re.test(text) : text.includes(keyword.toLowerCase());
+  return hasAffirmedMatch(text, keyword, INFLECTION);
 }
 
 /** Prefix match for ASCII words ("help" matches "helpless", "now" does not match "know"). */
 function containsWordStart(text: string, word: string): boolean {
   const re = buildMatcher(word, '[a-z0-9]*');
-  return re ? re.test(text) : text.includes(word.toLowerCase());
+  return re ? text.search(re) !== -1 : text.includes(word.toLowerCase());
 }
 
-/** Exact whole-word match for ASCII words ("arrest" does not match "arrested"). */
+/** Exact whole-word match for ASCII words ("arrest" does not match "arrested"), not negated. */
 function containsExactWord(text: string, word: string): boolean {
-  const re = buildMatcher(word, '');
-  return re ? re.test(text) : text.includes(word.toLowerCase());
+  return hasAffirmedMatch(text, word, '');
+}
+
+/**
+ * "My grandmother collapsed" is a medical collapse, not a structural one.
+ * A person word followed (in the same clause, with no structure word in
+ * between) by "collapse(d)" is rewritten to a medical token before scoring.
+ */
+const PERSON_WORDS = "he|she|patient|man|woman|person|someone|somebody|child|kid|baby|boy|girl|grandmother|grandfather|grandma|grandpa|granny|mother|father|mom|mum|dad|husband|wife|son|daughter|brother|sister|friend|uncle|aunt|neighbou?r|colleague|student|player|runner|driver|elderly|lady|guy";
+const STRUCTURE_WORDS = "building|house|home|wall|roof|bridge|ceiling|structure|floor|tunnel|rubble|earthquake|tower|block|stage|shed|school|hospital|temple|church|mosque|factory|apartment";
+const PERSON_COLLAPSE = new RegExp(
+  `((?<![a-z0-9])(?:${PERSON_WORDS})(?![a-z0-9])(?:(?!(?<![a-z0-9])(?:${STRUCTURE_WORDS})(?![a-z0-9]))[^.!?;])*?)(?<![a-z0-9])collaps(?:e|ed|es|ing)(?![a-z0-9])`,
+  'g'
+);
+
+function markPersonCollapse(text: string): string {
+  return text.replace(PERSON_COLLAPSE, '$1person-collapsed');
 }
 
 interface EmergencyRule {
@@ -73,7 +129,7 @@ interface EmergencyRule {
 const EMERGENCY_RULES: EmergencyRule[] = [
   // 1. MEDICAL
   {
-    keywords: ['heart attack', 'chest pain', 'cardiac', 'defibrillator', 'aed', 'no pulse', 'passed out', 'unconscious', 'not breathing', 'stopped breathing', "isn't breathing", 'is not breathing', 'no breathing', 'unresponsive', 'not responding', 'fainted', 'left arm pain', 'நெஞ்சு வலி', 'दिल का दौरा', 'గుండె నొప్పి', 'ಹೃದಯಾಘಾತ', 'ഹൃദയാഘാതം', 'হার্ট অ্যাটাক', 'छातीत दुखणे'],
+    keywords: ['heart attack', 'chest pain', 'cardiac', 'defibrillator', 'aed', 'no pulse', 'passed out', 'unconscious', 'not breathing', 'stopped breathing', "isn't breathing", 'is not breathing', 'no breathing', 'unresponsive', 'not responding', 'fainted', 'no longer breathing', 'person-collapsed', 'left arm pain', 'நெஞ்சு வலி', 'दिल का दौरा', 'గుండె నొప్పి', 'ಹೃದಯಾಘಾತ', 'ഹൃദയാഘാതം', 'হার্ট অ্যাটাক', 'छातीत दुखणे'],
     type: 'Medical - Cardiac Emergency',
     category: 'MEDICAL',
     defaultSeverity: 5,
@@ -345,6 +401,191 @@ const EMERGENCY_RULES: EmergencyRule[] = [
       'Pack penetrating wounds with clean cloth and apply direct compression'
     ],
     responderInstructions: 'High-risk law enforcement priority. Approaching officers require tactical situational assessment and clear perimeter.'
+  },
+
+  // 9. ADDITIONAL LIFE-THREATENING PRESENTATIONS
+  // Appended last so any tie with an earlier rule still resolves to the earlier
+  // rule, which keeps existing classifications unchanged. Guidance follows widely
+  // published lay-rescuer first aid (Red Cross / ILCOR) and is pending clinical review.
+  {
+    keywords: ['drown', 'near drowning', 'pulled from the water', 'pulled out of the water', 'fell into the river', 'fell into the well', 'fell into the lake', 'fell into the sea', 'swept away', 'நீரில் மூழ்கி', 'डूब'],
+    type: 'Rescue - Drowning / Water Rescue',
+    category: 'RESCUE',
+    defaultSeverity: 5,
+    needs: ['Water Rescue Team', 'Ambulance', 'Medical help'],
+    badgeColor: 'RED',
+    prioritySymbol: 'ALERT_TRIANGLE',
+    actionSteps: [
+      'Contact your local emergency services immediately.',
+      'Do not enter the water unless trained; reach with a pole or rope, or throw something that floats',
+      'Once the person is out of the water, check for response and normal breathing',
+      'If not breathing normally, give 5 rescue breaths if trained, then start CPR (30 compressions : 2 breaths) or hands-only CPR'
+    ],
+    firstAid: [
+      'If breathing, place in the recovery position, remove wet clothing and keep warm',
+      'Anyone rescued from drowning needs medical assessment, even if they seem well'
+    ],
+    responderInstructions: 'Submersion / drowning incident. Prepare water rescue, airway management, oxygen and hypothermia care.'
+  },
+  {
+    keywords: ['seizure', 'convulsion', 'convulsing', 'epileptic', 'epilepsy', 'having a fit', 'வலிப்பு', 'मिर्गी'],
+    type: 'Medical - Seizure / Convulsion',
+    category: 'MEDICAL',
+    defaultSeverity: 4,
+    needs: ['Ambulance', 'Medical help'],
+    badgeColor: 'ORANGE',
+    prioritySymbol: 'ALERT_TRIANGLE',
+    actionSteps: [
+      'Protect the person from injury: move hard or sharp objects away and cushion the head',
+      'Do NOT hold the person down and do NOT put anything in their mouth',
+      'Time the seizure; contact emergency services if it lasts over 5 minutes, repeats, is a first seizure, or the person is injured or pregnant',
+      'When the jerking stops, turn the person onto their side (recovery position) and check breathing'
+    ],
+    firstAid: [
+      'Stay with the person and reassure them until they are fully alert',
+      'If not breathing normally after the seizure, start CPR'
+    ],
+    responderInstructions: 'Active or recent seizure. Assess for status epilepticus, airway compromise, hypoglycaemia and head injury.'
+  },
+  {
+    keywords: ['poison', 'overdose', 'swallowed pills', 'took pills', 'too many pills', 'sleeping pills', 'pesticide', 'insecticide', 'rat killer', 'drank bleach', 'swallowed bleach', 'drank kerosene', 'விஷம்', 'जहर', 'ज़हर'],
+    type: 'Medical - Poisoning / Overdose',
+    category: 'MEDICAL',
+    defaultSeverity: 5,
+    needs: ['Ambulance', 'Medical help', 'Poison Control Advice'],
+    badgeColor: 'RED',
+    prioritySymbol: 'BIOHAZARD',
+    actionSteps: [
+      'Contact your local emergency services or poison control immediately.',
+      'Do NOT make the person vomit and do not give food, drink or remedies unless a medical professional tells you to',
+      'Keep the container, pills or substance to show responders',
+      'If unresponsive but breathing, place in the recovery position; if not breathing normally, start CPR'
+    ],
+    firstAid: [
+      'If poison is on the skin or in the eyes, rinse with plenty of clean running water for at least 15 minutes',
+      'If fumes were inhaled, move the person to fresh air only if it is safe for you'
+    ],
+    responderInstructions: 'Suspected poisoning or overdose. Identify substance, amount and time; prepare airway support and toxicology consult.'
+  },
+  {
+    keywords: ['snake bite', 'snakebite', 'bitten by a snake', 'snake bit', 'scorpion sting', 'stung by a scorpion', 'dog bite', 'bitten by a dog', 'animal bite', 'பாம்பு கடி', 'सांप ने काटा', 'साँप ने काटा'],
+    type: 'Medical - Snake / Animal Bite',
+    category: 'MEDICAL',
+    defaultSeverity: 4,
+    needs: ['Ambulance', 'Medical help', 'Antivenom-capable Hospital'],
+    badgeColor: 'ORANGE',
+    prioritySymbol: 'ALERT_TRIANGLE',
+    actionSteps: [
+      'Move away from the animal; do not try to catch or kill it',
+      'Keep the person calm and still; keep the bitten limb still and at or below heart level',
+      'Remove rings, watches and tight clothing near the bite before swelling starts',
+      'Get to a hospital urgently; snake bites may need antivenom'
+    ],
+    firstAid: [
+      'Do NOT cut the wound, suck out venom, apply ice, or tie a tight tourniquet',
+      'For dog or other animal bites, wash the wound with soap and running water for 15 minutes; rabies vaccination may be needed'
+    ],
+    responderInstructions: 'Envenomation or animal bite. Note time of bite and species if known; prepare for antivenom and anaphylaxis.'
+  },
+  {
+    keywords: ['in labor', 'in labour', 'labor pain', 'labour pain', 'water broke', 'waters broke', 'baby is coming', 'baby coming', 'giving birth', 'contractions', 'delivery pain', 'பிரசவ வலி', 'प्रसव'],
+    type: 'Medical - Childbirth / Labour',
+    category: 'MEDICAL',
+    defaultSeverity: 4,
+    needs: ['Ambulance', 'Medical help', 'Maternity Unit'],
+    badgeColor: 'ORANGE',
+    prioritySymbol: 'HEART_PULSE',
+    actionSteps: [
+      'Contact your local emergency services immediately.',
+      'Help the mother into a comfortable position on clean sheets or towels; wash your hands',
+      'Do not pull on the baby or the cord; support the baby as it is born',
+      'Tell responders immediately about heavy bleeding, fits, or the cord or a limb appearing first'
+    ],
+    firstAid: [
+      "After birth, dry the baby, place it skin-to-skin on the mother's chest and cover both to keep warm",
+      'If the baby is not breathing, rub its back gently; if still not breathing, start infant CPR'
+    ],
+    responderInstructions: 'Active labour / imminent delivery. Prepare obstetric kit, neonatal resuscitation and postpartum haemorrhage care.'
+  },
+  {
+    keywords: ['anaphylaxis', 'anaphylactic', 'allergic reaction', 'throat swelling', 'tongue swelling', 'face swelling', 'epipen', 'ஒவ்வாமை', 'एलर्जी'],
+    type: 'Medical - Severe Allergic Reaction (Anaphylaxis)',
+    category: 'MEDICAL',
+    defaultSeverity: 5,
+    needs: ['Ambulance', 'Medical help'],
+    badgeColor: 'RED',
+    prioritySymbol: 'ALERT_TRIANGLE',
+    actionSteps: [
+      'Contact your local emergency services immediately.',
+      'If the person has an adrenaline (epinephrine) auto-injector, help them use it in the outer thigh',
+      'Let them sit up if breathing is difficult; lie flat with legs raised if faint or dizzy',
+      'If there is no improvement after 5 minutes and a second auto-injector is available, it may be used'
+    ],
+    firstAid: [
+      'Do not let the person stand up or walk suddenly',
+      'If not breathing normally, start CPR'
+    ],
+    responderInstructions: 'Suspected anaphylaxis. Prepare IM adrenaline, airway management and oxygen.'
+  },
+  {
+    keywords: ['electric shock', 'electrocuted', 'electrocution', 'live wire', 'got current', 'current shock', 'மின்சாரம் தாக்கி', 'करंट'],
+    type: 'Medical - Electric Shock',
+    category: 'MEDICAL',
+    defaultSeverity: 5,
+    needs: ['Ambulance', 'Medical help', 'Electricity Utility Emergency'],
+    badgeColor: 'RED',
+    prioritySymbol: 'ALERT_TRIANGLE',
+    actionSteps: [
+      'Do NOT touch the person until the power source is switched off',
+      'Switch off power at the mains or unplug the device; for high-voltage lines, stay well back and wait for responders',
+      'Contact your local emergency services immediately.',
+      'Once it is safe, check breathing; if not breathing normally, start CPR'
+    ],
+    firstAid: [
+      'Cool electrical burns under cool running water and cover loosely with clean, non-fluffy material',
+      'Everyone who has had an electric shock needs medical assessment'
+    ],
+    responderInstructions: 'Electrical injury. Confirm scene is de-energised; assess for arrhythmia, burns and secondary trauma.'
+  },
+  {
+    keywords: ['fell from', 'fell off', 'fell down the stairs', 'fall from', 'head injury', 'hit his head', 'hit her head', 'fracture', 'broken bone', 'broken leg', 'broken arm', 'spinal injury', 'neck injury', 'கீழே விழுந்து', 'गिर गया', 'गिर गई'],
+    type: 'Medical - Fall / Head or Bone Injury',
+    category: 'MEDICAL',
+    defaultSeverity: 4,
+    needs: ['Ambulance', 'Medical help'],
+    badgeColor: 'ORANGE',
+    prioritySymbol: 'ALERT_TRIANGLE',
+    actionSteps: [
+      'Do not move the person if a head, neck or back injury is possible, unless they are in danger',
+      'Keep the head and neck still and in line with the body',
+      'Contact your local emergency services, especially after a fall from height or a head injury',
+      'Watch for drowsiness, confusion, vomiting or unequal pupils and tell responders'
+    ],
+    firstAid: [
+      'Control any bleeding with firm pressure using a clean cloth',
+      'Support injured limbs in the position found; if not breathing normally, start CPR'
+    ],
+    responderInstructions: 'Fall / blunt trauma. Assess for head, spinal and long-bone injury; prepare immobilisation.'
+  },
+  {
+    keywords: ['he is dead', 'she is dead', 'has died', 'he died', 'she died', 'dead body', 'body found', 'no signs of life', 'lifeless', 'இறந்துவிட்டார்', 'मर गया', 'मर गई'],
+    type: 'Medical - Possible Death / Unresponsive Person',
+    category: 'MEDICAL',
+    defaultSeverity: 5,
+    needs: ['Ambulance', 'Medical help', 'Police'],
+    badgeColor: 'RED',
+    prioritySymbol: 'HEART_PULSE',
+    actionSteps: [
+      'Contact your local emergency services immediately.',
+      'Check for response and normal breathing; if not breathing normally, start CPR unless death is obvious',
+      'If death is obvious, do not move the body or disturb the scene; wait for police and medical responders',
+      'Keep other people away from the area'
+    ],
+    firstAid: [
+      'If you are unsure whether the person is alive, start CPR and continue until help arrives',
+      'Use an AED if one is available'
+    ],
+    responderInstructions: 'Reported death or lifeless person. Confirm signs of life, begin resuscitation if indicated, and secure the scene.'
   }
 ];
 
@@ -358,11 +599,12 @@ export function classifyEmergencyOffline(
   // clause, not emergency negations ("no pulse") or "no fire extinguisher".
   // Keep the original text for display and translation. Other hazards still score.
   const normalizedInput = text.toLowerCase().trim().replace(/[\u2018\u2019\u02bc]/g, "'");
-  const normalized = normalizedInput.replace(
-    /(^|[.!?;,]|\bbut\b)\s*(?:there\s+is\s+no\s+(?:active\s+)?fire|no\s+(?:active\s+)?fire)(?=\s*(?:$|[.!?;,]|\bbut\b|\band\b))/g,
+  let normalized = normalizedInput.replace(
+    /(^|[.!?;,]|\bbut\b)\s*(?:there\s+is\s+no\s+(?:active\s+)?fire|no\s+(?:active\s+)?fire|(?:the\s+)?fire\s+(?:is|was|has\s+been)\s+(?:(?:now|already|completely|fully)\s+)?(?:out|extinguished|put\s+out)(?:\s+now)?)(?=\s*(?:$|[.!?;,]|\bbut\b|\band\b))/g,
     '$1 '
   );
   const hasExplicitFireDenial = normalized !== normalizedInput;
+  normalized = markPersonCollapse(normalized);
   let clarificationOnly = false;
   const detected = detectLanguage(text);
 
