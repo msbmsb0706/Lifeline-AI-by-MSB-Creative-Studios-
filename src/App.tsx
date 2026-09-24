@@ -28,6 +28,7 @@ import { playPing } from './lib/audio.ts';
 import { getCountryEmergencyNumber, getSelectedCountry } from './lib/emergencyNumbers.ts';
 import { checkOfflineShellReady } from './lib/offlineShell.ts';
 import { attemptOnlineTriage } from './lib/onlineTriage.ts';
+import { SHOW_TECH_DETAILS } from './lib/uiVisibility.ts';
 import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send, Mail } from 'lucide-react';
 
 /** Keep a weak/failed online AI connection from blocking an on-device SOS. */
@@ -697,14 +698,28 @@ export default function App() {
           </div>
         </div>
 
-        {/* Explicit mode status */}
-        <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${localOnlyMode ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
+        {/* Explicit mode status (technical — debug builds only) */}
+        {SHOW_TECH_DETAILS && <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${localOnlyMode ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
           {localOnlyMode
             ? 'LOCAL SOS TRIAGE — typed messages work without internet. Nothing is automatically sent; browser voice may need a network.'
             : 'ONLINE AI selected — on-device SOS takes over if unreachable. Dispatch requires separate consent and a real supported partner.'}
-        </div>
+        </div>}
 
-        {offlineShellReady !== null && (
+        {/* Simple "what to do" guide for everyone */}
+        <ol id="how-it-works-steps" aria-label="How to use LifeLine AI"
+          className="mb-3 flex items-stretch justify-between gap-1 text-[11px] sm:text-xs font-semibold text-neutral-200">
+          {['Tap to speak or type what happened', 'Tap Analyze', 'Follow the steps & call for help'].map((label, i, all) => (
+            <React.Fragment key={label}>
+              <li className="flex-1 flex items-center gap-1.5 px-2 py-2 rounded-lg bg-neutral-900 border border-neutral-800">
+                <span className="w-5 h-5 shrink-0 rounded-full bg-red-600 text-white text-[11px] font-black flex items-center justify-center">{i + 1}</span>
+                <span className="leading-tight">{label}</span>
+              </li>
+              {i < all.length - 1 && <span aria-hidden="true" className="self-center text-red-400 font-black">→</span>}
+            </React.Fragment>
+          ))}
+        </ol>
+
+        {SHOW_TECH_DETAILS && offlineShellReady !== null && (
           <div id="offline-shell-readiness" aria-live="polite"
             className={`mb-3 px-3 py-2 rounded-lg border text-xs ${offlineShellReady ? 'border-emerald-800 bg-emerald-950/40 text-emerald-200' : 'border-amber-700 bg-amber-950/50 text-amber-200'}`}>
             {offlineShellReady
@@ -783,9 +798,9 @@ export default function App() {
               <div>
                 <div className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
                   <span>Emergency Analysis Error</span>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-900/90 text-red-200 border border-red-700">
+                  {SHOW_TECH_DETAILS && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-900/90 text-red-200 border border-red-700">
                     Nebius Token Factory
-                  </span>
+                  </span>}
                 </div>
                 <div className="text-xs text-red-300 mt-1 leading-relaxed">
                   {error}
@@ -991,9 +1006,9 @@ export default function App() {
               <span>Contact Privacy Team</span>
             </button>
             <span className="text-neutral-600 hidden sm:inline">•</span>
-            <div className="text-[10px] text-neutral-400">
+            {SHOW_TECH_DETAILS && <div className="text-[10px] text-neutral-400">
               {offlineForce ? 'Offline local rules • Bundled emergency phrasebook' : 'NVIDIA Nemotron via Nebius Token Factory • Online emergency translation'}
-            </div>
+            </div>}
           </div>
         </div>
       </footer>

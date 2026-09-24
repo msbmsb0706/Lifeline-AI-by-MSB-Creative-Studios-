@@ -35,6 +35,7 @@ import {
   Shield
 } from 'lucide-react';
 import { playPing } from '../lib/audio.ts';
+import { SHOW_TECH_DETAILS, friendlyTranslationText } from '../lib/uiVisibility.ts';
 import { looksLikeGeneratedDispatch } from '../lib/translationSafety.ts';
 import {
   GENERIC_EMERGENCY_GUIDANCE,
@@ -532,13 +533,13 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             </span>
           </div>
 
-          <div
+          {SHOW_TECH_DETAILS && <div
             className="flex items-center gap-1 text-[11px] text-amber-300/90 font-medium px-2 py-0.5 rounded bg-amber-950/50 border border-amber-800/60"
             title="Safety Rule: Emergency type, category and severity are strictly locked and cannot be changed by translation."
           >
             <Lock className="w-3 h-3 text-amber-400 shrink-0" />
             <span>Severity & Type Locked</span>
-          </div>
+          </div>}
         </div>
 
         {/* Target Language Selection & "Translate SOS" Button */}
@@ -644,8 +645,8 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         </div>
       )}
 
-      {/* Model Attribution & Triage Engine Notice */}
-      <div className="my-2.5 py-1.5 px-3 rounded-xl bg-black/40 border border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+      {/* Model Attribution & Triage Engine Notice (debug only) */}
+      {SHOW_TECH_DETAILS && <div className="my-2.5 py-1.5 px-3 rounded-xl bg-black/40 border border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-1.5 font-medium">
           {result.source === 'nebius_nemotron' ? (
             <>
@@ -671,9 +672,9 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             {new Date(result.timestamp).toLocaleTimeString()}
           </span>
         </div>
-      </div>
+      </div>}
 
-      {result.offline_notice && (
+      {SHOW_TECH_DETAILS && result.offline_notice && (
         <div className="mb-3 p-2.5 rounded-xl bg-amber-950/70 border border-amber-800/80 text-amber-200 text-xs flex items-start gap-2">
           <WifiOff className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
           <div>
@@ -796,6 +797,25 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         </div>
       </div>
 
+      {/* Plain-language next steps for the user */}
+      <div id="sos-what-next" className="mb-3 p-3.5 rounded-xl bg-red-950/40 border border-red-800/70">
+        <div className="text-xs font-black uppercase tracking-wider text-red-300 mb-2">What to do next</div>
+        <ol className="space-y-1.5 text-sm text-neutral-100">
+          <li className="flex items-start gap-2">
+            <span className="text-red-400 font-black shrink-0">➜</span>
+            {configuredEmergencyNumber ? (
+              <a href={`tel:${configuredEmergencyNumber}`} className="font-bold underline underline-offset-2 text-emerald-300">
+                Call {configuredEmergencyNumber} now
+              </a>
+            ) : (
+              <span>Call your local emergency number now (select your country at the top to see it).</span>
+            )}
+          </li>
+          <li className="flex items-start gap-2"><span className="text-red-400 font-black shrink-0">➜</span><span>Follow the action steps above until help arrives.</span></li>
+          <li className="flex items-start gap-2"><span className="text-red-400 font-black shrink-0">➜</span><span>Read or copy the message below to the operator, or use Share.</span></li>
+        </ol>
+      </div>
+
       {/* 911 / EMS Dispatch Broadcast Transmission Section (Displaying Both Original & Translated Messages) */}
       <div id="dispatch-transmission-container" className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
@@ -805,7 +825,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {hasTranslation && (
+            {SHOW_TECH_DETAILS && hasTranslation && (
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
                 Both Messages Preserved
               </span>
@@ -890,7 +910,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
               </div>
               <pre className="text-xs sm:text-sm font-mono text-emerald-300/95 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/70 border border-emerald-900/60 select-all">
-                {safeTranslatedMessage}
+                {friendlyTranslationText(safeTranslatedMessage)}
               </pre>
             </div>
             )}
@@ -1021,7 +1041,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {result.source === 'nebius_nemotron' && result.nebius_connected && (
+          {SHOW_TECH_DETAILS && result.source === 'nebius_nemotron' && result.nebius_connected && (
             <span
               id="sos-card-nebius-connected-badge"
               className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-600"
@@ -1030,9 +1050,9 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
               Nebius • Nemotron Connected
             </span>
           )}
-          <span className="text-[10px] text-neutral-500 font-mono tracking-wide">
+          {SHOW_TECH_DETAILS && <span className="text-[10px] text-neutral-500 font-mono tracking-wide">
             VERIFIED EMERGENCY RECORD
-          </span>
+          </span>}
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400 font-mono">
             {currentCategory}
           </span>

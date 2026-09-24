@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { QuickPreset, SupportedLanguageInfo, VoiceCaptureMetadata } from '../types.ts';
 import { SUPPORTED_LANGUAGES, detectLanguage } from '../lib/languages.ts';
+import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
 import { LocationPrivacyModal } from './LocationPrivacyModal.tsx';
 
 interface TranscriptAreaProps {
@@ -491,7 +492,7 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
             <span>Multilingual Distress Scenarios (Tap to Test Auto-Detection)</span>
           </div>
           <div className="flex items-center gap-2">
-            {nebiusConnected && (
+            {SHOW_TECH_DETAILS && nebiusConnected && (
               <span
                 id="nebius-transcript-connected-indicator"
                 className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-600"

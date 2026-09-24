@@ -28,6 +28,8 @@ await import('./pr16-country-selection.test.ts');
 await import('./online-translation.test.ts');
 await import('./online-translation-routes.test.ts');
 await import('./partner-tracking.test.ts');
+await import('./speech-capture-android.test.ts');
+await import('./ui-visibility.test.ts');
 
 const failures = summarize();
 process.exit(failures > 0 ? 1 : 0);

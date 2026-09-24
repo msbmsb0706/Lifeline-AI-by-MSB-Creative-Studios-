@@ -3,6 +3,8 @@ import { Mic, MicOff, AlertCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { playPing } from '../lib/audio.ts';
 import { getSpeechRecognitionLocale } from '../lib/languages.ts';
+import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
+import { SpeechCaptureController } from '../lib/speechCapture.ts';
 
 interface EmergencyVoiceButtonProps {
   onTranscriptChange: (transcript: string, isFinal: boolean) => void;
@@ -32,20 +34,6 @@ interface EmergencyVoiceButtonProps {
   voicePhase?: 'idle' | 'listening' | 'transcribing' | 'translating';
   /** One-line explanation of why the multilingual path is (un)available. */
   voiceModeNotice?: string | null;
-}
-
-// Browser SpeechRecognition polyfill interface
-interface SpeechRecognitionEvent {
-  resultIndex: number;
-  results: {
-    length: number;
-    [index: number]: {
-      [subIndex: number]: {
-        transcript: string;
-      };
-      isFinal: boolean;
-    };
-  };
 }
 
 const MAX_RECORDING_MS = 60_000; // safety cap — capture is always user-activated
@@ -92,7 +80,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   const [localSpeechSupported, setLocalSpeechSupported] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
 
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechCaptureController | null>(null);
   const latestTranscriptRef = useRef<string>('');
 
   // Server ASR (MediaRecorder) capture refs — audio is held transiently in memory only
@@ -126,6 +114,11 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     }
   };
 
+  // Keep latest props in refs so the browser recognizer is NOT torn down
+  // (aborting an active capture) whenever a parent re-renders.
+  const callbacksRef = useRef({ onTranscriptChange, onSubmitEmergency, soundEnabled, selectedLanguage });
+  callbacksRef.current = { onTranscriptChange, onSubmitEmergency, soundEnabled, selectedLanguage };
+
   useEffect(() => {
     const SpeechRecognitionClass =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -136,80 +129,38 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     }
 
     try {
-      const recognition = new SpeechRecognitionClass();
-      recognition.continuous = true;
-      recognition.interimResults = true;
       // The experimental flag is the only honest browser signal that recognition is local.
-      setLocalSpeechSupported((recognition as any).processLocally === true);
-      // Selected-language recognizer locale. Browser SpeechRecognition uses a
-      // BCP-47 tag (e.g. 'ta-IN'), not a bare language code. Whether the locale
-      // is recognised locally/offline depends on the user's browser and OS.
-      recognition.lang = getSpeechRecognitionLocale(selectedLanguage);
-
-      recognition.onstart = () => {
-        setIsListening(true);
-        setMicError(null);
-        latestTranscriptRef.current = '';
-        if (soundEnabled) playPing('start');
-      };
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        let interim = '';
-        let final = '';
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const text = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            final += text + ' ';
-          } else {
-            interim += text;
-          }
-        }
-
-        const combined = (final + interim).trim();
-        if (combined) {
-          latestTranscriptRef.current = combined;
-          onTranscriptChange(combined, Boolean(final));
-        }
-      };
-
-      recognition.onerror = (err: any) => {
-        console.warn('Speech recognition warning/error:', err.error);
-        if (err.error === 'not-allowed') {
-          setMicError('Microphone permission blocked. Please allow mic access.');
-        } else if (err.error === 'no-speech') {
-          // Normal timeout if user was silent
-        } else {
-          setMicError(`Voice input error: ${err.error || 'Check microphone'}`);
-        }
-        setIsListening(false);
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-        if (soundEnabled) playPing('stop');
-        // If transcript was spoken and finished, trigger emergency analysis automatically
-        if (latestTranscriptRef.current.trim() && onSubmitEmergency) {
-          onSubmitEmergency(latestTranscriptRef.current.trim());
-        }
-      };
-
-      recognitionRef.current = recognition;
+      setLocalSpeechSupported((new SpeechRecognitionClass() as any).processLocally === true);
     } catch (e) {
       console.warn('Failed to initialize SpeechRecognition:', e);
       setSpeechSupported(false);
+      return;
     }
 
-    return () => {
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort();
-        } catch {
-          // ignore
-        }
+    const controller = new SpeechCaptureController(() => new SpeechRecognitionClass(), {
+      onListeningChange: (listening) => {
+        setIsListening(listening);
+        if (callbacksRef.current.soundEnabled) playPing(listening ? 'start' : 'stop');
+      },
+      onTranscript: (text, isFinal) => {
+        latestTranscriptRef.current = text;
+        callbacksRef.current.onTranscriptChange(text, isFinal);
+      },
+      onError: (message) => setMicError(message),
+      onSessionEnd: (text) => {
+        // Chrome/Android may end on its own at the speech end-point; the text
+        // is preserved either way. Submit once per session, if wired.
+        const submit = callbacksRef.current.onSubmitEmergency;
+        if (text.trim() && submit) submit(text.trim());
       }
+    });
+    recognitionRef.current = controller;
+
+    return () => {
+      controller.dispose();
+      recognitionRef.current = null;
     };
-  }, [soundEnabled, selectedLanguage, onTranscriptChange, onSubmitEmergency]);
+  }, []);
 
   // Cleanup transient MediaRecorder capture on unmount — never leave the mic open
   useEffect(() => {
@@ -343,15 +294,8 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
 
     // Active capture → stop it (both paths)
     if (isListening) {
-      try {
-        recognitionRef.current?.stop();
-      } catch {
-        // ignore
-      }
-      setIsListening(false);
-      if (latestTranscriptRef.current.trim() && onSubmitEmergency) {
-        onSubmitEmergency(latestTranscriptRef.current.trim());
-      }
+      // Final text is delivered (and submitted once) from the session end.
+      recognitionRef.current?.stop();
       return;
     }
     if (isServerRecording) {
@@ -408,19 +352,11 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         return;
       }
 
-      try {
-        latestTranscriptRef.current = '';
-        recognitionRef.current?.start();
-      } catch (err: any) {
-        console.warn('Mic start failed:', err);
-        // If already active or error, reset
-        try {
-          recognitionRef.current?.abort();
-          recognitionRef.current?.start();
-        } catch {
-          setMicError('Could not start microphone. You can type distress details directly.');
-        }
-      }
+      latestTranscriptRef.current = '';
+      // Fresh recognizer per tap with the currently selected language locale.
+      recognitionRef.current?.start(
+        getSpeechRecognitionLocale(callbacksRef.current.selectedLanguage)
+      );
     } finally {
       // Release the lock for every start path that did not end up owning an
       // active server recording (browser voice, permission denial, failures).
@@ -500,7 +436,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
             {offlineMode && !localSpeechSupported
               ? 'Type emergency text below'
               : isAnalyzing
-              ? 'Nebius Nemotron'
+              ? 'Please wait'
               : isBusyAsr
               ? busySubLabel
               : isVoiceActive
@@ -530,7 +466,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           <div className="text-xs text-neutral-400">
             {offlineMode && !localSpeechSupported
               ? 'Offline voice recognition is not available on this device.'
-              : voiceModeNotice
+              : SHOW_TECH_DETAILS && voiceModeNotice
               ? voiceModeNotice
               : speechSupported
               ? 'Tap the button to speak your emergency aloud'
