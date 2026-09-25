@@ -339,7 +339,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     });
   };
 
-  const handleSaveLocalSOS = () => {
+  const handleSaveLocalSOS = ({ automaticRecovery }: { automaticRecovery: boolean }) => {
     const sosPkg = buildSOSPkg();
     const silentResult = createSilentResult();
     onSaveResult?.(silentResult);
@@ -347,6 +347,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     const pendingItem = createQueuedSOSItem({
       sosPackage: sosPkg,
       targetPartner: LOCAL_ONLY_PROVIDER,
+      automaticRecovery,
       userConsentTimestamp: new Date().toISOString()
     });
 
@@ -358,14 +359,15 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     }
     // Confirmed while offline: record the waiting state in the lifecycle itself.
     // Still nothing is transmitted.
-    if (!navigator.onLine) markWaitingForConnection(pendingItem, 'Device offline when the SOS was confirmed — stored, not sent.');
+    if (offlineMode || !navigator.onLine) markWaitingForConnection(pendingItem, 'Device offline when the SOS was confirmed — stored, not sent.');
     onQueueUpdated?.();
     setShowPartnerConsentModal(false);
     setShowConfirmation(false);
     setDispatchedSosId(sosPkg.sosId);
+    if (automaticRecovery) window.dispatchEvent(new Event('lifeline-sos-saved'));
 
     setShareNotice(
-      'SAVED ON THIS DEVICE ONLY — NOT SENT. Reconnecting will never upload it. Open the queue to share text manually; photo/video files are NOT stored in this queue, so save or share them now before closing.'
+      `SAVED ON THIS DEVICE ONLY — NOT SENT. ${automaticRecovery ? 'Automatic recovery requested. No real partner is verified by default; your SOS remains local until an authorized integration is available.' : 'Saved locally. Manual sharing only.'} Nothing has been sent yet. Open the queue to share text manually; photo/video files are NOT stored in this queue, so save or share them now before closing.`
     );
   };
 

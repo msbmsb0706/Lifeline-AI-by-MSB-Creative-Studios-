@@ -36,18 +36,23 @@ export const SOS_DELIVERY_STATUS_META: Record<
     terminal: false
   },
   WAITING_FOR_CONNECTION: {
-    label: 'PENDING LOCAL',
-    detail: 'Stored on this device, not sent. Reconnecting never uploads it; review and share manually if needed.',
+    label: 'WAITING FOR CONNECTION',
+    detail: 'Saved locally. Nothing has been sent yet.',
+    terminal: false
+  },
+  UNCONFIRMED: {
+    label: 'HANDOFF UNCONFIRMED',
+    detail: 'The partner may have received this SOS. No automatic or manual API resend is permitted. Your SOS remains saved locally; use Share via device or verify directly.',
     terminal: false
   },
   SENDING: {
-    label: 'SENDING',
+    label: 'SENDING SOS...',
     detail: 'Transmitting to the configured emergency partner endpoint…',
     terminal: false
   },
   SENT: {
-    label: 'SENT',
-    detail: 'SOS handed off to the configured destination endpoint.',
+    label: 'SOS SENT',
+    detail: 'Awaiting delivery confirmation.',
     terminal: true
   },
   DELIVERED: {
@@ -242,6 +247,7 @@ export function createQueuedSOSItem(params: {
   sosPackage: SOSPackage;
   targetPartner: EmergencyPartnerProvider;
   userConsentTimestamp: string;
+  automaticRecovery?: boolean;
 }): PendingSOSItem {
   const item: PendingSOSItem = {
     sosPackage: params.sosPackage,
@@ -249,6 +255,7 @@ export function createQueuedSOSItem(params: {
     // A local save is not consent to ANY partner transmission.
     userApprovedForPartnerTransmission: params.targetPartner.providerType !== 'LOCAL_ONLY',
     gpsApprovedForPartnerTransmission: false,
+    automaticRecovery: params.automaticRecovery === true,
     userConsentTimestamp: params.userConsentTimestamp,
     status: 'PENDING_LOCAL',
     statusHistory: [
@@ -287,6 +294,7 @@ export function markWaitingForConnection(item: PendingSOSItem, reason?: string):
 export function normalizePendingSOSItem(raw: any): PendingSOSItem {
   const item: PendingSOSItem = {
     ...raw,
+    automaticRecovery: raw?.automaticRecovery === true,
     status:
       raw?.status === 'TRANSMITTING' ? 'PENDING_LOCAL' : (raw?.status as SOSDeliveryStatus) || 'PENDING_LOCAL',
     attempts: typeof raw?.attempts === 'number' ? raw.attempts : 0
@@ -420,7 +428,7 @@ export function savePendingSOS(item: PendingSOSItem): boolean {
     notifyQueueListeners();
     return true;
   } catch (err) {
-    console.warn('Failed to save pending SOS to localStorage:', err);
+    console.warn('Failed to save pending SOS to localStorage');
     return false;
   }
 }
@@ -433,7 +441,7 @@ export function deletePendingSOS(sosId: string): void {
     localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(updated));
     notifyQueueListeners();
   } catch (err) {
-    console.warn('Failed to delete pending SOS:', err);
+    console.warn('Failed to delete pending SOS');
   }
 }
 
@@ -445,6 +453,14 @@ export function clearPendingQueue(): void {
     // ignore
   }
   notifyQueueListeners();
+}
+
+export class HandoffUnconfirmedError extends Error {
+  constructor() { super('Handoff unconfirmed. The partner may have received this SOS. No API retry is safe; share via device or verify directly.'); }
+}
+
+export class DispatchError extends Error {
+  constructor(public readonly httpStatus: number, message: string) { super(message); }
 }
 
 // Transmit single SOS package to configured partner endpoint
@@ -487,7 +503,10 @@ export async function sendSOSToPartner(
     ? (({ type, name, mimeType, sizeBytes }) => ({ type, name, mimeType, sizeBytes }))(sosPackage.video)
     : null;
 
-  const endpoint = targetPartner.apiBaseUrl || '/api/emergency-partner/dispatch';
+  // Every partner handoff goes through the server. Real authorized requests
+  // require its durable ledger; TEST remains synthetic. Never trust a URL
+  // supplied in browser-persisted provider metadata.
+  const endpoint = '/api/emergency-partner/dispatch';
 
   const payload = {
     sosId: sosPackage.sosId,
@@ -512,7 +531,8 @@ export async function sendSOSToPartner(
     partnerId: targetPartner.id,
     providerType: targetPartner.providerType,
     demoOnly: targetPartner.providerType === 'TEST' && sosPackage.demoOnly === true,
-    userConsentConfirmed: item.userApprovedForPartnerTransmission
+    userConsentConfirmed: item.userApprovedForPartnerTransmission,
+    automaticRecovery: item.automaticRecovery === true
   };
 
   const controller = new AbortController();
@@ -531,8 +551,10 @@ export async function sendSOSToPartner(
     // Keep the timeout active while reading the body too: a server can send
     // headers promptly and then stall indefinitely on its acknowledgment.
     if (!response.ok) {
-      const errText = await response.text().catch(() => 'Server error');
-      throw new Error(`Partner endpoint returned HTTP ${response.status}: ${errText.slice(0, 200)}`);
+      // Only recognize our own structured error code, never expose arbitrary upstream text.
+      const body = await response.json().catch(() => null);
+      if (body?.code === 'HANDOFF_UNCONFIRMED') throw new HandoffUnconfirmedError();
+      throw new DispatchError(response.status, `Partner endpoint returned HTTP ${response.status}.`);
     }
 
     const json = await response.json();
@@ -552,6 +574,7 @@ export async function sendSOSToPartner(
     return ack;
   } catch (err: any) {
     clearTimeout(timeoutId);
+    if (err instanceof DispatchError || err instanceof HandoffUnconfirmedError) throw err;
     throw new Error(
       err.name === 'AbortError'
         ? 'Transmission timeout connecting to Emergency Partner endpoint.'
@@ -589,6 +612,9 @@ export async function transmitSingleSOSItem(
 ): Promise<{ attempted: boolean; success: boolean; error?: string }> {
   if (!navigator.onLine) {
     return { attempted: false, success: false, error: 'Device is offline. No transmission attempted.' };
+  }
+  if (['SENT', 'DELIVERED', 'ACKNOWLEDGED', 'SENDING', 'UNCONFIRMED'].includes(item.status)) {
+    return { attempted: false, success: false, error: 'SOS already sent or in progress.' };
   }
   if (item.targetPartner.providerType === 'LOCAL_ONLY' ||
       (item.targetPartner.providerType === 'TEST' && item.sosPackage.demoOnly !== true)) {
@@ -636,7 +662,16 @@ export async function transmitSingleSOSItem(
       return { attempted: true, success: true };
     } catch (err: any) {
       const message = err?.message || 'Transmission failed';
-      recordTransition(item, 'FAILED', message);
+      if (err instanceof HandoffUnconfirmedError) {
+        item.handoffUnconfirmed = true;
+        item.recoveryBlocked = true;
+        recordTransition(item, 'UNCONFIRMED', message);
+      } else if (item.automaticRecovery === true) {
+        // 4xx is not transient. 5xx, timeout and connectivity loss use bounded backoff.
+        item.recoveryBlocked = err instanceof DispatchError && err.httpStatus >= 400 && err.httpStatus < 500;
+        item.nextRecoveryAt = Date.now() + Math.min(300000, 5000 * 2 ** Math.min(item.attempts - 1, 6));
+        recordTransition(item, 'WAITING_FOR_CONNECTION', message);
+      } else recordTransition(item, 'FAILED', message);
       item.errorMessage = message;
       if (!savePendingSOS(item)) {
         return { attempted: true, success: false,
@@ -758,6 +793,9 @@ export async function retrySingleSOS(sosId: string): Promise<{ attempted: boolea
   if (!item.userApprovedForPartnerTransmission) {
     return { attempted: false, success: false, error: 'Explicit user consent for transmission is required.' };
   }
+  if (item.status === 'UNCONFIRMED' || item.handoffUnconfirmed === true) {
+    return { attempted: false, success: false, error: 'Handoff unconfirmed. Do not retry the partner API; use Share via device or verify directly.' };
+  }
   if (item.status === 'SENT' || item.status === 'DELIVERED' || item.status === 'ACKNOWLEDGED') {
     return { attempted: false, success: true }; // Already handed off — never duplicate-send.
   }
@@ -792,7 +830,8 @@ export async function processPendingQueue(options?: {
       item.status === 'SENT' ||
       item.status === 'DELIVERED' ||
       item.status === 'ACKNOWLEDGED' ||
-      item.status === 'SENDING'
+      item.status === 'SENDING' ||
+      item.status === 'UNCONFIRMED' || item.handoffUnconfirmed === true
     ) {
       return false;
     }

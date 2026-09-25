@@ -310,7 +310,7 @@ installBrowserStub({
         success: true,
         data: {
           success: true,
-          status: 'ACKNOWLEDGED',
+          status: 'SENT',
           referenceId: 'PR16-SIM-1',
           timestamp: new Date().toISOString(),
           message: 'MOCK ack — DEMONSTRATION ONLY',
@@ -384,7 +384,7 @@ installBrowserStub({
           success: true,
           data: {
             success: true,
-            status: 'ACKNOWLEDGED',
+            status: 'DELIVERED',
             referenceId: 'PR16-AUTH-1',
             timestamp: new Date().toISOString(),
             message: 'Authorized partner response',
@@ -426,7 +426,7 @@ installBrowserStub({
           success: true,
           data: {
             success: true,
-            status: 'ACKNOWLEDGED',
+            status: 'SENT',
             referenceId: 'PR16-HTTP-1',
             timestamp: new Date().toISOString(),
             message: 'Authorized partner response',

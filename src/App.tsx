@@ -1,3 +1,4 @@
+import { startAutomaticSOSRecovery } from './lib/automaticSOSRecovery.ts';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header.tsx';
 import { EmergencyVoiceButton } from './components/EmergencyVoiceButton.tsx';
@@ -203,9 +204,9 @@ export default function App() {
   }, []);
 
   // Re-read locally saved SOS records after restart and on network changes.
-  // Never send on startup, reconnect, focus, a timer, or after battery recovery.
-  // A fresh user action is required to share. New code ignores the legacy
-  // preference; force it OFF too, for any older tab still open on this device.
+  // Queue reads only recover interrupted records; separate per-record opt-in
+  // recovery verifies backend and authorized partner before any network send.
+  // The obsolete global autosend preference never grants consent.
   useEffect(() => {
     try { localStorage.setItem('lifeline_autosend_pending_sos', 'false'); }
     catch { /* older tabs may remain active; storage could be unavailable */ }
@@ -221,6 +222,8 @@ export default function App() {
       unsubscribe();
     };
   }, [refreshPendingQueue]);
+
+  useEffect(() => startAutomaticSOSRecovery(() => offlineForce), [offlineForce]);
 
   // Verify the worker has HTML AND its JS/CSS before promising offline startup.
   // Recheck after foregrounding: OS storage eviction can happen at any time.
@@ -710,7 +713,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               <Clock className="w-4 h-4 text-amber-400 shrink-0" />
               <span>
-                <b>NOT SENT:</b> {pendingQueueCount} SOS record(s) stored on this device. Reconnecting or reopening NEVER uploads them. Review and share manually when ready. TEST/DEMO alerts never reach responders; call your local emergency number directly.
+                <b>NOT SENT:</b> {pendingQueueCount} SOS record(s) stored on this device. Only explicitly opted-in SOS records may attempt authorized delivery after verified connectivity while this app is running. Otherwise review and share manually. TEST/DEMO alerts never reach responders; call your local emergency number directly.
               </span>
             </div>
             <div className="flex items-center gap-2 ml-auto">

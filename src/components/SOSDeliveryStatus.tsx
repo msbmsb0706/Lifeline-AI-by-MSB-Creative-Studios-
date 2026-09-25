@@ -109,15 +109,21 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
       case 'WAITING_FOR_CONNECTION':
         return {
           dot: '🔴',
-          heading: item?.targetPartner.providerType === 'LOCAL_ONLY' ? 'SAVED ON DEVICE — NOT SENT' : 'SOS CONFIRMED',
+          heading: effectiveStatus === 'WAITING_FOR_CONNECTION' ?
+            (item?.errorMessage === 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION' ? item.errorMessage :
+            item?.errorMessage?.startsWith('CONNECTION RESTORED') ? 'CONNECTION RESTORED' : 'WAITING FOR CONNECTION') :
+            item?.targetPartner.providerType === 'LOCAL_ONLY' ? 'SAVED ON DEVICE — NOT SENT' : 'SOS CONFIRMED',
           container: 'border-red-700/80 bg-red-950/60',
           headingClass: 'text-red-300',
           pulse: false
         };
+      case 'UNCONFIRMED':
+        return { dot: '🔴', heading: 'HANDOFF UNCONFIRMED — NOT SAFE TO RETRY',
+          container: 'border-red-600 bg-red-950/70', headingClass: 'text-red-200', pulse: false };
       case 'SENDING':
         return {
           dot: '🟡',
-          heading: 'SENDING',
+          heading: 'SENDING SOS...',
           container: 'border-amber-600/80 bg-amber-950/50',
           headingClass: 'text-amber-300',
           pulse: true
@@ -125,7 +131,7 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
       case 'SENT':
         return {
           dot: item?.targetPartner.providerType === 'TEST' ? '🟣' : '🟢',
-          heading: item?.targetPartner.providerType === 'TEST' ? 'TEST / DEMO ONLY — NO RESPONDER' : 'SENT',
+          heading: item?.targetPartner.providerType === 'TEST' ? 'TEST / DEMO ONLY — NO RESPONDER' : 'SOS SENT',
           container: 'border-emerald-700/80 bg-emerald-950/50',
           headingClass: 'text-emerald-300',
           pulse: false
@@ -167,7 +173,8 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
 
   const isTestProvider = item.targetPartner.providerType === 'TEST';
   const recipientLabel = isTestProvider ? 'TEST / DEMO' : item.targetPartner.providerName;
-  const canRetry = effectiveStatus === 'FAILED' && isOnline && !offlineMode &&
+  const canRetry = (effectiveStatus === 'FAILED' ||
+    (effectiveStatus === 'WAITING_FOR_CONNECTION' && item.recoveryBlocked === true)) && isOnline && !offlineMode &&
     (item.targetPartner.providerType === 'AUTHORIZED_API' ||
       (isTestProvider && item.sosPackage.demoOnly === true));
 
@@ -265,13 +272,21 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
                 : simulatedFinal && effectiveStatus === 'ACKNOWLEDGED'
                 ? SIMULATED_ACK_EXPLANATION
                 : item.targetPartner.providerType === 'LOCAL_ONLY'
-                ? 'Saved on this device only. Use Share via device to send manually; no partner API is used.'
+                ? item.errorMessage === 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION'
+                  ? 'Your SOS remains saved locally. Use SEND NOW for an authorized destination, or SHARE VIA DEVICE.'
+                  : item.automaticRecovery === true
+                  ? 'Automatic recovery requested. No partner API handoff is enabled without a verified authorized integration. Nothing has been sent yet.'
+                  : 'Saved locally. Manual sharing only. Nothing has been sent yet.'
                 : effectiveStatus === 'WAITING_FOR_CONNECTION'
-                ? 'Waiting for connection — manual send required'
+                ? item.recoveryBlocked ? `${item.errorMessage || 'Configuration or authorization error.'} Automatic retry stopped. Use SEND NOW or SHARE VIA DEVICE.` :
+                  item.errorMessage?.startsWith('CONNECTION RESTORED') ? 'Preparing to send your confirmed SOS...' :
+                  item.automaticRecovery === true ? 'Automatic recovery requested. Nothing has been sent yet.' : 'Saved locally. Manual sharing only.'
+                : effectiveStatus === 'UNCONFIRMED'
+                ? 'The partner may have received this SOS. Nothing has been confirmed here. Your SOS remains saved locally. Do not retry the API; use SHARE VIA DEVICE or verify directly.'
                 : effectiveStatus === 'FAILED'
                 ? item.errorMessage || 'Retry available'
                 : effectiveStatus === 'SENT'
-                ? isTestProvider ? 'Sent to TEST / DEMO ONLY — no real emergency service received it.' : 'Handed off to configured destination'
+                ? isTestProvider ? 'Sent to TEST / DEMO ONLY — no real emergency service received it.' : 'Awaiting delivery confirmation.'
                 : meta!.detail}
             </div>
           </div>

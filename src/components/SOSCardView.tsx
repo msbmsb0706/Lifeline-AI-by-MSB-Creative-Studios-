@@ -366,7 +366,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     }
   };
 
-  const handleSaveLocalSOS = () => {
+  const handleSaveLocalSOS = ({ automaticRecovery }: { automaticRecovery: boolean }) => {
     const sosPkg = createSOSPackage({
       emergencyType: result.emergency_type,
       category: result.emergency_category,
@@ -389,6 +389,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     const pendingItem = createQueuedSOSItem({
       sosPackage: sosPkg,
       targetPartner: LOCAL_ONLY_PROVIDER,
+      automaticRecovery,
       userConsentTimestamp: consentTimestamp
     });
 
@@ -399,10 +400,11 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     }
     // Confirmed while offline: say so in the record's own lifecycle instead of
     // leaving a bare PENDING_LOCAL. Nothing is transmitted either way.
-    if (!navigator.onLine) markWaitingForConnection(pendingItem, 'Device offline when the SOS was confirmed — stored, not sent.');
+    if (offlineMode || !navigator.onLine) markWaitingForConnection(pendingItem, 'Device offline when the SOS was confirmed — stored, not sent.');
     setShowPartnerConsent(false);
     setDispatchedSosId(sosPkg.sosId);
-    setShareToast('SAVED ON THIS DEVICE ONLY — NOT SENT. Nothing uploads on reconnect or restart. Review the saved text in the queue or use Share Alert to send it manually.');
+    if (automaticRecovery) window.dispatchEvent(new Event('lifeline-sos-saved'));
+    setShareToast(`SAVED ON THIS DEVICE ONLY — NOT SENT. ${automaticRecovery ? 'Automatic recovery requested. No real partner is verified by default; your SOS remains local until an authorized integration is available.' : 'Saved locally. Manual sharing only.'} Nothing has been sent yet. Review the saved text in the queue or use Share Alert to send it manually.`);
   };
 
   return (

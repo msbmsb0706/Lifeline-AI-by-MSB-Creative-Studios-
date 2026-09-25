@@ -206,7 +206,7 @@ export const EmergencyPartnersManagerModal: React.FC<
       const res = await processPendingQueue({ forceManual: true });
       refreshQueue();
       if (res.processedCount === 0) {
-        setQueueNotice('No eligible partner API records. To share a saved real SOS, use its Share via device button below. Local-only records are NEVER uploaded.');
+        setQueueNotice('No eligible approved partner API records. To share a locally saved SOS, use Share via device or review an authorized handoff below.');
       } else if (res.errors.length > 0) {
         setQueueNotice(`Processed ${res.processedCount} package(s): ${res.successCount} succeeded. Errors: ${res.errors.join('; ')}`);
       } else {
@@ -655,11 +655,11 @@ export const EmergencyPartnersManagerModal: React.FC<
           {/* TAB 2: PENDING QUEUE & SETTINGS */}
           {activeTab === 'queue' && (
             <div className="space-y-4">
-              {/* Manual-only privacy policy: never upload on reconnect/restart. */}
+              {/* Per-record opt-in only; legacy and demo records never auto-send. */}
               <div className="p-4 rounded-xl bg-neutral-900 border border-amber-800 space-y-2">
-                <div className="font-extrabold text-amber-200 text-xs sm:text-sm">ON-DEVICE ONLY — NO AUTOMATIC UPLOAD</div>
+                <div className="font-extrabold text-amber-200 text-xs sm:text-sm">SAVED SOS — PER-RECORD CONSENT</div>
                 <p className="text-[11px] text-neutral-300">
-                  Reconnecting, restarting, or unlocking never sends a saved SOS. Use Share via device for a real SOS;
+                  Only records explicitly opted in to automatic recovery may send after backend verification, while this app can execute. Otherwise use Share via device;
                   an authorized partner API must be configured before any direct API dispatch is possible.
                   TEST/DEMO records are synthetic and never alert responders.
                 </p>
@@ -796,7 +796,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                                 aria-label={`Review SOS ${item.sosPackage.sosId} for authorized partner handoff`}
                               >
                                 <ShieldCheck className="w-3.5 h-3.5" />
-                                <span className="text-[10px] font-bold">Review partner handoff</span>
+                                <span className="text-[10px] font-bold">SEND NOW — review partner</span>
                               </button>
                             )}
                             <button
@@ -806,7 +806,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                               aria-label={`Share SOS ${item.sosPackage.sosId} manually`}
                             >
                               <Share2 className="w-3.5 h-3.5" />
-                              <span className="text-[10px] font-bold">Share text{item.sosPackage.gps ? ' + location' : ''}</span>
+                              <span className="text-[10px] font-bold">SHARE VIA DEVICE{item.sosPackage.gps ? ' + location' : ''}</span>
                             </button>
                             {canRetryItem && (
                               <button
@@ -816,6 +816,7 @@ export const EmergencyPartnersManagerModal: React.FC<
                                 title={isOffline ? 'Retry available when connection returns' : 'Retry transmitting this SOS'}
                               >
                                 <RefreshCw className={`w-3.5 h-3.5 ${isSending ? 'animate-spin' : ''}`} />
+                                <span className="text-[10px] font-bold">SEND NOW</span>
                               </button>
                             )}
 
@@ -859,10 +860,15 @@ export const EmergencyPartnersManagerModal: React.FC<
                           </div>
                           <div className="col-span-1 sm:col-span-2">
                             <b>Status:</b> {item.targetPartner.providerType === 'LOCAL_ONLY'
-                              ? 'On this device only — not sent. Use Share via device if you wish.'
+                              ? item.errorMessage === 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION'
+                                ? 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION. Your SOS remains saved locally. SEND NOW (review authorized partner) or SHARE VIA DEVICE.'
+                                : item.automaticRecovery === true
+                                ? 'WAITING FOR CONNECTION — automatic recovery requested, but no unverified real partner will be contacted. Nothing has been sent; Share via device remains available.'
+                                : 'On this device only — not sent. Manual sharing only.'
                               : item.targetPartner.providerType === 'TEST' && !item.sosPackage.demoOnly
                               ? 'Older real SOS saved for TEST/DEMO — API send blocked. Use Share via device.'
-                              : statusMeta.detail}
+                              : item.status === 'UNCONFIRMED' ? 'HANDOFF UNCONFIRMED. Partner may have received this SOS. No API retry; SHARE VIA DEVICE or verify directly.'
+                              : item.recoveryBlocked ? `${item.errorMessage || 'Authorized dispatch unavailable.'} Automatic retry stopped. Use SEND NOW or SHARE VIA DEVICE.` : statusMeta.detail}
                           </div>
                           {sentAt && (
                             <div>

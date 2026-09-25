@@ -256,7 +256,7 @@ section('Offline SOS UI contract');
 const card = readFileSync(new URL('../src/components/SOSCardView.tsx', import.meta.url), 'utf8');
 const silent = readFileSync(new URL('../src/components/SilentSOS.tsx', import.meta.url), 'utf8');
 const statusCard = readFileSync(new URL('../src/components/SOSDeliveryStatus.tsx', import.meta.url), 'utf8');
-assert(card.includes('if (!navigator.onLine) markWaitingForConnection') && silent.includes('if (!navigator.onLine) markWaitingForConnection'),
+assert(card.includes('if (offlineMode || !navigator.onLine) markWaitingForConnection') && silent.includes('if (offlineMode || !navigator.onLine) markWaitingForConnection'),
   'both offline confirm flows record the waiting-for-connection state explicitly');
 assert(statusCard.includes("'SAVED ON DEVICE — NOT SENT'") && statusCard.includes('SAVED ON DEVICE — NOT SENT'),
   'the delivery card renders an explicit NOT SENT state for local records');

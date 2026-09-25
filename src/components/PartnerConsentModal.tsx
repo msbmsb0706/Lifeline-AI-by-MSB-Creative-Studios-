@@ -25,7 +25,7 @@ interface PartnerConsentModalProps {
   sosPackage: SOSPackage;
   isOffline: boolean;
   onCancel: () => void;
-  onConfirm: (options: { includeGps: boolean }) => void;
+  onConfirm: (options: { includeGps: boolean; automaticRecovery: boolean }) => void;
   /** True only for a separately reviewed, configured authorized-partner handoff. */
   allowGpsSelection?: boolean;
 }
@@ -40,7 +40,8 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
   allowGpsSelection = false
 }) => {
   const [includeGps, setIncludeGps] = useState(false);
-  useEffect(() => { setIncludeGps(false); }, [isOpen, provider.id, sosPackage.sosId]);
+  const [automaticRecovery, setAutomaticRecovery] = useState(false);
+  useEffect(() => { setIncludeGps(false); setAutomaticRecovery(false); }, [isOpen, provider.id, sosPackage.sosId]);
   if (!isOpen) return null;
 
   const isTestProvider = provider.providerType === 'TEST';
@@ -122,10 +123,19 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
           {/* Local records never receive transmission approval or a partner destination. */}
           {isLocalOnly && (
             <div className="p-3 rounded-xl bg-amber-950/80 border-2 border-amber-600 text-amber-100 text-xs font-bold">
-              LOCAL SAVE ONLY — Nothing will be sent to any partner, TEST/DEMO endpoint, or emergency service.
-              Reconnecting and reopening will never upload this SOS. You can share the saved text manually from the queue.
+              LOCAL SAVE ONLY — Nothing is being sent now to any partner, TEST/DEMO endpoint, or emergency service.
+              Without the optional consent below, reconnecting and reopening will not upload this SOS. You can share the saved text manually from the queue.
               Save a video to your device separately before closing this page.
             </div>
+          )}
+
+          {isLocalOnly && (
+            <label className="block p-3 rounded-xl border border-amber-700 text-amber-100 text-xs">
+              <span className="flex items-start gap-2 font-bold"><input type="checkbox" checked={automaticRecovery}
+                onChange={(e) => setAutomaticRecovery(e.target.checked)} />
+                Automatically send this SOS when a verified Internet connection becomes available.</span>
+              <span className="block mt-2">If selected, LifeLine may attempt this confirmed SOS after verified connectivity only when a real authorized integration has been verified and enabled. None is included by default. No GPS or photo/video bytes will be sent automatically. If no destination is configured, your SOS stays local. Recovery works only while this web application can execute.</span>
+            </label>
           )}
 
           {isAuthorizedApi && allowGpsSelection && (
@@ -177,7 +187,7 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
               <div>
                 <div className="font-black uppercase text-xs">OFFLINE MODE ACTIVE</div>
                 <div className="text-xs mt-0.5">
-                  OFFLINE — only SOS text/metadata is saved here; it is NOT sent now. Reopening on a network never uploads it. Manually choose an authorized destination if one becomes available. No emergency service receives TEST/DEMO alerts.
+                  OFFLINE — only SOS text/metadata is saved here; it is NOT sent now. Reopening can attempt recovery only if you opt in below. Manually choose an authorized destination if one becomes available. No emergency service receives TEST/DEMO alerts.
                 </div>
               </div>
             </div>
@@ -289,13 +299,13 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
             <button
               id="consent-confirm-send-btn"
               type="button"
-              onClick={() => onConfirm({ includeGps: isAuthorizedApi && allowGpsSelection && includeGps && Boolean(sosPackage.gps) })}
+              onClick={() => onConfirm({ includeGps: isAuthorizedApi && allowGpsSelection && includeGps && Boolean(sosPackage.gps), automaticRecovery: isLocalOnly && automaticRecovery })}
               className="py-3 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-red-950 transition-colors"
             >
               {isOffline || isLocalOnly ? (
                 <>
                   <Save className="w-4 h-4" />
-                  <span>CONFIRM & SAVE LOCAL</span>
+                  <span>{isLocalOnly && automaticRecovery ? 'SAVE LOCALLY + AUTOMATIC RECOVERY' : 'SAVE LOCALLY'}</span>
                 </>
               ) : (
                 <>

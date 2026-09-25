@@ -33,6 +33,13 @@ await import('./speech-capture-android.test.ts');
 await import('./voice-android-lifecycle.test.ts');
 await import('./offline-sos-android-flow.test.ts');
 await import('./ui-visibility.test.ts');
+await import('./automatic-sos-recovery.test.ts');
+// Previous browser tests install window/document stubs. Embedded PostgreSQL
+// must initialize in a genuine Node environment, not a partial browser stub.
+delete (globalThis as any).window;
+delete (globalThis as any).document;
+await import('./durable-dispatch-ledger.test.ts');
+await import('./automatic-sos-dispatch-route.test.ts');
 
 const failures = summarize();
 process.exit(failures > 0 ? 1 : 0);
