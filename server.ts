@@ -13,7 +13,7 @@ import {
 import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, DetectedLanguage } from './src/types.ts';
 import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
 import { getEmergencyPartnerConfig } from './server/partnerConfig.ts';
-import { createDispatchIdempotency } from './server/dispatchIdempotency.ts';
+import { createConfiguredDispatchLedger } from './server/dispatchIdempotency.ts';
 import { createPartnerTrackingRouter, getPartnerTrackingCapabilities, issueCaseAccessToken } from './server/partnerTracking.ts';
 import { looksLikeGeneratedDispatch } from './src/lib/translationSafety.ts';
 import {
@@ -107,7 +107,7 @@ function audioExtensionFromMime(mimeType: string): string {
   return 'webm';
 }
 
-async function startServer() {
+export async function createApp(dispatchLedger = createConfiguredDispatchLedger(process.env)) {
   const app = express();
 
   app.set('trust proxy', resolveTrustProxy());
@@ -936,7 +936,7 @@ CONSTRAINTS:
   // endpoint URLs, API keys, and any other credentials are never included).
   // 200 CONFIGURED / NOT_CONFIGURED on success; 503 when the lookup itself
   // fails (unavailable — never reported as "not configured").
-  app.get('/api/emergency-partner/config', (req, res) => {
+  app.get('/api/emergency-partner/config', async (req, res) => {
     try {
       if ((process.env.EMERGENCY_PARTNER_CONFIG_ERROR || '').trim() === 'unavailable') {
         res.status(503).json({
@@ -947,6 +947,12 @@ CONSTRAINTS:
         return;
       }
       const country = typeof req.query.country === 'string' ? req.query.country : 'GLOBAL';
+      if (getEmergencyPartnerConfig(country, process.env).status === 'CONFIGURED' &&
+          !(await dispatchLedger.available())) {
+        res.status(503).json({ success: false, code: 'PARTNER_CONFIG_UNAVAILABLE',
+          error: 'Authorized dispatch ledger unavailable. No partner request can be sent.' });
+        return;
+      }
       res.set('Cache-Control', 'no-store');
       res.json({ success: true, data: {
         ...getEmergencyPartnerConfig(country, process.env),
@@ -964,8 +970,6 @@ CONSTRAINTS:
   // Case/status/GPS routes exist ONLY for a configured authorized partner.
   // TEST, local-only and public contacts have no case tokens or tracking path.
   app.use('/api/emergency-partner', createPartnerTrackingRouter({ env: process.env }));
-
-  const dispatchOnce = createDispatchIdempotency();
 
   // Dedicated Emergency Partner Dispatch Endpoint
   app.post('/api/emergency-partner/dispatch', async (req, res) => {
@@ -1046,11 +1050,14 @@ CONSTRAINTS:
         return;
       }
 
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      // A durable shared ledger is mandatory for ALL real authorized dispatches,
+      // including manual sends; never fall back to an in-process map.
+      if (!(await dispatchLedger.available())) {
+        res.status(503).json({ success: false, code: 'CONFIRMED_FAILURE',
+          error: 'Dispatch ledger unavailable. No partner request was made.' });
+        return;
+      }
       try {
-        const controller = new AbortController();
-        timeoutId = setTimeout(() => controller.abort(), 10000);
-
         // Old clients may still send dataUrl fields: strip all media contents
         // before proxying. This integration currently supports metadata ONLY.
         const mediaMetadata = (raw: any) => ({
@@ -1079,29 +1086,41 @@ CONSTRAINTS:
             englishTranslation: typeof englishTranslation === 'string' ? englishTranslation : null,
             source: 'LifeLine AI Framework'
           };
-        const partnerJson = await dispatchOnce(sosId, partnerPayload, async () => {
-          const response = await fetch(partnerApiUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': partnerApiKey.startsWith('Bearer ') ? partnerApiKey : `Bearer ${partnerApiKey}`,
-              'Idempotency-Key': sosId
-            },
-            body: JSON.stringify(partnerPayload),
-            signal: controller.signal
-          });
-          if (!response.ok) {
-            // Do not reflect untrusted upstream bodies (may contain private data).
-            const error = new Error('Authorized partner rejected dispatch.') as Error & { httpStatus?: number };
-            error.httpStatus = response.status;
-            throw error;
-          }
-          const receipt = await response.json();
-          if (typeof receipt?.referenceId !== 'string' || !receipt.referenceId.trim()) {
-            throw new Error('No verifiable partner reference ID.');
-          }
-          return receipt;
+        const outcome = await dispatchLedger.dispatchOnce(sosId, partnerApiUrl, partnerPayload, async () => {
+          const controller = new AbortController();
+          const deadline = setTimeout(() => controller.abort(), 10000);
+          try {
+            const response = await fetch(partnerApiUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': partnerApiKey.startsWith('Bearer ') ? partnerApiKey : `Bearer ${partnerApiKey}`,
+                'Idempotency-Key': sosId
+              },
+              body: JSON.stringify(partnerPayload),
+              signal: controller.signal
+            });
+            if (!response.ok) throw new Error('Partner outcome cannot be assumed from HTTP status');
+            const receipt = await response.json();
+            if (typeof receipt?.referenceId !== 'string' || !receipt.referenceId.trim())
+              throw new Error('No verifiable partner receipt');
+            return receipt;
+          } finally { clearTimeout(deadline); }
         });
+        if (outcome.kind === 'CONFIRMED_FAILURE') {
+          res.status(outcome.reason === 'SOS_ID_CONFLICT' ? 409 : 503).json({
+            success: false, code: outcome.reason === 'SOS_ID_CONFLICT' ? 'SOS_ID_CONFLICT' : 'CONFIRMED_FAILURE',
+            error: outcome.reason === 'SOS_ID_CONFLICT' ? 'SOS ID already used for different content or destination.' :
+              'Dispatch ledger unavailable. No partner request was made.'
+          });
+          return;
+        }
+        if (outcome.kind === 'UNKNOWN') {
+          res.status(409).json({ success: false, code: 'HANDOFF_UNCONFIRMED',
+            error: 'Handoff unconfirmed. No automatic or manual API retry was sent to the partner. Share via device or reconcile through a verified partner lookup if available.' });
+          return;
+        }
+        const partnerJson = outcome.receipt;
         // A case-status capability is issued only after a real configured
         // authorized partner produced a reference ID. It is not a case number
         // or proof that a responder accepted the incident.
@@ -1110,7 +1129,8 @@ CONSTRAINTS:
           success: true,
           data: {
             success: true,
-            status: 'ACKNOWLEDGED',
+            status: partnerJson.responderAcknowledged === true ? 'ACKNOWLEDGED' :
+              partnerJson.deliveryConfirmed === true ? 'DELIVERED' : 'SENT',
             referenceId: partnerJson.referenceId,
             ...(caseAccess ? { caseAccessToken: caseAccess.token, caseAccessExpiresAt: caseAccess.expiresAt } : {}),
             timestamp: new Date().toISOString(),
@@ -1124,20 +1144,16 @@ CONSTRAINTS:
             // from the other, and the TEST / DEMO path never sets them.
             ...(partnerJson?.deliveryConfirmed === true ? { deliveryConfirmed: true as boolean } : {}),
             ...(partnerJson?.responderAcknowledged === true ? { responderAcknowledged: true as boolean } : {}),
-            ...(partnerJson?.deliveredAt ? { deliveredAt: String(partnerJson.deliveredAt) } : {})
+            ...(partnerJson?.deliveryConfirmed === true && partnerJson?.deliveredAt ? { deliveredAt: String(partnerJson.deliveredAt) } : {})
           }
         });
         return;
-      } catch (err: any) {
-        res.status(err?.message === 'SOS_ID_CONFLICT' ? 409 :
-          (Number.isInteger(err?.httpStatus) && err.httpStatus >= 400 && err.httpStatus <= 599 ? err.httpStatus : 502)).json({
-          success: false,
-          error: err?.message === 'SOS_ID_CONFLICT' ? 'SOS ID already used for a different payload.' :
-            'Authorized partner handoff not confirmed. The same SOS ID is required for any retry.'
-        });
+      } catch {
+        // The ledger may already contain a confirmed receipt. Do not imply that
+        // an outbound request never happened if response construction failed.
+        res.status(409).json({ success: false, code: 'HANDOFF_UNCONFIRMED',
+          error: 'Handoff outcome cannot be displayed. Share via device or verify directly; no automatic resend.' });
         return;
-      } finally {
-        if (timeoutId) clearTimeout(timeoutId);
       }
     }
 
@@ -1171,7 +1187,7 @@ CONSTRAINTS:
       success: true,
       data: {
         success: true,
-        status: 'ACKNOWLEDGED',
+        status: 'SENT',
         referenceId: mockReferenceId,
         timestamp: new Date().toISOString(),
         message: 'TEST / DEMO — Mock SOS package successfully received by local demonstration endpoint. NO REAL EMERGENCY SERVICE RECEIVED THIS ALERT.',
@@ -1210,12 +1226,14 @@ CONSTRAINTS:
     });
   }
 
+  return app;
+}
+
+createApp().then((app) => {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[LifeLine AI by MSB Creative Studios] Running on http://0.0.0.0:${PORT}`);
   });
-}
-
-startServer().catch((err) => {
+}).catch((err) => {
   console.error('Failed to start server:', err);
   process.exit(1);
 });

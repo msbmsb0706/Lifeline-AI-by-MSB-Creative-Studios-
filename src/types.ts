@@ -239,10 +239,11 @@ export interface SOSPackage {
 /**
  * Explicit SOS communication lifecycle for a queued SOS package.
  *
- * Local-only SOS: SOS SAVED → PENDING_LOCAL (no automatic upload).
+ * Local-only SOS: SOS SAVED → PENDING_LOCAL / WAITING_FOR_CONNECTION.
  * Explicit authorized-partner send: PENDING_LOCAL → SENDING → SENT.
- * Offline partner record: PENDING_LOCAL → WAITING_FOR_CONNECTION
- *                         → (user manually sends after reconnect) → SENDING → SENT.
+ * Offline partner record: WAITING_FOR_CONNECTION → SENDING → SENT, or
+ * UNCONFIRMED if an outbound partner outcome cannot be safely determined.
+ * UNCONFIRMED must never be retried through the partner API.
  *
  * SENT / DELIVERED / ACKNOWLEDGED are distinct trust levels:
  * - SENT          : the app handed the SOS to the configured destination endpoint.
@@ -250,6 +251,7 @@ export interface SOSPackage {
  *                   delivery (never inferred from an HTTP 200).
  * - ACKNOWLEDGED  : ONLY when a human/configured organization explicitly
  *                   acknowledges the SOS (never fabricated by this client).
+ * UNCONFIRMED     : partner may have received the SOS; API resend is blocked.
  * FAILED          : last transmission attempt failed; item stays stored locally
  *                   and remains retryable.
  *
@@ -261,6 +263,7 @@ export type SOSDeliveryStatus =
   | 'PENDING_LOCAL'
   | 'WAITING_FOR_CONNECTION'
   | 'SENDING'
+  | 'UNCONFIRMED'
   | 'SENT'
   | 'DELIVERED'
   | 'ACKNOWLEDGED'
@@ -282,8 +285,9 @@ export interface SOSStatusTransition {
 /**
  * Acknowledgment returned by the transmission endpoint after a handoff.
  *
- * `status` describes the endpoint's receipt of the handoff itself (this is what
- * justifies the SENT lifecycle state — it is NOT a responder acknowledgment).
+ * `status` reports the verified lifecycle fact: SENT for accepted handoff,
+ * DELIVERED only for explicit delivery confirmation, ACKNOWLEDGED only for
+ * explicit responder acknowledgement. Never infer these from a reference ID.
  *
  * `deliveryConfirmed` / `responderAcknowledged` may ONLY be set to true by a
  * real configured receiving integration that explicitly reports delivery or a
@@ -292,7 +296,7 @@ export interface SOSStatusTransition {
  */
 export interface PartnerAcknowledgment {
   success: boolean;
-  status: 'ACKNOWLEDGED' | 'FAILED' | 'REJECTED';
+  status: 'SENT' | 'DELIVERED' | 'ACKNOWLEDGED' | 'FAILED' | 'REJECTED';
   referenceId: string;
   timestamp: string;
   message: string;
@@ -332,6 +336,8 @@ export interface PendingSOSItem {
   nextRecoveryAt?: number;
   /** Permanent configuration/auth failure: do not retry automatically. */
   recoveryBlocked?: boolean;
+  /** Unknown partner outcome: do not retry the API, even manually, until reconciled. */
+  handoffUnconfirmed?: boolean;
   /** Separate opt-in for sending saved one-time GPS with an authorized handoff. */
   gpsApprovedForPartnerTransmission?: boolean;
   /** Confirmation time for local save or, for an approved partner record, transmission consent. */

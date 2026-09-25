@@ -40,6 +40,11 @@ export const SOS_DELIVERY_STATUS_META: Record<
     detail: 'Saved locally. Nothing has been sent yet.',
     terminal: false
   },
+  UNCONFIRMED: {
+    label: 'HANDOFF UNCONFIRMED',
+    detail: 'The partner may have received this SOS. No automatic or manual API resend is permitted. Your SOS remains saved locally; use Share via device or verify directly.',
+    terminal: false
+  },
   SENDING: {
     label: 'SENDING SOS...',
     detail: 'Transmitting to the configured emergency partner endpoint…',
@@ -450,6 +455,10 @@ export function clearPendingQueue(): void {
   notifyQueueListeners();
 }
 
+export class HandoffUnconfirmedError extends Error {
+  constructor() { super('Handoff unconfirmed. The partner may have received this SOS. No API retry is safe; share via device or verify directly.'); }
+}
+
 export class DispatchError extends Error {
   constructor(public readonly httpStatus: number, message: string) { super(message); }
 }
@@ -494,9 +503,10 @@ export async function sendSOSToPartner(
     ? (({ type, name, mimeType, sizeBytes }) => ({ type, name, mimeType, sizeBytes }))(sosPackage.video)
     : null;
 
-  // Never let a persisted or modified provider redirect an automatic real SOS.
-  const endpoint = item.automaticRecovery === true ? '/api/emergency-partner/dispatch' :
-    (targetPartner.apiBaseUrl || '/api/emergency-partner/dispatch');
+  // Every partner handoff goes through the server. Real authorized requests
+  // require its durable ledger; TEST remains synthetic. Never trust a URL
+  // supplied in browser-persisted provider metadata.
+  const endpoint = '/api/emergency-partner/dispatch';
 
   const payload = {
     sosId: sosPackage.sosId,
@@ -541,7 +551,9 @@ export async function sendSOSToPartner(
     // Keep the timeout active while reading the body too: a server can send
     // headers promptly and then stall indefinitely on its acknowledgment.
     if (!response.ok) {
-      // Do not surface arbitrary upstream text (which might contain private data or credentials).
+      // Only recognize our own structured error code, never expose arbitrary upstream text.
+      const body = await response.json().catch(() => null);
+      if (body?.code === 'HANDOFF_UNCONFIRMED') throw new HandoffUnconfirmedError();
       throw new DispatchError(response.status, `Partner endpoint returned HTTP ${response.status}.`);
     }
 
@@ -562,7 +574,7 @@ export async function sendSOSToPartner(
     return ack;
   } catch (err: any) {
     clearTimeout(timeoutId);
-    if (err instanceof DispatchError) throw err;
+    if (err instanceof DispatchError || err instanceof HandoffUnconfirmedError) throw err;
     throw new Error(
       err.name === 'AbortError'
         ? 'Transmission timeout connecting to Emergency Partner endpoint.'
@@ -601,7 +613,7 @@ export async function transmitSingleSOSItem(
   if (!navigator.onLine) {
     return { attempted: false, success: false, error: 'Device is offline. No transmission attempted.' };
   }
-  if (['SENT', 'DELIVERED', 'ACKNOWLEDGED', 'SENDING'].includes(item.status)) {
+  if (['SENT', 'DELIVERED', 'ACKNOWLEDGED', 'SENDING', 'UNCONFIRMED'].includes(item.status)) {
     return { attempted: false, success: false, error: 'SOS already sent or in progress.' };
   }
   if (item.targetPartner.providerType === 'LOCAL_ONLY' ||
@@ -650,7 +662,11 @@ export async function transmitSingleSOSItem(
       return { attempted: true, success: true };
     } catch (err: any) {
       const message = err?.message || 'Transmission failed';
-      if (item.automaticRecovery === true) {
+      if (err instanceof HandoffUnconfirmedError) {
+        item.handoffUnconfirmed = true;
+        item.recoveryBlocked = true;
+        recordTransition(item, 'UNCONFIRMED', message);
+      } else if (item.automaticRecovery === true) {
         // 4xx is not transient. 5xx, timeout and connectivity loss use bounded backoff.
         item.recoveryBlocked = err instanceof DispatchError && err.httpStatus >= 400 && err.httpStatus < 500;
         item.nextRecoveryAt = Date.now() + Math.min(300000, 5000 * 2 ** Math.min(item.attempts - 1, 6));
@@ -777,6 +793,9 @@ export async function retrySingleSOS(sosId: string): Promise<{ attempted: boolea
   if (!item.userApprovedForPartnerTransmission) {
     return { attempted: false, success: false, error: 'Explicit user consent for transmission is required.' };
   }
+  if (item.status === 'UNCONFIRMED' || item.handoffUnconfirmed === true) {
+    return { attempted: false, success: false, error: 'Handoff unconfirmed. Do not retry the partner API; use Share via device or verify directly.' };
+  }
   if (item.status === 'SENT' || item.status === 'DELIVERED' || item.status === 'ACKNOWLEDGED') {
     return { attempted: false, success: true }; // Already handed off — never duplicate-send.
   }
@@ -811,7 +830,8 @@ export async function processPendingQueue(options?: {
       item.status === 'SENT' ||
       item.status === 'DELIVERED' ||
       item.status === 'ACKNOWLEDGED' ||
-      item.status === 'SENDING'
+      item.status === 'SENDING' ||
+      item.status === 'UNCONFIRMED' || item.handoffUnconfirmed === true
     ) {
       return false;
     }

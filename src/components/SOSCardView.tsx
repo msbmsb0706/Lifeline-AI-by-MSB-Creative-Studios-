@@ -404,7 +404,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
     setShowPartnerConsent(false);
     setDispatchedSosId(sosPkg.sosId);
     if (automaticRecovery) window.dispatchEvent(new Event('lifeline-sos-saved'));
-    setShareToast(`SAVED ON THIS DEVICE ONLY — NOT SENT. ${automaticRecovery ? 'Automatic sending is enabled. LifeLine will attempt delivery when a verified connection and authorized destination become available.' : 'Saved locally. Manual sharing only.'} Nothing has been sent yet. Review the saved text in the queue or use Share Alert to send it manually.`);
+    setShareToast(`SAVED ON THIS DEVICE ONLY — NOT SENT. ${automaticRecovery ? 'Automatic recovery requested. No real partner is verified by default; your SOS remains local until an authorized integration is available.' : 'Saved locally. Manual sharing only.'} Nothing has been sent yet. Review the saved text in the queue or use Share Alert to send it manually.`);
   };
 
   return (

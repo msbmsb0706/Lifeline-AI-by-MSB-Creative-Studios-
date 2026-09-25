@@ -367,7 +367,7 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
     if (automaticRecovery) window.dispatchEvent(new Event('lifeline-sos-saved'));
 
     setShareNotice(
-      `SAVED ON THIS DEVICE ONLY — NOT SENT. ${automaticRecovery ? 'Automatic sending is enabled. LifeLine will attempt delivery when a verified connection and authorized destination become available.' : 'Saved locally. Manual sharing only.'} Nothing has been sent yet. Open the queue to share text manually; photo/video files are NOT stored in this queue, so save or share them now before closing.`
+      `SAVED ON THIS DEVICE ONLY — NOT SENT. ${automaticRecovery ? 'Automatic recovery requested. No real partner is verified by default; your SOS remains local until an authorized integration is available.' : 'Saved locally. Manual sharing only.'} Nothing has been sent yet. Open the queue to share text manually; photo/video files are NOT stored in this queue, so save or share them now before closing.`
     );
   };
 

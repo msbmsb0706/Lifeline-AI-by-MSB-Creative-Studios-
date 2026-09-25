@@ -123,7 +123,7 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
           {/* Local records never receive transmission approval or a partner destination. */}
           {isLocalOnly && (
             <div className="p-3 rounded-xl bg-amber-950/80 border-2 border-amber-600 text-amber-100 text-xs font-bold">
-              LOCAL SAVE ONLY — Nothing will be sent to any partner, TEST/DEMO endpoint, or emergency service.
+              LOCAL SAVE ONLY — Nothing is being sent now to any partner, TEST/DEMO endpoint, or emergency service.
               Without the optional consent below, reconnecting and reopening will not upload this SOS. You can share the saved text manually from the queue.
               Save a video to your device separately before closing this page.
             </div>
@@ -134,7 +134,7 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
               <span className="flex items-start gap-2 font-bold"><input type="checkbox" checked={automaticRecovery}
                 onChange={(e) => setAutomaticRecovery(e.target.checked)} />
                 Automatically send this SOS when a verified Internet connection becomes available.</span>
-              <span className="block mt-2">If enabled, LifeLine will attempt to send this confirmed SOS when a verified Internet connection becomes available, only to a configured authorized API. No GPS or photo/video bytes will be sent automatically. If no destination is configured, your SOS stays local. Recovery works only while this web application can execute.</span>
+              <span className="block mt-2">If selected, LifeLine may attempt this confirmed SOS after verified connectivity only when a real authorized integration has been verified and enabled. None is included by default. No GPS or photo/video bytes will be sent automatically. If no destination is configured, your SOS stays local. Recovery works only while this web application can execute.</span>
             </label>
           )}
 

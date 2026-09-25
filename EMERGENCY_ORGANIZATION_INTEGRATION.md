@@ -106,7 +106,7 @@ Fixed synthetic demo / explicitly approved authorized record
 - A local save is **not** consent to partner transmission. It creates a LOCAL_ONLY record; no API upload is possible for that record.
 - Explicit review/approval is required for eligible configured partner transmissions. The approved record carries its confirmation timestamp.
 - Real SOS text can be reviewed, manually shared through the device or copied to clipboard, and deleted from the queue.
-- Queue recovery may run on reconnect, app open or foreground **only** for an explicitly opted-in SOS, after backend reachability and idempotency-capable authorized integration checks. An old global auto-send preference never grants consent.
+- Queue recovery checks only explicitly opted-in SOS records. No real partner contract is verified in this template, so authorized automatic handoff is **disabled**, even when an old environment flag claims support. The old global auto-send preference never grants consent.
 
 ---
 
@@ -214,22 +214,21 @@ real organization integration.
   endpoint with `userConsentConfirmed` set.
 - The backend enforces explicit consent and required fields, then routes by
   provider type.
-- `TEST / DEMO` returns a mock acknowledgment with status `ACKNOWLEDGED` and
+- `TEST / DEMO` returns a **synthetic** handoff with status `SENT` and
   a reference ID in the `DEMO-ACK-XXXXX` format, and states that no real
   emergency service received the alert.
-- `AUTHORIZED_API` returns `ACKNOWLEDGED` with a reference ID from the
-  authorized endpoint only after a successful HTTPS response.
+- `AUTHORIZED_API` returns `SENT` only after a partner reference ID is durably recorded. It returns `DELIVERED` only for explicit `deliveryConfirmed === true` and `ACKNOWLEDGED` only for explicit `responderAcknowledged === true`. A bare `deliveredAt` is not proof of delivery.
 - `PUBLIC_CONTACT` never produces an acknowledgment; requests are rejected
   because public telephone numbers do not support digital API dispatches.
 
 ---
 
-## Idempotency
+## Idempotency and unconfirmed handoffs
 
-- An SOS is marked `SENT` only after receiving a valid provider
-  acknowledgment.
-- Items already `SENT` and in-flight `SENDING` records are skipped during a normal session. An interrupted `SENDING` record is recovered for manual review on restart, **not automatically retried**.
-- Exactly-once delivery is **not guaranteed**: if a partner accepted the request but the browser closed before saving the receipt, a later manual retry could duplicate it. A real partner must implement idempotency by `sosId`.
+- Real API dispatch requires `DISPATCH_LEDGER_DATABASE_URL`: a shared durable PostgreSQL database reachable by **all** app instances. No in-memory or local-file fallback is used. A missing/unreachable ledger blocks real dispatch. The server creates a unique SOS-ID reservation containing the destination and payload digests **before** a partner POST. The ledger stores only minimal confirmed partner receipt facts (no SOS text, GPS, media or keys).
+- A known confirmed success is replayed from the ledger with no new partner POST. A changed payload or destination for the same SOS ID is refused, including after a restart.
+- Once a POST might have started, a lost response, 5xx, timeout or receipt-write error has **UNKNOWN / UNCONFIRMED** outcome. The reservation remains blocked, even across restarts. The browser preserves the SOS locally, refuses further automatic or manual API retries, and offers Share via device. No fabricated SENT/delivery/acknowledgment is shown. An interrupted browser `SENDING` can ask the backend, but an unknown server reservation does not send a second partner POST.
+- There is **no partner lookup by SOS ID or verified external idempotency contract** in the template. Do not clear reservations or set `AUTHORIZED_PARTNER_IDEMPOTENCY_SUPPORTED=true` to bypass an unknown handoff. The flag is ignored. Unconfirmed outcomes require verified external reconciliation; a ledger alone cannot prove partner-side exactly-one creation. No automatic real partner dispatch is advertised until a real integration supplies and tests that contract.
 
 ---
 
@@ -245,13 +244,9 @@ exposes credentials:
 - `AUTHORIZED_API` dispatch is refused when no authorized endpoint or
   credential is configured; the template provider remains disabled until an
   organization supplies and authorizes the integration.
-- A non-success response from an authorized partner is surfaced to the user
-  as a failure.
-- Timeouts and network failures during an authorized-provider call are
-  surfaced as dispatch failures.
+- Any response failure after the partner POST may have started, including HTTP 5xx or timeout, is surfaced as **UNCONFIRMED** rather than a known rejection. An unavailable ledger before the POST is a **CONFIRMED_FAILURE** and makes no partner request.
 
-Failed eligible partner records remain in the local queue with an error message.
-An explicitly opted-in record can retry transient failures with bounded backoff while the app can execute; permanent 4xx errors require manual review. Local-only records without per-SOS consent are never API retry candidates; old global auto-send preferences are ignored.
+Failed and unconfirmed partner records remain in the local queue. An **UNCONFIRMED** record is never retried through the partner API, even manually; Share via device remains available. Only failures confirmed to have occurred *before* an outbound attempt may be retried after configuration is restored. Local-only records without per-SOS consent never become automatic API retry candidates; old global auto-send preferences are ignored.
 
 ---
 

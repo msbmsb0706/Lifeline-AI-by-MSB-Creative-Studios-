@@ -116,7 +116,7 @@ let receiptHandoffs = 0;
 (globalThis as any).fetch = async () => {
   receiptHandoffs++;
   return mockResponse(200, { success: true, data: {
-    success: true, status: 'ACKNOWLEDGED', referenceId: 'MOCK-RECEIPT',
+    success: true, status: 'SENT', referenceId: 'MOCK-RECEIPT',
     timestamp: new Date().toISOString(), partnerId: 'authorized-mock',
     providerType: 'AUTHORIZED_API'
   } });
@@ -162,7 +162,9 @@ savePendingSOS(onReconnect);
 markWaitingForConnection(onReconnect);
 (globalThis.navigator as any).onLine = true;
 let bodies: any[] = [];
+let lastEndpoint = '';
 (globalThis as any).fetch = async (_url: string, init: any) => {
+  lastEndpoint = _url;
   bodies.push(JSON.parse(init.body));
   return mockResponse(200, {
     success: true,
@@ -200,6 +202,7 @@ const failed = await processPendingQueue({ forceManual: true });
 assertEqual(failed.successCount, 0, 'failed manual request is NOT counted as delivered');
 assertEqual(getPendingQueue()[0]?.status, 'FAILED', 'request failure leaves SOS stored for retry');
 (globalThis as any).fetch = async (_url: string, init: any) => {
+  lastEndpoint = _url;
   bodies.push(JSON.parse(init.body));
   return mockResponse(200, {
     success: true, data: { success: true, status: 'SENT', referenceId: 'MOCK-AUTH-RETRY',
@@ -252,12 +255,14 @@ clearPendingQueue();
 
 section('Manual-only policy — explicitly approved authorized API can receive metadata, never media bytes');
 const manuallyApproved = makeItem('manually reviewed SOS');
+manuallyApproved.targetPartner.apiBaseUrl = 'https://untrusted.example/bypass-ledger'; // persisted metadata must never bypass server
 manuallyApproved.sosPackage.photos = [{ type: 'image', name: 'photo.jpg', mimeType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,PRIVATE-PHOTO' }];
 manuallyApproved.sosPackage.video = { type: 'video', name: 'clip.webm', mimeType: 'video/webm', dataUrl: 'data:video/webm;base64,PRIVATE-VIDEO' };
 assertEqual(savePendingSOS(manuallyApproved), true, 'manual-send fixture saved locally');
 assertEqual((await processPendingQueue()).processedCount, 0, 'reconnecting by itself does not upload an approved authorized record');
 assertEqual((await processPendingQueue({ forceManual: true })).successCount, 1,
   'explicit user-triggered send can hand off to the MOCK AUTHORIZED endpoint');
+assertEqual(lastEndpoint, '/api/emergency-partner/dispatch', 'even a modified partner URL cannot bypass server ledger');
 assert(!JSON.stringify(bodies[2]).includes('PRIVATE-PHOTO') && !JSON.stringify(bodies[2]).includes('PRIVATE-VIDEO'),
   'no old photo/video dataUrl bytes sent from queue, only file details');
 assertEqual((await processPendingQueue()).processedCount, 0, 'old auto-send TRUE cannot re-enable itself after manual send');

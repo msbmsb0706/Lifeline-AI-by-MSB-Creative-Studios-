@@ -80,7 +80,7 @@ function installDemoFetch(referenceId: string, onCall?: () => void) {
           success: true,
           data: {
             success: true,
-            status: 'ACKNOWLEDGED',
+            status: 'SENT',
             referenceId,
             timestamp: new Date().toISOString(),
             message: 'MOCK ack — DEMONSTRATION ONLY',
@@ -249,7 +249,7 @@ async function authorizedFlow(kind: 'delivery' | 'ack' | 'httponly') {
   clearPendingQueue();
   const ackBody: any = {
     success: true,
-    status: 'ACKNOWLEDGED',
+    status: kind === 'ack' ? 'ACKNOWLEDGED' : kind === 'delivery' ? 'DELIVERED' : 'SENT',
     referenceId: 'AUTH-REF-' + kind,
     timestamp: new Date().toISOString(),
     message: 'Authorized partner response',
@@ -319,7 +319,7 @@ section('sendSOSToPartner returns raw ack without inference');
 
 installDemoFetch('RAW-REF');
 const rawAck = await sendSOSToPartner(queueItem(TEST_PROVIDER, 'raw ack check'));
-assertEqual(rawAck.status, 'ACKNOWLEDGED', 'handoff status field passes through');
+assertEqual(rawAck.status, 'SENT', 'raw handoff status is SENT, never responder acknowledgement');
 assertEqual(rawAck.deliveryConfirmed, undefined, 'no deliveryConfirmed inferred from handoff status');
 assertEqual(rawAck.responderAcknowledged, undefined, 'no responderAcknowledged inferred from handoff status');
 

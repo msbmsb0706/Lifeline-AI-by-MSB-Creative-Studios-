@@ -4,7 +4,6 @@ import { LOCAL_ONLY_PROVIDER, getTestProvider } from '../src/lib/emergencyPartne
 import { createQueuedSOSItem, createSOSPackage, getPendingQueue, markWaitingForConnection,
   savePendingSOS, normalizePendingSOSItem, retrySingleSOS } from '../src/lib/emergencyPartnerQueue.ts';
 import { recoverAutomaticSOS, startAutomaticSOSRecovery } from '../src/lib/automaticSOSRecovery.ts';
-import { createDispatchIdempotency } from '../server/dispatchIdempotency.ts';
 import { getEmergencyPartnerConfig } from '../server/partnerConfig.ts';
 
 section('PR25: explicit opt-in, legacy normalization and transport-neutral reachability');
@@ -129,41 +128,16 @@ assertEqual(getPendingQueue().find(i => i.sosPackage.sosId === foreground.sosPac
   'visibility/foreground event rechecks and recovers');
 stop();
 
-section('PR25: server duplicate suppression and partner idempotency contract');
-const once = createDispatchIdempotency();
-let partnerCalls = 0;
-const send = async () => { partnerCalls++; await new Promise(resolve => setTimeout(resolve, 10)); return { referenceId: 'P-1' }; };
-const [first, second] = await Promise.all([once('SOS-LL-SAME', { message: 'a' }, send),
-  once('SOS-LL-SAME', { message: 'a' }, send)]);
-assertEqual(partnerCalls, 1, 'concurrent duplicate ID coalesces to one partner request');
-assertEqual(first.referenceId, second.referenceId, 'duplicate receives same reference');
-await once('SOS-LL-SAME', { message: 'a' }, send);
-assertEqual(partnerCalls, 1, 'accepted ID remains cached');
-let conflict = false;
-try { await once('SOS-LL-SAME', { message: 'changed' }, send); } catch { conflict = true; }
-assert(conflict, 'same SOS ID with changed payload is rejected');
+section('Fail-closed capability: environment flag is NOT proof of partner idempotency');
 assertEqual(getEmergencyPartnerConfig('GLOBAL', { AUTHORIZED_PARTNER_API_URL: 'https://partner.example/sos',
   AUTHORIZED_PARTNER_API_KEY: 'dummy' }).automaticRecoverySupported, false,
-  'auto dispatch disabled unless partner idempotency contract explicitly configured');
+  'unverified partner does not enable unattended dispatch');
 assertEqual(getEmergencyPartnerConfig('GLOBAL', { AUTHORIZED_PARTNER_API_URL: 'https://partner.example/sos',
-  AUTHORIZED_PARTNER_API_KEY: 'dummy', AUTHORIZED_PARTNER_IDEMPOTENCY_SUPPORTED: 'true' }).automaticRecoverySupported, true,
-  'idempotency-capable authorized partner can enable automatic dispatch');
+  AUTHORIZED_PARTNER_API_KEY: 'dummy', AUTHORIZED_PARTNER_IDEMPOTENCY_SUPPORTED: 'true' }).automaticRecoverySupported, false,
+  'a self-declared environment flag still cannot enable unattended dispatch');
 assertEqual(getTestProvider().providerType, 'TEST', 'demo remains a separate synthetic destination');
 
-section('PR25: unknown upstream receipt, synthetic safety and consent UI wiring');
-const uncertain = createDispatchIdempotency();
-let attempts = 0;
-try { await uncertain('SOS-LL-UNKNOWN', { severity: 4 }, async () => {
-  attempts++; throw new Error('Response lost after partner accepted');
-}); } catch { /* failure expected; never claim SENT */ }
-try { await uncertain('SOS-LL-UNKNOWN', { severity: 5 }, send); } catch (e: any) {
-  assertEqual(e.message, 'SOS_ID_CONFLICT', 'unknown receipt cannot reuse SOS ID with changed payload');
-}
-const retry = await uncertain('SOS-LL-UNKNOWN', { severity: 4 }, async () => {
-  attempts++; return { referenceId: 'same-partner-id' };
-});
-assertEqual(attempts, 2, 'same payload can retry with same SOS ID for upstream deduplication');
-assertEqual(retry.referenceId, 'same-partner-id', 'upstream receipt is required for acceptance');
+section('PR25: synthetic safety and consent UI wiring');
 const realTest = make(true);
 realTest.targetPartner = getTestProvider();
 savePendingSOS(realTest); markWaitingForConnection(realTest);
@@ -214,3 +188,35 @@ await new Promise(resolve => setTimeout(resolve, 20));
 assertEqual(getPendingQueue().find(i => i.sosPackage.sosId === another.sosPackage.sosId)?.status,
   'SENT', 'startup after unpausing sends opted-in record');
 runOnline(); // dispose scheduler
+
+section('Fail-closed browser restart: interrupted SENDING becomes UNCONFIRMED, never re-POSTed to partner');
+installBrowserStub({ online: true, fetch: async (url) => {
+  if (url === '/api/status') return mockResponse(200, { status: 'offline_ready', server_time: new Date().toISOString() });
+  if (url.startsWith('/api/emergency-partner/config')) return mockResponse(200,
+    { success: true, data: { status: 'CONFIGURED', automaticRecoverySupported: true } });
+  if (url === '/api/emergency-partner/dispatch') {
+    backendAttempts++;
+    return mockResponse(409, { success: false, code: 'HANDOFF_UNCONFIRMED' });
+  }
+  throw Error('No external partner calls permitted');
+} });
+let backendAttempts = 0;
+const crashed = make(true);
+crashed.status = 'SENDING';
+savePendingSOS(crashed);
+// @ts-ignore: new import simulates a fresh browser session
+const afterCrash = await import('../src/lib/emergencyPartnerQueue.ts?unknown-restart');
+assertEqual(afterCrash.getPendingQueue()[0].status, 'PENDING_LOCAL', 'abandoned browser SENDING restored for server check');
+await recoverAutomaticSOS();
+const uncertainSaved = getPendingQueue()[0];
+assertEqual(uncertainSaved.status, 'UNCONFIRMED', 'server unknown result persisted as unconfirmed, never SENT');
+assertEqual(uncertainSaved.handoffUnconfirmed, true, 'unconfirmed flag survives browser storage');
+assertEqual(backendAttempts, 1, 'browser asked backend once, partner was never POSTed again');
+await recoverAutomaticSOS();
+assertEqual(backendAttempts, 1, 'unconfirmed record is excluded from automatic recovery');
+assertEqual((await retrySingleSOS(crashed.sosPackage.sosId)).attempted, false,
+  'manual API retry is also refused; device sharing remains separate');
+// @ts-ignore: new import simulates a further app restart
+const afterSecondCrash = await import('../src/lib/emergencyPartnerQueue.ts?unknown-still-local');
+assertEqual(afterSecondCrash.getPendingQueue()[0].status, 'UNCONFIRMED',
+  'unconfirmed state persists across an additional browser restart');

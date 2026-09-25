@@ -117,6 +117,9 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
           headingClass: 'text-red-300',
           pulse: false
         };
+      case 'UNCONFIRMED':
+        return { dot: '🔴', heading: 'HANDOFF UNCONFIRMED — NOT SAFE TO RETRY',
+          container: 'border-red-600 bg-red-950/70', headingClass: 'text-red-200', pulse: false };
       case 'SENDING':
         return {
           dot: '🟡',
@@ -272,12 +275,14 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
                 ? item.errorMessage === 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION'
                   ? 'Your SOS remains saved locally. Use SEND NOW for an authorized destination, or SHARE VIA DEVICE.'
                   : item.automaticRecovery === true
-                  ? 'Automatic sending is enabled. LifeLine will attempt delivery when a verified connection and authorized destination become available. Nothing has been sent yet.'
+                  ? 'Automatic recovery requested. No partner API handoff is enabled without a verified authorized integration. Nothing has been sent yet.'
                   : 'Saved locally. Manual sharing only. Nothing has been sent yet.'
                 : effectiveStatus === 'WAITING_FOR_CONNECTION'
                 ? item.recoveryBlocked ? `${item.errorMessage || 'Configuration or authorization error.'} Automatic retry stopped. Use SEND NOW or SHARE VIA DEVICE.` :
                   item.errorMessage?.startsWith('CONNECTION RESTORED') ? 'Preparing to send your confirmed SOS...' :
-                  item.automaticRecovery === true ? 'Automatic sending is enabled. Nothing has been sent yet.' : 'Saved locally. Manual sharing only.'
+                  item.automaticRecovery === true ? 'Automatic recovery requested. Nothing has been sent yet.' : 'Saved locally. Manual sharing only.'
+                : effectiveStatus === 'UNCONFIRMED'
+                ? 'The partner may have received this SOS. Nothing has been confirmed here. Your SOS remains saved locally. Do not retry the API; use SHARE VIA DEVICE or verify directly.'
                 : effectiveStatus === 'FAILED'
                 ? item.errorMessage || 'Retry available'
                 : effectiveStatus === 'SENT'

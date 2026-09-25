@@ -863,10 +863,11 @@ export const EmergencyPartnersManagerModal: React.FC<
                               ? item.errorMessage === 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION'
                                 ? 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION. Your SOS remains saved locally. SEND NOW (review authorized partner) or SHARE VIA DEVICE.'
                                 : item.automaticRecovery === true
-                                ? 'WAITING FOR CONNECTION — automatic sending enabled. Nothing has been sent yet; Share via device remains available.'
+                                ? 'WAITING FOR CONNECTION — automatic recovery requested, but no unverified real partner will be contacted. Nothing has been sent; Share via device remains available.'
                                 : 'On this device only — not sent. Manual sharing only.'
                               : item.targetPartner.providerType === 'TEST' && !item.sosPackage.demoOnly
                               ? 'Older real SOS saved for TEST/DEMO — API send blocked. Use Share via device.'
+                              : item.status === 'UNCONFIRMED' ? 'HANDOFF UNCONFIRMED. Partner may have received this SOS. No API retry; SHARE VIA DEVICE or verify directly.'
                               : item.recoveryBlocked ? `${item.errorMessage || 'Authorized dispatch unavailable.'} Automatic retry stopped. Use SEND NOW or SHARE VIA DEVICE.` : statusMeta.detail}
                           </div>
                           {sentAt && (
