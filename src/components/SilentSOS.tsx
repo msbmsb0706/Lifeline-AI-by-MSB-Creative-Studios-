@@ -6,6 +6,7 @@ import { EmergencyAnalysisResult, SeverityLevel } from '../types.ts';
 import {
   createSOSPackage,
   createQueuedSOSItem,
+  markWaitingForConnection,
   savePendingSOS
 } from '../lib/emergencyPartnerQueue.ts';
 import { LOCAL_ONLY_PROVIDER } from '../lib/emergencyPartnersData.ts';
@@ -355,6 +356,9 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
       setShareNotice('SAVE FAILED — storage is full or unavailable. This SOS was NOT queued or sent. Call your local emergency number directly.');
       return;
     }
+    // Confirmed while offline: record the waiting state in the lifecycle itself.
+    // Still nothing is transmitted.
+    if (!navigator.onLine) markWaitingForConnection(pendingItem, 'Device offline when the SOS was confirmed — stored, not sent.');
     onQueueUpdated?.();
     setShowPartnerConsentModal(false);
     setShowConfirmation(false);

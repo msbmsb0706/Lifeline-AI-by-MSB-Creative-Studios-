@@ -1,5 +1,24 @@
 # Offline QA Report — 2026-09-24
 
+## This round — Android voice lifecycle + offline SOS device flow
+
+Reproduced with the REAL components rendered in jsdom against a fake Chrome/Android `SpeechRecognition` (`tests/voice-android-lifecycle.test.ts`, `tests/offline-sos-android-flow.test.ts`, harness in `tests/dom-harness.ts`). No device, no paid ASR service, no partner endpoint involved.
+
+| Trigger (Android Chrome) | Before this round (actual) | Expected and verified now | Evidence |
+|---|---|---|---|
+| Chrome ends a continuous session at its own speech end-point and immediately ends again without hearing anything (no-speech loop, muted mic, airplane mode) | `onstart` reset the restart budget on every restart, so the `>= 6` cap was **unreachable**: 12 end-pointing cycles produced **13 starts** and the microphone stayed open forever with the button reading "Listening" | Restart budget counts only Chrome's own end-points, is reset by real speech or a user-initiated session, and is capped at **3**; the session then ends, keeps what was heard, and tells the person to tap again | 12-cycle churn: 3 restarts, session ended, `started === false` |
+| `onerror` `network` (Android offline) | Each error was followed by another auto-restart → silent endless loop | Fatal errors (`network`, `audio-capture`, `language-not-supported`) finish the session with whatever was already heard; no further start | 10 network errors: **0** additional starts |
+| Tap to stop, then tap again to speak (Chrome still closing the previous session) | The decision used React's `isListening`, which lags a render behind Chrome's `onend`, so the second tap called `finishBrowserSession()` again and was **swallowed** — the microphone stayed off and nothing restarted | Tap decisions use the recognizer's real state (`runningRef`); a queued start runs from `onend`, with a 500 ms fallback if the browser never reports the end | second tap produces a new session and the stopped session still submits its own text once |
+| `onresult` with a stale `resultIndex` | Only results from `resultIndex` were read, so an unheard final could be dropped | Every result is read through `buildTranscript()` and merged duplicate-safely with `mergeFinalChunk()` | interim-only + cumulative-final fixtures |
+| Offline SOS confirmed on the card, page closed, then reopened online | Status stayed a bare `PENDING_LOCAL` with no explicit waiting state | Offline confirmations record `WAITING_FOR_CONNECTION` in the lifecycle; nothing is transmitted in either state | real `SOSCardView` driven through its own buttons |
+| Offline → confirm → close/reopen → online (the 10 Android test steps) | — | **0 network calls while offline**; the SAME `sosId` survives the reopen with the original Tamil text verbatim; still labelled **SAVED LOCALLY — NOT SENT**; 200 reconnect queue scans upload **nothing**; only an explicit action moves `SENDING → SENT`, and `SENT` is never inflated into `DELIVERED` | `tests/offline-sos-android-flow.test.ts` (34 assertions) |
+
+Suite after this round: **4040 passed, 0 failed** (`npm test`), `npx tsc --noEmit` clean, `npm run build` OK, `git diff --check` clean. The new DOM suites fail 9 assertions against the previous component, so they are real regression guards.
+
+**Still not verified:** a physical Android phone (see the real-device checklist below). Chrome's actual end-pointing timing, the Google speech service availability, and service-worker/background delivery while the browser is fully closed cannot be reproduced here.
+
+---
+
 Scope: offline triage, production PWA startup, interrupted SOS recovery, local-only/manual sharing, TEST/DEMO protection, and multilingual typed input. Offline tests block `fetch` or emulate airplane mode; **online** endpoint tests use isolated mock fixtures only. No real emergency responder received a message.
 
 | Check | Result |

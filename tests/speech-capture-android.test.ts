@@ -34,13 +34,29 @@ const src = readFileSync(new URL('../src/components/EmergencyVoiceButton.tsx', i
 const onend = src.slice(src.indexOf('recognition.onend = () => {'), src.indexOf('recognitionRef.current = recognition;'));
 assert(
   onend.indexOf('committedRef.current = liveTextRef.current.trim()') !== -1 &&
-    onend.indexOf('committedRef.current = liveTextRef.current.trim()') < onend.indexOf('recognition.start()'),
+    onend.indexOf('committedRef.current = liveTextRef.current.trim()') < onend.indexOf('startRecognizer('),
   'interim text is committed BEFORE Chrome auto-restart (text not lost)'
 );
-assert(src.includes('mergeFinalChunk(committedRef.current, finalChunk)'), 'finals merged duplicate-safely');
+assert(src.includes('buildTranscript(event.results)'), 'every result is read, not only from resultIndex');
+assert(src.includes('mergeFinalChunk(committedRef.current, finalText)'), 'finals merged duplicate-safely');
 assert(src.includes("err?.name === 'InvalidStateError'") && src.includes('pendingStartRef.current = true'),
   'tap during shutdown queues a clean restart instead of failing');
 assert(onend.includes('pendingStartRef.current'), 'queued restart handled in onend');
 assert(src.includes('submitOnce'), 'submission happens once per session');
 assert(src.includes('getSpeechRecognitionLocale(startCode)'), 'selected/locked language applied on start');
 assert(!src.includes('Nebius'), 'no provider name in public voice UI');
+
+section('EmergencyVoiceButton — Chrome auto-end churn is bounded');
+assert(src.includes('MAX_AUTO_RESTARTS'), 'auto-restart after Chrome end-pointing has a hard cap');
+assert(
+  !/onstart = \(\) => \{[\s\S]{0,240}restartCountRef\.current = 0/.test(src),
+  'the restart budget is NOT reset on every onstart (otherwise the cap can never be reached)'
+);
+assert(src.includes('startBrowserSession') && /startBrowserSession[\s\S]{0,1400}restartCountRef\.current = 0/.test(src),
+  'a user-initiated session resets the restart budget');
+assert(
+  /onresult[\s\S]{0,600}restartCountRef\.current = 0/.test(src),
+  'hearing real speech also resets the restart budget');
+assert(src.includes('FATAL_RECOGNITION_ERRORS') && src.includes("'network'"),
+  'fatal recognition errors end the session instead of restarting forever');
+assert(src.includes('runningRef.current'), 'tap decisions use the recognizer real state, not stale React state');
