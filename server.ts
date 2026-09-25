@@ -13,6 +13,7 @@ import {
 import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, DetectedLanguage } from './src/types.ts';
 import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
 import { getEmergencyPartnerConfig } from './server/partnerConfig.ts';
+import { createDispatchIdempotency } from './server/dispatchIdempotency.ts';
 import { createPartnerTrackingRouter, getPartnerTrackingCapabilities, issueCaseAccessToken } from './server/partnerTracking.ts';
 import { looksLikeGeneratedDispatch } from './src/lib/translationSafety.ts';
 import {
@@ -964,6 +965,8 @@ CONSTRAINTS:
   // TEST, local-only and public contacts have no case tokens or tracking path.
   app.use('/api/emergency-partner', createPartnerTrackingRouter({ env: process.env }));
 
+  const dispatchOnce = createDispatchIdempotency();
+
   // Dedicated Emergency Partner Dispatch Endpoint
   app.post('/api/emergency-partner/dispatch', async (req, res) => {
     res.set('Cache-Control', 'no-store');
@@ -1003,7 +1006,7 @@ CONSTRAINTS:
       return;
     }
 
-    console.log(`[Emergency Partner Dispatch] Partner: ${partnerId || 'unknown'} (${providerType}) for SOS: ${sosId}`);
+    // Never log emergency content, coordinates, credentials or tokens.
 
     // 1. PUBLIC CONTACT PROVIDER: Public contacts have no API capability
     if (providerType === 'PUBLIC_CONTACT') {
@@ -1021,6 +1024,15 @@ CONSTRAINTS:
           !Number.isFinite(gps.longitude) || gps.longitude < -180 || gps.longitude > 180)) {
         res.status(403).json({ success: false,
           error: 'Separate, valid one-time GPS consent is required before sending location to an authorized partner.' });
+        return;
+      }
+      if (typeof sosId !== 'string' || !/^SOS-LL-[A-Z0-9-]{4,80}$/.test(sosId)) {
+        res.status(400).json({ success: false, error: 'Invalid SOS idempotency key.' });
+        return;
+      }
+      if (req.body?.automaticRecovery === true &&
+          getEmergencyPartnerConfig('GLOBAL', process.env).automaticRecoverySupported !== true) {
+        res.status(403).json({ success: false, error: 'Automatic dispatch requires a verified authorized partner with a contractual SOS ID idempotency guarantee.' });
         return;
       }
       const partnerApiUrl = process.env.AUTHORIZED_PARTNER_API_URL;
@@ -1050,13 +1062,7 @@ CONSTRAINTS:
         const safePhotos = Array.isArray(photos) ? photos.slice(0, 2).map(mediaMetadata) : [];
         const safeVideo = video && typeof video === 'object' ? mediaMetadata(video) : null;
 
-        const response = await fetch(partnerApiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': partnerApiKey.startsWith('Bearer ') ? partnerApiKey : `Bearer ${partnerApiKey}`
-          },
-          body: JSON.stringify({
+        const partnerPayload = {
             sosId,
             timestamp: timestamp || new Date().toISOString(),
             emergencyType,
@@ -1072,29 +1078,30 @@ CONSTRAINTS:
             originalTranscript: typeof originalTranscript === 'string' ? originalTranscript : null,
             englishTranslation: typeof englishTranslation === 'string' ? englishTranslation : null,
             source: 'LifeLine AI Framework'
-          }),
-          signal: controller.signal
+          };
+        const partnerJson = await dispatchOnce(sosId, partnerPayload, async () => {
+          const response = await fetch(partnerApiUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': partnerApiKey.startsWith('Bearer ') ? partnerApiKey : `Bearer ${partnerApiKey}`,
+              'Idempotency-Key': sosId
+            },
+            body: JSON.stringify(partnerPayload),
+            signal: controller.signal
+          });
+          if (!response.ok) {
+            // Do not reflect untrusted upstream bodies (may contain private data).
+            const error = new Error('Authorized partner rejected dispatch.') as Error & { httpStatus?: number };
+            error.httpStatus = response.status;
+            throw error;
+          }
+          const receipt = await response.json();
+          if (typeof receipt?.referenceId !== 'string' || !receipt.referenceId.trim()) {
+            throw new Error('No verifiable partner reference ID.');
+          }
+          return receipt;
         });
-
-        // Keep the deadline active through response.text()/json(), not just
-        // headers; a stalled partner body must not hang a manual SOS attempt.
-        if (!response.ok) {
-          const errText = await response.text();
-          res.status(response.status).json({
-            success: false,
-            error: `Authorized partner API returned HTTP ${response.status}: ${errText.slice(0, 200)}`
-          });
-          return;
-        }
-
-        const partnerJson = await response.json();
-        if (typeof partnerJson?.referenceId !== 'string' || !partnerJson.referenceId.trim()) {
-          res.status(502).json({
-            success: false,
-            error: 'Authorized partner did not return a verifiable reference ID. Handoff unconfirmed; verify before retrying.'
-          });
-          return;
-        }
         // A case-status capability is issued only after a real configured
         // authorized partner produced a reference ID. It is not a case number
         // or proof that a responder accepted the incident.
@@ -1107,7 +1114,7 @@ CONSTRAINTS:
             referenceId: partnerJson.referenceId,
             ...(caseAccess ? { caseAccessToken: caseAccess.token, caseAccessExpiresAt: caseAccess.expiresAt } : {}),
             timestamp: new Date().toISOString(),
-            message: partnerJson.message || 'SOS package acknowledged by authorized partner API.',
+            message: 'SOS package accepted by authorized partner API.',
             partnerId: partnerId || 'authorized-partner',
             partnerName: 'Authorized Rescue Network API',
             providerType: 'AUTHORIZED_API',
@@ -1122,9 +1129,11 @@ CONSTRAINTS:
         });
         return;
       } catch (err: any) {
-        res.status(502).json({
+        res.status(err?.message === 'SOS_ID_CONFLICT' ? 409 :
+          (Number.isInteger(err?.httpStatus) && err.httpStatus >= 400 && err.httpStatus <= 599 ? err.httpStatus : 502)).json({
           success: false,
-          error: `Failed to dispatch to authorized partner API: ${err.message}`
+          error: err?.message === 'SOS_ID_CONFLICT' ? 'SOS ID already used for a different payload.' :
+            'Authorized partner handoff not confirmed. The same SOS ID is required for any retry.'
         });
         return;
       } finally {

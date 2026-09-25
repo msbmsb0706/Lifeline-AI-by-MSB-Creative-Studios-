@@ -36,18 +36,18 @@ export const SOS_DELIVERY_STATUS_META: Record<
     terminal: false
   },
   WAITING_FOR_CONNECTION: {
-    label: 'PENDING LOCAL',
-    detail: 'Stored on this device, not sent. Reconnecting never uploads it; review and share manually if needed.',
+    label: 'WAITING FOR CONNECTION',
+    detail: 'Saved locally. Nothing has been sent yet.',
     terminal: false
   },
   SENDING: {
-    label: 'SENDING',
+    label: 'SENDING SOS...',
     detail: 'Transmitting to the configured emergency partner endpoint…',
     terminal: false
   },
   SENT: {
-    label: 'SENT',
-    detail: 'SOS handed off to the configured destination endpoint.',
+    label: 'SOS SENT',
+    detail: 'Awaiting delivery confirmation.',
     terminal: true
   },
   DELIVERED: {
@@ -242,6 +242,7 @@ export function createQueuedSOSItem(params: {
   sosPackage: SOSPackage;
   targetPartner: EmergencyPartnerProvider;
   userConsentTimestamp: string;
+  automaticRecovery?: boolean;
 }): PendingSOSItem {
   const item: PendingSOSItem = {
     sosPackage: params.sosPackage,
@@ -249,6 +250,7 @@ export function createQueuedSOSItem(params: {
     // A local save is not consent to ANY partner transmission.
     userApprovedForPartnerTransmission: params.targetPartner.providerType !== 'LOCAL_ONLY',
     gpsApprovedForPartnerTransmission: false,
+    automaticRecovery: params.automaticRecovery === true,
     userConsentTimestamp: params.userConsentTimestamp,
     status: 'PENDING_LOCAL',
     statusHistory: [
@@ -287,6 +289,7 @@ export function markWaitingForConnection(item: PendingSOSItem, reason?: string):
 export function normalizePendingSOSItem(raw: any): PendingSOSItem {
   const item: PendingSOSItem = {
     ...raw,
+    automaticRecovery: raw?.automaticRecovery === true,
     status:
       raw?.status === 'TRANSMITTING' ? 'PENDING_LOCAL' : (raw?.status as SOSDeliveryStatus) || 'PENDING_LOCAL',
     attempts: typeof raw?.attempts === 'number' ? raw.attempts : 0
@@ -420,7 +423,7 @@ export function savePendingSOS(item: PendingSOSItem): boolean {
     notifyQueueListeners();
     return true;
   } catch (err) {
-    console.warn('Failed to save pending SOS to localStorage:', err);
+    console.warn('Failed to save pending SOS to localStorage');
     return false;
   }
 }
@@ -433,7 +436,7 @@ export function deletePendingSOS(sosId: string): void {
     localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(updated));
     notifyQueueListeners();
   } catch (err) {
-    console.warn('Failed to delete pending SOS:', err);
+    console.warn('Failed to delete pending SOS');
   }
 }
 
@@ -445,6 +448,10 @@ export function clearPendingQueue(): void {
     // ignore
   }
   notifyQueueListeners();
+}
+
+export class DispatchError extends Error {
+  constructor(public readonly httpStatus: number, message: string) { super(message); }
 }
 
 // Transmit single SOS package to configured partner endpoint
@@ -487,7 +494,9 @@ export async function sendSOSToPartner(
     ? (({ type, name, mimeType, sizeBytes }) => ({ type, name, mimeType, sizeBytes }))(sosPackage.video)
     : null;
 
-  const endpoint = targetPartner.apiBaseUrl || '/api/emergency-partner/dispatch';
+  // Never let a persisted or modified provider redirect an automatic real SOS.
+  const endpoint = item.automaticRecovery === true ? '/api/emergency-partner/dispatch' :
+    (targetPartner.apiBaseUrl || '/api/emergency-partner/dispatch');
 
   const payload = {
     sosId: sosPackage.sosId,
@@ -512,7 +521,8 @@ export async function sendSOSToPartner(
     partnerId: targetPartner.id,
     providerType: targetPartner.providerType,
     demoOnly: targetPartner.providerType === 'TEST' && sosPackage.demoOnly === true,
-    userConsentConfirmed: item.userApprovedForPartnerTransmission
+    userConsentConfirmed: item.userApprovedForPartnerTransmission,
+    automaticRecovery: item.automaticRecovery === true
   };
 
   const controller = new AbortController();
@@ -531,8 +541,8 @@ export async function sendSOSToPartner(
     // Keep the timeout active while reading the body too: a server can send
     // headers promptly and then stall indefinitely on its acknowledgment.
     if (!response.ok) {
-      const errText = await response.text().catch(() => 'Server error');
-      throw new Error(`Partner endpoint returned HTTP ${response.status}: ${errText.slice(0, 200)}`);
+      // Do not surface arbitrary upstream text (which might contain private data or credentials).
+      throw new DispatchError(response.status, `Partner endpoint returned HTTP ${response.status}.`);
     }
 
     const json = await response.json();
@@ -552,6 +562,7 @@ export async function sendSOSToPartner(
     return ack;
   } catch (err: any) {
     clearTimeout(timeoutId);
+    if (err instanceof DispatchError) throw err;
     throw new Error(
       err.name === 'AbortError'
         ? 'Transmission timeout connecting to Emergency Partner endpoint.'
@@ -589,6 +600,9 @@ export async function transmitSingleSOSItem(
 ): Promise<{ attempted: boolean; success: boolean; error?: string }> {
   if (!navigator.onLine) {
     return { attempted: false, success: false, error: 'Device is offline. No transmission attempted.' };
+  }
+  if (['SENT', 'DELIVERED', 'ACKNOWLEDGED', 'SENDING'].includes(item.status)) {
+    return { attempted: false, success: false, error: 'SOS already sent or in progress.' };
   }
   if (item.targetPartner.providerType === 'LOCAL_ONLY' ||
       (item.targetPartner.providerType === 'TEST' && item.sosPackage.demoOnly !== true)) {
@@ -636,7 +650,12 @@ export async function transmitSingleSOSItem(
       return { attempted: true, success: true };
     } catch (err: any) {
       const message = err?.message || 'Transmission failed';
-      recordTransition(item, 'FAILED', message);
+      if (item.automaticRecovery === true) {
+        // 4xx is not transient. 5xx, timeout and connectivity loss use bounded backoff.
+        item.recoveryBlocked = err instanceof DispatchError && err.httpStatus >= 400 && err.httpStatus < 500;
+        item.nextRecoveryAt = Date.now() + Math.min(300000, 5000 * 2 ** Math.min(item.attempts - 1, 6));
+        recordTransition(item, 'WAITING_FOR_CONNECTION', message);
+      } else recordTransition(item, 'FAILED', message);
       item.errorMessage = message;
       if (!savePendingSOS(item)) {
         return { attempted: true, success: false,

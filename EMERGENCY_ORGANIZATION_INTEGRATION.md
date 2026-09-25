@@ -106,7 +106,7 @@ Fixed synthetic demo / explicitly approved authorized record
 - A local save is **not** consent to partner transmission. It creates a LOCAL_ONLY record; no API upload is possible for that record.
 - Explicit review/approval is required for eligible configured partner transmissions. The approved record carries its confirmation timestamp.
 - Real SOS text can be reviewed, manually shared through the device or copied to clipboard, and deleted from the queue.
-- No queue transmission runs on reconnect, page open, timer, focus, or battery recovery — even if an older auto-send preference was stored.
+- Queue recovery may run on reconnect, app open or foreground **only** for an explicitly opted-in SOS, after backend reachability and idempotency-capable authorized integration checks. An old global auto-send preference never grants consent.
 
 ---
 
@@ -251,8 +251,7 @@ exposes credentials:
   surfaced as dispatch failures.
 
 Failed eligible partner records remain in the local queue with an error message.
-Only an explicit user action can retry them. Local-only SOS records are never
-API retry candidates; old auto-send preferences are ignored.
+An explicitly opted-in record can retry transient failures with bounded backoff while the app can execute; permanent 4xx errors require manual review. Local-only records without per-SOS consent are never API retry candidates; old global auto-send preferences are ignored.
 
 ---
 

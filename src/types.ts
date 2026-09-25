@@ -326,6 +326,12 @@ export interface PendingSOSItem {
   sosPackage: SOSPackage;
   targetPartner: EmergencyPartnerProvider;
   userApprovedForPartnerTransmission: boolean;
+  /** Per-record explicit opt-in; absent/legacy is always false. */
+  automaticRecovery?: boolean;
+  /** Retry gate for temporary errors, persisted across restarts. */
+  nextRecoveryAt?: number;
+  /** Permanent configuration/auth failure: do not retry automatically. */
+  recoveryBlocked?: boolean;
   /** Separate opt-in for sending saved one-time GPS with an authorized handoff. */
   gpsApprovedForPartnerTransmission?: boolean;
   /** Confirmation time for local save or, for an approved partner record, transmission consent. */

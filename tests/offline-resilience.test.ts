@@ -269,8 +269,8 @@ const card = readFileSync(new URL('../src/components/SOSCardView.tsx', import.me
 const silent = readFileSync(new URL('../src/components/SilentSOS.tsx', import.meta.url), 'utf8');
 const manager = readFileSync(new URL('../src/components/EmergencyPartnersManagerModal.tsx', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8');
-assert(manager.includes('handleShareItem') && !manager.includes('setAutoSendSetting') && manager.includes('NO AUTOMATIC UPLOAD'),
-  'queue offers deliberate manual device share, with no opt-in auto-upload control');
+assert(manager.includes('handleShareItem') && !manager.includes('setAutoSendSetting') && manager.includes('PER-RECORD CONSENT'),
+  'queue offers deliberate manual device share and explains per-record automatic consent');
 assert(server.includes("demoOnly !== true") && server.includes("providerType !== 'TEST'"),
   'server also rejects non-synthetic/unknown TEST dispatches');
 assert(server.includes('photos: safePhotos') && server.includes('video: safeVideo'),

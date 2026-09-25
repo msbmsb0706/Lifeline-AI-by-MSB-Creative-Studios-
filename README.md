@@ -145,7 +145,7 @@ Silent SOS provides a non-verbal emergency workflow for active threats, entrapme
 4. **User Review and Explicit Confirmation:**
    - A comprehensive summary screen presents emergency category, severity, one-time GPS coordinates, accuracy, attached evidence previews, and timestamp.
    - Alert transmission requires explicit user confirmation via the Web Share API (`navigator.share`) or clipboard export.
-   - LifeLine AI **never automatically contacts** police, fire, or rescue services without user action.
+   - LifeLine AI contacts no real partner without an authorized API and per-SOS explicit consent; the optional recovery checkbox is unchecked by default.
 5. **SOS / Emergency Information Generation:**
    - Generates an on-screen visual SOS card featuring color-coded severity badges, international priority icons, immediate action steps, first-aid directives, and responder instructions.
    - Formats a concise, standardized radio-dispatch alert ready for rapid copying or sharing.
@@ -177,7 +177,7 @@ LifeLine AI includes an extensible, country-aware integration framework for coor
 ### Offline-First Pending Transmission Queue
 
 - **Local Storage:** A user-confirmed SOS can be saved on this browser/device, online or offline, with the original typed language preserved. Browser storage may be evicted or unavailable; failed saves are reported.
-- **Manual-only:** Reconnect, app reopen, focus and battery recovery **never** upload SOS records. Even a legacy `auto-send=true` setting is ignored. A local save does not approve API transmission.
+- **Per-record consent:** Only an SOS explicitly opted in to automatic recovery at confirmation can be sent on verified reconnect or app reopen, and only to a configured idempotency-capable authorized API. Legacy and unchecked SOS records stay manual-only; the old global `auto-send=true` setting is ignored.
 - **User Control:** Review and share saved SOS text manually through the device share sheet/clipboard, or delete it. Synthetic demo records can be manually sent to the TEST endpoint; a direct real partner API send requires a separately configured, authorized organization and explicit consent. No real partner is preconfigured.
 - **Evidence Limitation:** Photo/video bytes are **not** persisted in the SOS queue or uploaded from it, even if a provider advertises media support. Only file metadata may be included in a manually approved partner payload. Share files while the tab is open or save the video to the device first.
 
@@ -243,6 +243,7 @@ Server-side settings are configured via environment variables (copy from `.env.e
 | `ASR_LANGUAGE` | Optional | Language hint (`multi` for automatic multilingual detection). |
 | `AUTHORIZED_PARTNER_API_URL` | Optional | Destination HTTPS endpoint for authorized emergency partner integrations. |
 | `AUTHORIZED_PARTNER_API_KEY` | Optional | Authentication key for authorized partner dispatch (server-side only). |
+| `AUTHORIZED_PARTNER_IDEMPOTENCY_SUPPORTED` | Optional | Set to `true` **only after** the authorized partner contract guarantees deduplication by SOS ID, including across process restarts and lost responses. Required for offline automatic recovery; never needed for TEST/DEMO. |
 | `PRIVACY_CONTACT_EMAIL` | Optional | Server-side destination mailbox for Privacy Contact Form submissions. |
 | `SMTP_HOST` / `SMTP_PORT` | Optional | SMTP relay configuration for Privacy Contact Form delivery. |
 | `SMTP_SECURE` | Optional | `true` for port 465 (TLS); `false` for port 587 (STARTTLS). |
@@ -294,3 +295,9 @@ LifeLine AI and LifeLine AI branding assets are trademarks of MSB Creative Studi
 ## License
 
 This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for complete details.
+
+### Offline SOS automatic recovery (opt-in)
+
+The final local-save confirmation offers an **unchecked, per-SOS** automatic-recovery checkbox. Missing/legacy consent is false. If enabled, when this web app can execute (startup, visible/foreground, online signal and bounded retry), LifeLine verifies `/api/status`, then checks the authorized API configuration before transmitting **metadata only**. Browser connectivity alone is not proof of backend reachability; Wi-Fi, cellular and satellite are treated identically. A local-only record remains local if the authorized partner or its idempotency contract is not configured. The old global autosend preference is ignored. The local queue never retains media bytes for later upload; saved GPS is not automatically sent without separate one-time consent. Manual device sharing remains available. No service worker/background delivery is promised.
+
+For automatic delivery configure `AUTHORIZED_PARTNER_API_URL` (HTTPS), `AUTHORIZED_PARTNER_API_KEY` (server-side), and set `AUTHORIZED_PARTNER_IDEMPOTENCY_SUPPORTED=true` **only when the real partner has confirmed that repeated `Idempotency-Key: <SOS ID>` requests cannot create another emergency record, even after a timeout, crash, or server restart**. The server coalesces concurrent requests and caches successful receipts in-process; this cache alone cannot guarantee deduplication across restarts or multiple replicas. An unverified partner MUST NOT be enabled for automatic recovery. Never configure TEST/DEMO as a real destination. `SENT` means an accepted handoff; delivery/responder statuses require explicit partner confirmation.

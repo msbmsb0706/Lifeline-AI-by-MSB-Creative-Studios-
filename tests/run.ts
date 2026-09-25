@@ -33,6 +33,8 @@ await import('./speech-capture-android.test.ts');
 await import('./voice-android-lifecycle.test.ts');
 await import('./offline-sos-android-flow.test.ts');
 await import('./ui-visibility.test.ts');
+await import('./automatic-sos-recovery.test.ts');
+await import('./automatic-sos-dispatch-route.test.ts');
 
 const failures = summarize();
 process.exit(failures > 0 ? 1 : 0);

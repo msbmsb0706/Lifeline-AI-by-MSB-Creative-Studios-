@@ -20,12 +20,15 @@ export interface PartnerConfigData {
   /** Public display name only — never a URL, key, or secret. */
   providerName: string | null;
   apiEnabled: boolean;
+  /** Partner explicitly contracts to deduplicate repeated SOS IDs; required for auto recovery. */
+  automaticRecoverySupported: boolean;
   checkedAt: string;
 }
 
 interface PartnerConfigEnv {
   AUTHORIZED_PARTNER_API_URL?: string;
   AUTHORIZED_PARTNER_API_KEY?: string;
+  AUTHORIZED_PARTNER_IDEMPOTENCY_SUPPORTED?: string;
 }
 
 /**
@@ -53,6 +56,7 @@ export function getEmergencyPartnerConfig(
     country,
     providerName: configured ? 'Authorized Rescue Network API' : null,
     apiEnabled: configured,
+    automaticRecoverySupported: configured && env.AUTHORIZED_PARTNER_IDEMPOTENCY_SUPPORTED === 'true',
     checkedAt: new Date().toISOString()
   };
 }
