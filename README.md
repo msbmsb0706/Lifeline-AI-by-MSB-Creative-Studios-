@@ -121,7 +121,7 @@ LifeLine AI supports multilingual distress communication across **10 languages**
 
 #### Speech in, answer on screen (real time)
 - **Speak, don’t type:** The microphone is the primary emergency input. It listens live and shows the emergency guidance on screen in the language that was heard. Typing is available at any time (it is never blocked while the microphone is live).
-- **Any supported language, live:** Recognition starts immediately in the selected language or the device language, then retargets as soon as another supported language is clearly heard. A language chip can lock Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, Marathi, Spanish, French, or English. A short pause commits the answer on screen; the microphone is closed first.
+- **Any supported language, live:** Recognition starts immediately in the selected answer language or the device language, then retargets itself as soon as another supported language is clearly heard — Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, Marathi, Spanish, French, or English. **There is no language picker to tap while speaking:** the row of microphone language chips was removed because it confused people mid-emergency and duplicated the Target Language control, which already decides the recognizer's start language. The live caption reports which language is being heard (`Auto • தமிழ்`). A short pause commits the answer on screen; the microphone is closed first.
 - **No automatic spoken reply:** The answer is never spoken back automatically. The SOS card offers a user-tapped **Read aloud** button (for first responders/bystanders) that uses the browser speech synthesizer in the correct language voice. No audio is uploaded. A phone number is spoken only when that country already has a configured public emergency number — numbers are never invented.
 - **Optional Multilingual ASR (NVIDIA Whisper NIM):**
   - When server-side ASR credentials are explicitly configured (`ASR_PROVIDER=nvidia_nim`, `ASR_BASE_URL`, `ASR_API_KEY`/`NVIDIA_API_KEY`, and `ASR_MODEL=openai/whisper-large-v3`), browser audio recordings are transmitted to the backend proxy (`POST /api/transcribe-speech`) for transcription with automatic multilingual detection (`language=multi`).
@@ -172,6 +172,17 @@ These are hard display and trust rules, not cosmetic choices:
   authentication**. The country picker only decides which single number is promoted in the
   banner — it never hides the others. Numbers come from verified official sources only and
   are never invented.
+- **Country numbers open in a sliding layer.** The banner's **"Select country to view its
+  emergency number"** trigger — and **Change**, once a country is chosen — slides up a
+  bottom-sheet layer (`src/components/EmergencyNumbersModal.tsx`) listing every verified
+  country row (🇨🇦 Canada, 🇪🇺 European Union, 🇬🇧 United Kingdom, 🇮🇳 India, 🇺🇸 United States,
+  🇦🇺 Australia) with a tappable `tel:` link per number plus its official source link. Tapping
+  **Use** on a row persists that country under the shared `lifeline_selected_country` key and
+  the banner immediately promotes its number (`Call 112`). **Escape**, the backdrop, the header
+  **✕** or **Done** closes the layer; the rest of the app stays mounted, so the person is back
+  on *Tap to Speak* in one tap. The layer hard-codes no digits — it renders the same verified
+  directory — and a country with no verified number shows *"Emergency number not configured."*
+  and cannot be selected. The Global / Test demo bucket is never offered as a country.
 - **Offline saving states exactly what happens next.** The confirmation dialog offers two
   explicit, self-explaining choices — **SAVE ON THIS DEVICE ONLY** (default) and **SAVE +
   AUTO-SEND WHEN THE CONNECTION RETURNS** — and the automatic option lists its real
@@ -180,6 +191,13 @@ These are hard display and trust rules, not cosmetic choices:
   unsent record also carries a **"What happens next"** panel with a live countdown to the
   next automatic check and a button to open the queue and send or share it manually. Until a
   send really happens, the card keeps saying **NOT SENT**.
+- **Both save choices are visible without scrolling.** The two choices are rendered side by
+  side at the top of that dialog — right after the destination box and *before* the long data
+  checklist — with the consequences of each listed underneath them. Previously the auto-send
+  option carried its four preconditions inline, which pushed **SAVE ON THIS DEVICE ONLY** (the
+  default) below the fold on a phone, so the dialog read as if automatic sending were the only
+  offer. The save button always names the action that will really happen (**SAVE ON THIS DEVICE
+  ONLY** / **SAVE + AUTO-SEND WHEN ONLINE**).
 
 ### 6. Android / Chrome Live Voice Reliability
 
@@ -200,6 +218,12 @@ The microphone path was rebuilt around how Chrome for Android actually behaves:
   app offers **RECORD WITH LIFELINE VOICE** — a recorder path that does not depend on the
   browser's cloud speech service.
 - Typing always works and is never blocked by voice state.
+- **No language option while speaking.** The microphone language chip row (*Any language |
+  தமிழ் | हिन्दी | …*) is gone in every mode. It duplicated the **Target Language** control —
+  which already sets the recognizer's start language — and people read it as something they had
+  to choose before they were allowed to speak. Language handling is now automatic: start from
+  the target/device language, retarget to the language actually heard, and report it in the live
+  caption.
 
 ---
 

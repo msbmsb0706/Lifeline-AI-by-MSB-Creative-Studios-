@@ -10,6 +10,7 @@ import { PrivacySafetyModal } from './components/PrivacySafetyModal.tsx';
 import { PrivacyContactFormModal } from './components/PrivacyContactFormModal.tsx';
 import { SilentSOS } from './components/SilentSOS.tsx';
 import { EmergencyPartnersManagerModal } from './components/EmergencyPartnersManagerModal.tsx';
+import { EmergencyNumbersModal } from './components/EmergencyNumbersModal.tsx';
 import {
   EmergencyAnalysisResult,
   SystemStatus,
@@ -27,7 +28,7 @@ import {
   SOS_DELIVERY_STATUS_META
 } from './lib/emergencyPartnerQueue.ts';
 import { playPing } from './lib/audio.ts';
-import { getCountryEmergencyNumber, getSelectedCountry } from './lib/emergencyNumbers.ts';
+import { getCountryEmergencyNumber, getSelectedCountry, setSelectedCountry } from './lib/emergencyNumbers.ts';
 import { checkOfflineShellReady } from './lib/offlineShell.ts';
 import { attemptOnlineTriage } from './lib/onlineTriage.ts';
 import { SHOW_TECH_DETAILS } from './lib/uiVisibility.ts';
@@ -41,6 +42,11 @@ export default function App() {
   const [showPrivacyModal, setShowPrivacyModal] = useState<boolean>(false);
   const [showPrivacyContactForm, setShowPrivacyContactForm] = useState<boolean>(false);
   const [showPartnersModal, setShowPartnersModal] = useState<boolean>(false);
+  // Sliding layer that lists every verified public emergency number by country.
+  const [showNumbersSheet, setShowNumbersSheet] = useState<boolean>(false);
+  // Country promoted in the top banner. Initialised from the shared storage key
+  // and kept in sync with the partner directory whenever that modal closes.
+  const [bannerCountry, setBannerCountry] = useState<string | null>(() => getSelectedCountry());
   const [showSilentSOS, setShowSilentSOS] = useState<boolean>(false);
   const [pendingQueueCount, setPendingQueueCount] = useState<number>(0);
   const [transcript, setTranscript] = useState('');
@@ -648,9 +654,17 @@ export default function App() {
       setIsTranslating(false);
     }
   };
-  // The country is explicitly selected in the partner directory; never guess a
-  // phone number from browser language or an unreliable offline IP lookup.
-  const configuredEmergencyNumber = getCountryEmergencyNumber(getSelectedCountry());
+  // The country is explicitly selected by the person (sliding numbers layer or
+  // partner directory); never guess a phone number from browser language or an
+  // unreliable offline IP lookup.
+  const configuredEmergencyNumber = getCountryEmergencyNumber(bannerCountry);
+
+  /** Persists the country chosen in the sliding layer and promotes its number. */
+  const handleBannerCountrySelected = (countryCode: string) => {
+    setSelectedCountry(countryCode);
+    setBannerCountry(countryCode);
+  };
+
   const localOnlyMode = offlineForce || !networkAvailable;
 
   return (
@@ -720,22 +734,44 @@ export default function App() {
           className="flex flex-wrap items-center justify-between gap-2 p-2.5 sm:p-3 rounded-xl bg-red-950/60 border border-red-800/80 text-xs sm:text-sm text-red-200 mb-3"
         >
           <div className="flex items-center gap-2 font-semibold">
+            {/* Live triage/alert pulse — the banner is the navigation entry point. */}
+            <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
+              <span className="absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75 animate-ping" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+            </span>
             <AlertOctagon className="w-4 h-4 sm:w-5 sm:h-5 text-red-400 shrink-0" />
             <span>In immediate life danger, call emergency services directly:</span>
           </div>
           <div className="flex items-center gap-2">
             {configuredEmergencyNumber ? (
-              <a
-                href={`tel:${configuredEmergencyNumber}`}
-                className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white font-extrabold rounded-lg flex items-center gap-1 transition-colors"
-              >
-                <PhoneCall className="w-3.5 h-3.5" />
-                <span>Call {configuredEmergencyNumber}</span>
-              </a>
+              <>
+                <a
+                  id="banner-call-emergency-link"
+                  href={`tel:${configuredEmergencyNumber}`}
+                  className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white font-extrabold rounded-lg flex items-center gap-1 transition-colors"
+                >
+                  <PhoneCall className="w-3.5 h-3.5" />
+                  <span>Call {configuredEmergencyNumber}</span>
+                </a>
+                <button
+                  id="banner-change-country-btn"
+                  type="button"
+                  onClick={() => setShowNumbersSheet(true)}
+                  className="px-2 py-1 rounded-lg bg-neutral-900/80 hover:bg-neutral-800 text-red-200 font-bold text-xs border border-red-800/70 transition-colors"
+                  title="Choose a different country"
+                >
+                  Change
+                </button>
+              </>
             ) : (
-              <button type="button" onClick={() => setShowPartnersModal(true)}
-                className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white font-bold rounded-lg text-xs">
-                Select country to view its emergency number
+              <button
+                id="open-emergency-numbers-btn"
+                type="button"
+                onClick={() => setShowNumbersSheet(true)}
+                className="w-full sm:w-auto px-3 py-2 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white text-xs sm:text-sm font-bold rounded-lg flex items-center justify-center gap-2 shadow-lg shadow-red-900/20 transition-all duration-200"
+              >
+                <span>Select country to view its emergency number</span>
+                <Shield className="w-3.5 h-3.5" />
               </button>
             )}
             <button
@@ -753,7 +789,7 @@ export default function App() {
         {/* Public government emergency numbers: always available, never behind a
             country pick, a location request or a sign-in. */}
         <div className="mb-3">
-          <PublicEmergencyNumbers compact highlightCountry={getSelectedCountry()} />
+          <PublicEmergencyNumbers compact highlightCountry={bannerCountry} />
         </div>
 
         {/* Explicit mode status (technical — debug builds only) */}
@@ -1013,10 +1049,23 @@ export default function App() {
         />
       )}
 
+      {/* Sliding layer: every verified public emergency number, by country. */}
+      <EmergencyNumbersModal
+        isOpen={showNumbersSheet}
+        onClose={() => setShowNumbersSheet(false)}
+        selectedCountry={bannerCountry}
+        onSelectCountry={handleBannerCountrySelected}
+      />
+
       {/* Emergency Partners Configuration & Queue Manager Modal */}
       <EmergencyPartnersManagerModal
         isOpen={showPartnersModal}
-        onClose={() => setShowPartnersModal(false)}
+        onClose={() => {
+          setShowPartnersModal(false);
+          // The directory persists its own country choice: re-read it so the
+          // banner promotes the number the person last selected there.
+          setBannerCountry(getSelectedCountry());
+        }}
         isOffline={localOnlyMode}
         onQueueUpdated={refreshPendingQueue}
       />
