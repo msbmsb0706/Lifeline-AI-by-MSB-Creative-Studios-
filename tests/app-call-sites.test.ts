@@ -214,12 +214,12 @@ assert(
   'stale "(English)" browser-voice wording removed (browser voice follows the heard language)'
 );
 assert(
-  appSource.includes('speaks answers in any supported language'),
-  'notice says the microphone speaks answers in any supported language'
+  !appSource.includes('buildSpokenEmergencyBrief') && !appSource.includes('speakText('),
+  'no automatic spoken reply — the emergency answer is never auto-spoken from App.tsx'
 );
 assert(
-  appSource.includes('buildSpokenEmergencyBrief'),
-  'voice emergencies are spoken aloud, not left as typed text only'
+  !appSource.includes('isSpeakingAnswer'),
+  'no speaking-answer UI state remains in App.tsx'
 );
 assert(
   voiceBtnSource.includes('shouldSwitchRecognitionLanguage'),

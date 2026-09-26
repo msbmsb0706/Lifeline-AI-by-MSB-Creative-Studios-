@@ -27,6 +27,8 @@ section('speech capture — error messages');
 assertEqual(speechErrorMessage('no-speech'), null, 'no-speech silent');
 assertEqual(speechErrorMessage('aborted'), null, 'aborted silent');
 assert(String(speechErrorMessage('not-allowed')).includes('permission'), 'permission message');
+assert(String(speechErrorMessage('audio-capture')).includes('in use by another app'),
+  'audio-capture covers a missing OR a busy microphone');
 assert(String(speechErrorMessage('network')).includes('network'), 'network message');
 
 section('EmergencyVoiceButton — Android lifecycle contracts');
@@ -45,6 +47,9 @@ assert(onend.includes('pendingStartRef.current'), 'queued restart handled in one
 assert(src.includes('submitOnce'), 'submission happens once per session');
 assert(src.includes('getSpeechRecognitionLocale(startCode)'), 'selected/locked language applied on start');
 assert(!src.includes('Nebius'), 'no provider name in public voice UI');
+assert(src.includes('stream.getTracks().forEach((track) => track.stop())'),
+  'the permission probe stream is stopped immediately — only the permission was needed');
+assert(!src.includes('alert('), 'no browser alert dialogs in the voice UI — errors stay in-app, never public');
 
 section('EmergencyVoiceButton — Chrome auto-end churn is bounded');
 assert(src.includes('MAX_AUTO_RESTARTS'), 'auto-restart after Chrome end-pointing has a hard cap');

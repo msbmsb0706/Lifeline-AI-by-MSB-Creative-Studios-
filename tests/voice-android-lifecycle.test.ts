@@ -12,7 +12,7 @@
  * No paid ASR service, no MediaRecorder, no fetch is involved: the browser
  * recognizer is the microphone path under test.
  */
-import { installDomHarness, wait, FakeSpeechRecognition } from './dom-harness.ts';
+import { installDomHarness, installReactInputProbeEnvironment, wait, FakeSpeechRecognition } from './dom-harness.ts';
 import { section, assert, assertEqual } from './helpers.ts';
 
 // jsdom is a dev-only test dependency. Without it the DOM suite cannot run, so
@@ -30,10 +30,17 @@ if (!jsdomReady) {
 } else {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+  // React probes the GLOBAL document once, at module init, to learn whether
+  // the 'input' event is natively supported. Install a script-enabled jsdom
+  // window BEFORE the first react-dom/client import so the modern change
+  // detection path is active for this whole suite (see dom-harness).
+  installReactInputProbeEnvironment();
+
   const React = (await import('react')).default;
   const { createRoot } = await import('react-dom/client');
-  const { act } = await import('react');
+  const { act, useState } = await import('react');
   const { EmergencyVoiceButton } = await import('../src/components/EmergencyVoiceButton.tsx');
+  const { TranscriptArea } = await import('../src/components/TranscriptArea.tsx');
 
   interface Harness {
     h: ReturnType<typeof installDomHarness>;
@@ -50,8 +57,15 @@ if (!jsdomReady) {
   async function mount(options?: {
     selectedLanguage?: string;
     onResolveVoiceMode?: () => Promise<'server' | 'browser'>;
+    micPermission?: 'granted' | 'denied' | 'prompt';
+    micProbeErrorName?: string | null;
+    navigatorLanguages?: string[];
   }): Promise<Harness> {
-    const h = installDomHarness();
+    const h = installDomHarness({
+      micPermission: options?.micPermission,
+      micProbeErrorName: options?.micProbeErrorName,
+      navigatorLanguages: options?.navigatorLanguages
+    });
     const changes: Array<{ text: string; isFinal: boolean }> = [];
     const submissions: string[] = [];
     const root = createRoot(h.root);
@@ -318,5 +332,216 @@ if (!jsdomReady) {
       'no MediaRecorder / getUserMedia capture is used by the live browser path'
     );
     await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Microphone permission probe: stream is stopped BEFORE recognition starts');
+  {
+    const v = await mount({ micPermission: 'prompt' });
+    await v.tap();
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'one getUserMedia permission probe per user tap');
+    assertEqual(v.h.mic.trackStops, 1, 'probe stream track is stopped immediately — the permission was all that was needed');
+    const log = FakeSpeechRecognition.orderLog;
+    const granted = log.indexOf('mic-permission-granted');
+    const stopped = log.indexOf('mic-track-stopped');
+    const started = log.indexOf('recognition-start');
+    assert(granted !== -1 && stopped !== -1 && started !== -1 && granted < stopped && stopped < started,
+      'order is permission granted → tracks stopped → recognition.start()');
+    assertEqual(v.rec.startCalls, 1, 'SpeechRecognition starts only after the probe stream is closed');
+    assert(v.label().includes('Listening'), 'listening UI appears after the probe succeeds');
+    assertEqual(v.h.mic.alerts, 0, 'no browser alert dialog in the emergency voice UI');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Permission already granted: no probe, no extra microphone open/close');
+  {
+    const v = await mount({ micPermission: 'granted' });
+    await v.tap();
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 0, 'a granted permission skips the getUserMedia probe');
+    assertEqual(v.h.mic.trackStops, 0, 'no extra microphone open/close cycle for a granted permission');
+    assertEqual(v.rec.startCalls, 1, 'recognition still starts directly');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Permission denied: in-app message only, recognizer never starts');
+  {
+    const v = await mount({ micPermission: 'denied' });
+    await v.tap();
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 0, 'a known denial does not re-open the microphone');
+    assertEqual(v.rec.startCalls, 0, 'SpeechRecognition never starts without permission');
+    assert(v.status().includes('permission'), 'the denial is explained in plain language, in-app');
+    assertEqual(v.h.mic.alerts, 0, 'the denial is not a public browser alert');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Probe rejections are reported in-app; the next tap re-checks the permission');
+  {
+    const v = await mount({ micPermission: 'prompt', micProbeErrorName: 'NotAllowedError' });
+    await v.tap();
+    await flush(30);
+    assertEqual(v.rec.startCalls, 0, 'a rejected probe never starts recognition');
+    assert(v.status().includes('permission'), 'probe rejection is explained as a permission problem');
+    assertEqual(v.h.mic.alerts, 0, 'probe rejection is not a browser alert');
+    v.h.mic.setProbeError(null); // the person allowed the mic in browser settings
+    await v.tap();
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 2, 'the next tap re-runs the probe instead of staying locked out');
+    assertEqual(v.rec.startCalls, 1, 'after the probe succeeds, recognition starts');
+    await v.stop();
+
+    const missing = await mount({ micPermission: 'prompt', micProbeErrorName: 'NotFoundError' });
+    await missing.tap();
+    await flush(30);
+    assertEqual(missing.rec.startCalls, 0, 'a missing microphone never starts recognition');
+    assert(missing.status().includes('No microphone found'), 'missing hardware is explained in-app');
+    assertEqual(missing.h.mic.alerts, 0, 'hardware errors are not browser alerts either');
+    await missing.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Rapid second tap during the permission probe cannot double-open the microphone');
+  {
+    // A slow permission prompt: the probe Promise resolves only after 80 ms.
+    const v = await mount({ micPermission: 'prompt' });
+    v.h.window.navigator.mediaDevices.getUserMedia = (constraints: any) => {
+      v.h.mic.getUserMediaCalls.push(constraints);
+      return new Promise((resolve) => {
+        const track = {
+          kind: 'audio',
+          stop: () => {
+            v.h.mic.trackStops += 1;
+            FakeSpeechRecognition.orderLog.push('mic-track-stopped');
+          }
+        };
+        FakeSpeechRecognition.orderLog.push('mic-permission-granted');
+        setTimeout(() => resolve({ getTracks: () => [track], active: true }), 80);
+      });
+    };
+    await v.tap();
+    await flush(20); // first tap's probe is still in flight
+    await v.tap(); // toggle semantics: this tap closes the in-flight start
+    await flush(120);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'only ONE permission probe runs, even with a rapid double tap');
+    assertEqual(v.h.mic.trackStops, 1, 'the single probe stream is stopped exactly once');
+    assertEqual(v.rec.startCalls, 0, 'the second tap cancelled the in-flight start — no session, no phantom listening');
+    await v.tap(); // a clean third tap
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'the cached permission skips a second probe');
+    assertEqual(v.rec.startCalls, 1, 'the clean third tap starts exactly one session');
+    assert(v.label().includes('Listening'), 'listening UI restored after the cancelled start');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Recognition starts in the USER language immediately on tap');
+  {
+    // App language left at the default (auto): the device language must win
+    // for the VERY FIRST start — no English-first start that gets re-targeted.
+    const v = await mount({ navigatorLanguages: ['ta-IN', 'en-US'] });
+    await v.tap();
+    await flush(20);
+    assertEqual(v.rec.startCalls, 1, 'a tap starts recognition immediately');
+    assertEqual(v.rec.startLangs[0], 'ta-IN', 'the FIRST start is the user language, not English');
+    assertEqual(v.rec.lang, 'ta-IN', 'the recognizer stays in the user language');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Re-emitted identical finals never duplicate the transcript or the submission');
+  {
+    const v = await mount();
+    await v.tap();
+    await act(async () => {
+      v.rec.emit([{ transcript: 'help', isFinal: true }]);
+    });
+    await act(async () => {
+      v.rec.emit([{ transcript: 'help', isFinal: true }]); // device re-emits the exact same final
+    });
+    await flush(1900); // silence commit
+    assertEqual(v.submissions.length, 1, 'one submission despite the duplicated final');
+    assertEqual(v.submissions[0], 'help', 'the duplicated final is not appended twice');
+    assert(!v.caption().includes('help help'), 'no duplicated words in the transcript');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Interim words are not repeated when the final arrives');
+  {
+    const v = await mount();
+    await v.tap();
+    await act(async () => {
+      v.rec.emit([{ transcript: 'my father', isFinal: false }]);
+    });
+    assert(v.caption().includes('my father'), 'interim words shown live');
+    await act(async () => {
+      v.rec.emit([{ transcript: 'my father', isFinal: true }]);
+    });
+    await flush(1900); // silence commit
+    assertEqual(v.submissions.length, 1, 'one submission for interim-then-final speech');
+    assertEqual(v.submissions[0], 'my father', 'the final does not repeat the interim words');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Typing is instant while recognition is live — input is never blocked');
+  {
+    const h = installDomHarness();
+    const typed: string[] = [];
+    const Host = () => {
+      const [text, setText] = useState('');
+      return React.createElement(TranscriptArea, {
+        transcript: text,
+        onTranscriptChange: (t: string) => { typed.push(t); setText(t); },
+        onSubmitEmergency: () => {},
+        isAnalyzing: false,
+        offlineForce: false,
+        highContrast: false,
+        locationInfo: null,
+        onLocationUpdate: () => {},
+        selectedLanguage: 'en',
+        onLanguageChange: () => {}
+      });
+    };
+    const root = createRoot(h.root);
+    await act(async () => {
+      root.render(React.createElement(React.Fragment, null,
+        React.createElement(EmergencyVoiceButton, {
+          onTranscriptChange: () => {},
+          isAnalyzing: false,
+          soundEnabled: false,
+          highContrast: false,
+          selectedLanguage: 'en'
+        }),
+        React.createElement(Host)
+      ));
+    });
+    await flush(20);
+    await act(async () => {
+      h.document.getElementById('emergency-voice-record-btn')
+        .dispatchEvent(new h.window.MouseEvent('click', { bubbles: true }));
+    });
+    await flush(20);
+    const rec = FakeSpeechRecognition.instances[FakeSpeechRecognition.instances.length - 1];
+    assertEqual(rec.started, true, 'recognition is live while we type');
+    const textarea = h.document.getElementById('emergency-transcript-input') as any;
+    assert(Boolean(textarea), 'the typing box is present');
+    assertEqual(textarea.disabled, false, 'typing is NOT blocked while the microphone is live');
+    const setter = Object.getOwnPropertyDescriptor(h.window.HTMLTextAreaElement.prototype, 'value')?.set;
+    await act(async () => {
+      setter?.call(textarea, 'help me');
+      textarea.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    });
+    assertEqual(typed[typed.length - 1], 'help me', 'typed text is accepted instantly');
+    assertEqual(textarea.value, 'help me', 'the box shows the typed text instantly');
+    await act(async () => {
+      root.unmount();
+    });
+    h.cleanup();
   }
 }

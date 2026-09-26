@@ -1,50 +1,19 @@
 /**
- * Multilingual speech output for LifeLine AI.
+ * Multilingual speech for LifeLine AI.
  *
- * The microphone path must answer by speaking, not by leaving the person to
- * read a typed box. Browser speechSynthesis is the on-device speaker — no
- * audio is uploaded, and no emergency number is invented here. A phone number
- * is spoken only when the caller passes one that was already configured.
+ * The emergency answer is shown on screen and is NEVER spoken back
+ * automatically. The only speech output left is the SOS card's user-tapped
+ * "Read aloud" button (for first responders / bystanders), which uses the
+ * on-device browser speechSynthesis — no audio is uploaded, and no emergency
+ * number is invented: a number is spoken only when the caller passes one that
+ * was already configured.
  */
 import {
   EMERGENCY_TRANSLATION_DICTIONARY,
   detectLanguage,
   getSpeechRecognitionLocale,
-  matchLanguageIdentifier,
-  standardizeCategory
+  matchLanguageIdentifier
 } from './languages.ts';
-import type { StandardEmergencyCategory } from '../types.ts';
-
-const LEAD_IN: Record<string, string> = {
-  en: 'Emergency help.',
-  es: 'Ayuda de emergencia.',
-  fr: "Aide d'urgence.",
-  ta: 'அவசர உதவி.',
-  hi: 'आपातकालीन मदद.',
-  te: 'అత్యవసర సహాయం.',
-  kn: 'ತುರ್ತು ಸಹಾಯ.',
-  ml: 'അടിയന്തര സഹായം.',
-  bn: 'জরুরি সাহায্য.',
-  mr: 'आणीबाणी मदत.'
-};
-
-const CALL_PHRASE: Record<string, (number: string) => string> = {
-  en: (n) => `Call ${n}.`,
-  es: (n) => `Llame al ${n}.`,
-  fr: (n) => `Appelez le ${n}.`,
-  ta: (n) => `${n} எண்ணை அழையுங்கள்.`,
-  hi: (n) => `${n} पर कॉल करें.`,
-  te: (n) => `${n} కు కాల్ చేయండి.`,
-  kn: (n) => `${n} ಗೆ ಕರೆ ಮಾಡಿ.`,
-  ml: (n) => `${n} എന്ന നമ്പറിൽ വിളിക്കുക.`,
-  bn: (n) => `${n} নম্বরে কল করুন.`,
-  mr: (n) => `${n} वर कॉल करा.`
-};
-
-/** Drop the English gloss in parentheses so speech stays in one language. */
-export function spokenPhrase(text: string): string {
-  return text.replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
-}
 
 export function resolveSpeechLocale(identifier?: string): string {
   if (!identifier || !identifier.trim()) return getSpeechRecognitionLocale('en');
@@ -91,41 +60,6 @@ export function shouldSwitchRecognitionLanguage(
   return null;
 }
 
-export interface SpokenBriefInput {
-  languageCode?: string;
-  category?: string;
-  severity?: number;
-  /** Already-configured public emergency number. Never invented by this function. */
-  emergencyNumber?: string | null;
-}
-
-/**
- * Short spoken briefing in the speaker's language, from the bundled phrasebook.
- * Two action steps only — long enough to be useful, short enough to hear now.
- */
-export function buildSpokenEmergencyBrief(input: SpokenBriefInput): string {
-  const requested = (input.languageCode || '').toLowerCase().trim();
-  const matched = matchLanguageIdentifier(requested);
-  const code = matched && EMERGENCY_TRANSLATION_DICTIONARY[matched.code] ? matched.code : 'en';
-  const dict = EMERGENCY_TRANSLATION_DICTIONARY[code] || EMERGENCY_TRANSLATION_DICTIONARY.en;
-  const category = standardizeCategory(input.category || 'OTHER') as StandardEmergencyCategory;
-  const directive = dict.sampleDirectives[category] || dict.sampleDirectives.OTHER;
-  const label = spokenPhrase(dict.categoryLabels[category] || category);
-  const priority = spokenPhrase(dict.priorityLabel || 'Priority');
-  const severity = Math.min(5, Math.max(1, Math.round(Number(input.severity) || 3)));
-  const steps = (directive.actionSteps || [])
-    .slice(0, 2)
-    .map(spokenPhrase)
-    .filter(Boolean)
-    .map((step) => (step.endsWith('.') ? step : `${step}.`));
-  const number = (input.emergencyNumber || '').trim();
-  const call =
-    number && /^\d[\d\s-]*$/.test(number) ? (CALL_PHRASE[code] || CALL_PHRASE.en)(number) : '';
-  return [LEAD_IN[code] || LEAD_IN.en, `${label}.`, `${priority} ${severity}.`, ...steps, call]
-    .filter(Boolean)
-    .join(' ');
-}
-
 export interface SpeakOptions {
   languageCode?: string;
   interrupt?: boolean;
@@ -153,21 +87,6 @@ export function stopSpeaking(): void {
     window.speechSynthesis.cancel();
   } catch {
     // ignore
-  }
-}
-
-/** Call from the microphone tap so later spoken answers are allowed. */
-export function primeSpeechEngine(): void {
-  if (!speechSynthesisAvailable()) return;
-  try {
-    window.speechSynthesis.getVoices();
-    window.speechSynthesis.resume();
-    const unlock = new SpeechSynthesisUtterance('\u200b');
-    unlock.volume = 0;
-    unlock.rate = 2;
-    window.speechSynthesis.speak(unlock);
-  } catch {
-    // A browser that blocks speech still shows the on-screen answer.
   }
 }
 

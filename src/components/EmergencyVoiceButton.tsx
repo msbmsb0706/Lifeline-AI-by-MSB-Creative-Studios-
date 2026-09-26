@@ -1,13 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Mic, AlertCircle, Loader2, Volume2 } from 'lucide-react';
+import { Mic, AlertCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { playPing } from '../lib/audio.ts';
 import { getSpeechRecognitionLocale, SUPPORTED_LANGUAGES } from '../lib/languages.ts';
 import {
   pickStartLanguage,
-  primeSpeechEngine,
-  shouldSwitchRecognitionLanguage,
-  stopSpeaking
+  shouldSwitchRecognitionLanguage
 } from '../lib/speech.ts';
 import { mergeFinalChunk, buildTranscript, speechErrorMessage } from '../lib/speechCapture.ts';
 import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
@@ -36,10 +34,10 @@ interface EmergencyVoiceButtonProps {
   voicePhase?: 'idle' | 'listening' | 'transcribing' | 'translating';
   /** One-line explanation of why the multilingual path is (un)available. */
   voiceModeNotice?: string | null;
-  /** True while the spoken emergency answer is playing. Tap stops it. */
-  isSpeakingAnswer?: boolean;
-  /** Parent clears its speaking flag when the person stops playback. */
-  onCancelSpeech?: () => void;
+  /**
+   * NOTE: there is deliberately no "speaking answer" state here anymore — the
+   * emergency answer is shown on screen and is never spoken back automatically.
+   */
 }
 
 // Browser SpeechRecognition polyfill interface
@@ -112,9 +110,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   onResolveVoiceMode,
   onVoiceRecordingStopped,
   voicePhase = 'idle',
-  voiceModeNotice,
-  isSpeakingAnswer = false,
-  onCancelSpeech
+  voiceModeNotice
 }) => {
   const [isListening, setIsListening] = useState(false);
   const [isServerRecording, setIsServerRecording] = useState(false);
@@ -147,6 +143,14 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   // While a server recording is active the lock stays held by the recording
   // itself and is released only when it ends (stop / error / cleanup).
   const voiceStartLockRef = useRef(false);
+  // Set while startBrowserSession is awaiting the microphone permission probe,
+  // so the start-lock stays held across that async gap: a rapid second tap must
+  // never open a second getUserMedia()/SpeechRecognition pair.
+  const browserStartInFlightRef = useRef(false);
+  // Verified microphone permission for this mount. Only 'granted' is cached
+  // (it skips repeated probes); a denial is NOT cached, so the next tap re-checks
+  // — a permission granted later in browser settings takes effect on the next tap.
+  const micPermissionRef = useRef<'unknown' | 'granted'>('unknown');
   // Ref mirror of isServerRecording so the async start path can trust capture
   // state synchronously without waiting for a React re-render.
   const isServerRecordingRef = useRef(false);
@@ -180,7 +184,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   const runningRef = useRef(false);
   // A tap that arrived while Chrome was still closing the previous session.
   const pendingStartRef = useRef(false);
-  const startBrowserSessionRef = useRef<(() => void) | null>(null);
+  const startBrowserSessionRef = useRef<(() => void | Promise<void>) | null>(null);
 
   const isBusyAsr = voicePhase === 'transcribing' || voicePhase === 'translating';
   const isVoiceActive = isListening || isServerRecording;
@@ -369,17 +373,24 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       };
 
       recognition.onerror = (err: any) => {
-        console.warn('Speech recognition warning/error:', err.error);
-        if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
+        const code = err?.error;
+        if (code === 'no-speech' || code === 'aborted') {
+          // no-speech / aborted are normal (silence, our own restart/stop).
+          console.warn('Speech recognition warning/error:', code);
+        } else {
+          console.error('Speech recognition error:', code);
+        }
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          micPermissionRef.current = 'unknown'; // the next tap re-checks the permission
           sessionActiveRef.current = false;
           userStopRef.current = true;
-          setMicError('Microphone permission blocked. Please allow mic access, or type below.');
+          setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
           setIsListening(false);
         } else {
-          // no-speech / aborted are normal (silence, our own restart/stop).
-          const message = speechErrorMessage(err.error);
+          const message = speechErrorMessage(code);
           if (message) setMicError(message);
-          if (FATAL_RECOGNITION_ERRORS.includes(err.error)) {
+          if (code === 'audio-capture') micPermissionRef.current = 'unknown'; // the device may have gone away
+          if (FATAL_RECOGNITION_ERRORS.includes(code)) {
             // Chrome ends this session by itself after one of these errors, and
             // restarting would only repeat it (an endless, silent loop on
             // Android). Finish the session with whatever was already heard.
@@ -389,6 +400,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           }
         }
       };
+      // Note: every recognition error is surfaced IN-APP (micError banner).
+      // This emergency UI never shows a browser alert dialog — errors must not
+      // pop up "in public" over someone else's shoulder or a shared screen.
 
       recognition.onend = () => {
         // Chrome/Android may end at its speech end-point with only interim
@@ -458,8 +472,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   useEffect(() => {
     return () => {
       // Unmount: release the start lock and ALWAYS stop every microphone track,
-      // even if a start was still in flight.
+      // even if a start (or its permission probe) was still in flight.
       voiceStartLockRef.current = false;
+      browserStartInFlightRef.current = false;
       isServerRecordingRef.current = false;
       clearMaxDurationTimer();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -581,14 +596,79 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     }
   };
 
-  const startBrowserSession = () => {
+  /**
+   * Verify the microphone is allowed BEFORE the Web Speech API opens it.
+   *
+   * The probe opens the microphone with getUserMedia only to obtain the
+   * browser permission (on Chrome/Android the permission prompt is reliably
+   * attached to this user-gesture call). It then IMMEDIATELY stops every
+   * track: we only needed the permission. Leaving the probe stream open would
+   * keep the microphone busy and the recognition engine would fail with
+   * 'audio-capture' ("mic is in use by another app").
+   *
+   * No network is involved, so the probe is equally valid offline. Errors are
+   * reported in-app (micError banner), never with a browser alert dialog.
+   * Returning true means "let the recognizer open the microphone itself".
+   */
+  const ensureMicrophonePermission = async (): Promise<boolean> => {
+    if (micPermissionRef.current === 'granted') return true;
+    let permissionState: string | undefined;
+    try {
+      const permissions = (navigator as any).permissions;
+      const query = permissions?.query;
+      if (typeof query === 'function') {
+        permissionState = (await query.call(permissions, { name: 'microphone' })).state;
+      }
+    } catch {
+      permissionState = undefined; // query unsupported — fall back to the probe
+    }
+    if (permissionState === 'granted') {
+      micPermissionRef.current = 'granted';
+      return true;
+    }
+    if (permissionState === 'denied') {
+      setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
+      return false;
+    }
+    if (typeof navigator.mediaDevices?.getUserMedia !== 'function') {
+      return true; // no probe possible — the recognizer reports its own errors
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Stop the stream immediately: only the permission was needed.
+      stream.getTracks().forEach((track) => track.stop());
+      micPermissionRef.current = 'granted';
+      return true;
+    } catch (err: any) {
+      if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError' || err?.name === 'PermissionDeniedError') {
+        setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
+        return false;
+      }
+      if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+        setMicError('No microphone found. You can type distress details directly.');
+        return false;
+      }
+      // Transient device hiccup: let the recognizer try its own mic access.
+      console.warn('Microphone permission probe failed; letting the recognizer open the mic:', err?.message || err);
+      return true;
+    }
+  };
+
+  const startBrowserSession = async () => {
     const recognition = recognitionRef.current;
+    // Hold the tap start-lock across the (possibly slow) permission probe: a
+    // rapid second tap must never open a second microphone/recognizer pair.
+    // (The lock was acquired by toggleRecording before this call.)
+    browserStartInFlightRef.current = true;
+    const releaseStartLock = () => {
+      browserStartInFlightRef.current = false;
+      voiceStartLockRef.current = false;
+    };
     if (!recognition) {
       setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
+      releaseStartLock();
       return;
     }
-    stopSpeaking();
-    onCancelSpeech?.();
     userStopRef.current = false;
     submittedRef.current = false;
     sessionActiveRef.current = true;
@@ -605,8 +685,18 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     activeLangRef.current = startCode;
     setHeardLanguage(startCode);
     activeModeRef.current = 'browser';
-    // Unlock spoken answers in this tap, then listen. Do not speak while the mic is open.
-    if (soundEnabledRef.current) primeSpeechEngine();
+
+    const allowed = await ensureMicrophonePermission();
+    if (!allowed || userStopRef.current || !sessionActiveRef.current) {
+      // Permission denied — or the person closed the session while the probe
+      // was open. Never open a microphone that will just fail again.
+      userStopRef.current = true;
+      sessionActiveRef.current = false;
+      setIsListening(false);
+      releaseStartLock();
+      return;
+    }
+    releaseStartLock();
     recognition.lang = getSpeechRecognitionLocale(startCode);
     if (soundEnabledRef.current) playPing('start');
     try {
@@ -656,14 +746,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   };
 
   const toggleRecording = async () => {
-    if (isSpeakingAnswer) {
-      stopSpeaking();
-      onCancelSpeech?.();
-      return;
-    }
     if (isAnalyzing || isBusyAsr) return;
 
-    // Active capture → stop it and speak the answer (parent handles speech).
+    // Active capture → stop it (the answer is read on screen, never auto-spoken).
     // The recognizer's REAL state decides, not React state: Chrome can end a
     // session a render before React notices, and a stale "Listening" label must
     // never swallow the next tap.
@@ -705,7 +790,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       // server recorder is only the fallback when this browser cannot listen live.
       const browserReady = Boolean(recognitionRef.current) && speechSupported && !(offlineMode && !localSpeechSupported);
       if (browserReady) {
-        startBrowserSession();
+        // Async: the tap start-lock stays held across the microphone
+        // permission probe until the recognizer actually starts (or fails).
+        void startBrowserSession();
         return;
       }
 
@@ -739,17 +826,16 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
     } finally {
       // Release the lock for every start path that did not end up owning an
-      // active server recording (browser voice, permission denial, failures).
-      if (!isServerRecordingRef.current) {
+      // active server recording or an in-flight browser permission probe
+      // (browser voice, permission denial, failures).
+      if (!isServerRecordingRef.current && !browserStartInFlightRef.current) {
         voiceStartLockRef.current = false;
       }
     }
   };
 
   const busyLabel = voicePhase === 'translating' ? 'Translating…' : 'Transcribing…';
-  const busySubLabel = voicePhase === 'translating'
-    ? 'Then the answer is spoken'
-    : 'Then the answer is spoken';
+  const busySubLabel = 'Then the answer is on screen';
   const captionLang = getSpeechRecognitionLocale(heardLanguage);
 
   return (
@@ -785,17 +871,13 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           onClick={toggleRecording}
           disabled={isAnalyzing || isBusyAsr}
           aria-label={
-            isSpeakingAnswer
-              ? 'Stop speaking the answer'
-              : isVoiceActive
-              ? 'Stop listening and hear the spoken answer'
-              : 'Speak your emergency in any language. The answer is spoken aloud.'
+            isVoiceActive
+              ? 'Stop listening'
+              : 'Speak your emergency in any language. The answer appears on screen.'
           }
           className={`relative z-10 w-32 h-32 sm:w-36 sm:h-36 rounded-full flex flex-col items-center justify-center text-white shadow-2xl transition-all select-none ${
             isVoiceActive
               ? 'bg-red-600 shadow-red-600/60 ring-4 ring-white ring-offset-4 ring-offset-black'
-              : isSpeakingAnswer
-              ? 'bg-amber-500 text-black shadow-amber-500/40 ring-4 ring-white ring-offset-4 ring-offset-black'
               : highContrast
               ? 'bg-red-600 border-4 border-white shadow-white/20'
               : 'bg-gradient-to-b from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 shadow-red-900/50 ring-2 ring-red-400/40'
@@ -803,37 +885,31 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         >
           {isAnalyzing || isBusyAsr ? (
             <Loader2 className="w-10 h-10 animate-spin mb-1 text-white" />
-          ) : isSpeakingAnswer ? (
-            <Volume2 className="w-12 h-12 mb-1 animate-pulse text-black drop-shadow-md" />
           ) : isVoiceActive ? (
             <Mic className="w-12 h-12 mb-1 animate-pulse text-white drop-shadow-md" />
           ) : (
             <Mic className="w-11 h-11 mb-1 text-white drop-shadow-md" />
           )}
 
-          <span className={`text-xs sm:text-sm font-black uppercase tracking-wider drop-shadow ${isSpeakingAnswer ? 'text-black' : 'text-white'}`}>
+          <span className="text-xs sm:text-sm font-black uppercase tracking-wider drop-shadow text-white">
             {offlineMode && !localSpeechSupported
               ? 'Voice unavailable'
               : isAnalyzing
               ? 'Analyzing...'
               : isBusyAsr
               ? busyLabel
-              : isSpeakingAnswer
-              ? 'Speaking'
               : isVoiceActive
               ? 'Listening'
               : 'Tap to Speak'}
           </span>
-          <span className={`text-[10px] font-medium text-center px-2 ${isSpeakingAnswer ? 'text-black/80' : 'text-white/80'}`}>
+          <span className="text-[10px] font-medium text-center px-2 text-white/80">
             {offlineMode && !localSpeechSupported
               ? 'Type below if needed'
-              : isSpeakingAnswer
-              ? 'Tap to stop'
               : isVoiceActive
-              ? 'Any language • pause to hear'
+              ? 'Any language • pause to review'
               : isBusyAsr
               ? busySubLabel
-              : 'Any language • spoken answer'}
+              : 'Any language • answer on screen'}
           </span>
         </motion.button>
       </div>
@@ -851,14 +927,14 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       >
         <div className="flex items-center justify-between gap-2 mb-0.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-red-300">
-            {isVoiceActive ? 'Hearing live' : isSpeakingAnswer ? 'Speaking answer' : 'Speak, don’t type'}
+            {isVoiceActive ? 'Hearing live' : 'Speak, don’t type'}
           </span>
           <span className="text-[10px] font-mono text-emerald-300">
             {lockedLang ? `Locked ${languageName(lockedLang)}` : `Auto • ${languageName(heardLanguage)}`}
           </span>
         </div>
         <p className="whitespace-pre-wrap break-words">
-          {liveCaption || 'Tap the microphone and speak in any supported language. The answer is spoken aloud. Type below only if you cannot speak.'}
+          {liveCaption || 'Tap the microphone and speak in any supported language. The answer appears on screen. Type below only if you cannot speak.'}
         </p>
       </div>
 
@@ -902,18 +978,13 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           <div className="flex items-center gap-2 text-xs text-amber-300 font-semibold animate-pulse justify-center">
             <span className="w-2 h-2 rounded-full bg-amber-400" />
             {voicePhase === 'translating'
-              ? 'Translating, then speaking the answer...'
-              : 'Hearing your speech, then speaking the answer...'}
-          </div>
-        ) : isSpeakingAnswer ? (
-          <div className="flex items-center gap-2 text-xs text-amber-300 font-semibold justify-center">
-            <Volume2 className="w-3.5 h-3.5" />
-            Speaking the emergency answer aloud
+              ? 'Translating, then the answer appears on screen...'
+              : 'Hearing your speech, then the answer appears on screen...'}
           </div>
         ) : isVoiceActive ? (
           <div className="flex items-center gap-2 text-xs text-red-400 font-semibold animate-pulse justify-center">
             <span className="w-2 h-2 rounded-full bg-red-500" />
-            Listening live in {languageName(heardLanguage)}. Pause and the answer is spoken.
+            Listening live in {languageName(heardLanguage)}. Pause and the answer appears on screen.
           </div>
         ) : (
           <div className="text-xs text-neutral-400">
@@ -922,7 +993,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
               : SHOW_TECH_DETAILS && voiceModeNotice
               ? voiceModeNotice
               : speechSupported
-              ? 'Tap to speak in any language. You do not have to type. The answer is spoken back.'
+              ? 'Tap to speak in any language. You do not have to type. The answer appears on screen.'
               : 'This browser cannot listen. Type your emergency below, then use Speak on the answer.'}
           </div>
         )}
