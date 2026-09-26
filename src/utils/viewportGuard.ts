@@ -1,42 +1,49 @@
 /**
- * Keyboard focus guard — keeps the active input focused and visible while the
- * Android soft keyboard opens, closes, or animates.
+ * Keyboard visual-viewport guard — keeps the focused input focused and
+ * visible while the Android soft keyboard slides up, down, or animates.
  *
- * WHAT IT DEFENDS AGAINST
- * -----------------------
- * 1. "Phantom" blurs: the layout jump that accompanies the keyboard opening
- *    (or a WebView container re-applying its own scroll position mid-
- *    animation) can blur the focused input. A `blur` while an IME
- *    composition is active silently cancels voice dictation — the entire
- *    pending utterance is discarded. The guard detects such blurs (focus
- *    dropped to <body> without an explicit user focus-move) and restores
- *    focus with `preventScroll: true`, plus the previous caret/selection.
- * 2. Input scrolled out of the VISUAL viewport: Android dismisses the IME
- *    when its target is no longer visible. While the keyboard is open and
- *    the guarded field owns focus, the field is kept inside the visual
- *    viewport (Chrome usually does this natively; WebView containers often
- *    don't).
+ * ROOT CAUSE ADDRESSED
+ * --------------------
+ * When the keyboard opens, the visual viewport shrinks. In WebView
+ * containers (or legacy `resizes-content` behaviour) that layout jump can
+ * blur the focused input — and on Android a `blur()` while a voice-dictation
+ * composition is active silently cancels the session and discards the entire
+ * pending utterance. The same layout pass can also push the input out of the
+ * visual viewport, which makes Android dismiss the IME outright.
  *
- * SAFETY RULES (why this never fights the user)
- * ---------------------------------------------
- * - Acts on exactly one element (the transcript field); never on others.
- * - Only refocuses while the keyboard is actually open.
- * - Never steals focus the user just moved somewhere else (a tapped button,
- *   a modal) — tracked via document-level `focusin` with a time window.
- * - Requires recent typing/IME activity on the field, so a stale field that
- *   lost focus long ago is not re-focused.
- * - Backs off after repeated failed refocus attempts.
- * - Complete no-op on desktop (no visualViewport, no keyboard).
- * - Defensive: every browser call is guarded; this module never throws.
+ * BEHAVIOUR (and the safety rules that keep it from fighting the user)
+ * --------------------------------------------------------------------
+ * - Tracks `window.visualViewport` height (debounced `window.resize`
+ *   fallback): a drop of >`keyboardDeltaPx` below the running baseline =
+ *   keyboard open; growth back = closed. Baseline re-sets on rotation.
+ * - While the keyboard is open AND the guarded element owns focus, the
+ *   element is kept >=`marginPx` inside the VISUAL viewport (rAF-throttled
+ *   minimal `scrollBy`; `getBoundingClientRect` is already
+ *   visual-viewport-relative).
+ * - "Phantom blur" repair: if the element blurs to `<body>` while the
+ *   keyboard is open and there was recent typing/IME activity, focus is
+ *   restored with `focus({preventScroll:true})` plus the saved
+ *   caret/selection.
+ * - NEVER steals an intentional focus move: focus moves to another control
+ *   (a tapped button, a modal — tracked via document-level `focusin` with a
+ *   time window) are respected; recent activity is required; it backs off
+ *   after repeated failed refocus attempts; it never grabs focus in a
+ *   backgrounded tab or on a disabled element.
+ * - Document-level (capture) listeners so the guard survives the element
+ *   being re-created by React without re-attaching; every browser call is
+ *   guarded — this module never throws; complete no-op on desktop (no
+ *   visualViewport, no keyboard).
  *
- * Listen on `document` (capture) rather than the element so the guard
- * survives the field being unmounted/remounted by React without re-attaching.
+ * A naive "on resize: setTimeout(() => el.focus())" approach is NOT used on
+ * purpose: without the checks above it yanks focus back to the input 30ms
+ * after the user taps ANY other control (e.g. Attach GPS), which is a real
+ * UX regression in an emergency app.
  */
 
-export interface KeyboardFocusGuardOptions {
+export interface ViewportGuardOptions {
   /** Minimum visual-viewport height drop (px) that counts as "keyboard open". */
   keyboardDeltaPx?: number;
-  /** The guarded field must stay at least this many px inside the visual viewport. */
+  /** The guarded element must stay at least this many px inside the visual viewport. */
   marginPx?: number;
   /** Recent typing/IME activity window (ms) required before a blur counts as "phantom". */
   activityWindowMs?: number;
@@ -46,14 +53,16 @@ export interface KeyboardFocusGuardOptions {
   maxFailedRefocuses?: number;
 }
 
-export function attachKeyboardFocusGuard(
-  targetRef: { current: HTMLElement | null },
-  options: KeyboardFocusGuardOptions = {}
+export function setupViewportGuard(
+  element: HTMLTextAreaElement | HTMLInputElement | null,
+  options: ViewportGuardOptions = {}
 ): () => void {
   try {
+    if (!element || typeof window === 'undefined') return () => undefined;
+
     const doc = document;
     const win = window as any;
-    const vv: any = (win.visualViewport ?? null);
+    const vv: any = win.visualViewport ?? null;
 
     const keyboardDeltaPx = options.keyboardDeltaPx ?? 120;
     const marginPx = options.marginPx ?? 12;
@@ -68,7 +77,7 @@ export function attachKeyboardFocusGuard(
     let lastFocusMoveAt = -Infinity;
     let failedRefocuses = 0;
     let backoffUntil = 0;
-    let keepInViewRaf = 0;
+    let keepInViewScheduled = false;
     let resizeDebounce = 0;
     let savedSelection: { start: number; end: number } | null = null;
 
@@ -92,26 +101,21 @@ export function attachKeyboardFocusGuard(
       const open = baselineHeight - h > keyboardDeltaPx;
       if (open !== keyboardOpen) {
         keyboardOpen = open;
-        if (open && targetRef.current && doc.activeElement === targetRef.current) {
-          markActivity();
-        }
+        if (open && doc.activeElement === element) markActivity();
       }
     };
 
     const keepInView = (): void => {
-      const el = targetRef.current;
-      if (!el || !keyboardOpen || doc.activeElement !== el) return;
+      if (!keyboardOpen || doc.activeElement !== element) return;
       let rect: DOMRect | null = null;
       try {
-        rect = el.getBoundingClientRect();
+        rect = element.getBoundingClientRect();
       } catch {
         return;
       }
       if (!rect) return;
       const h = heightNow();
       let delta = 0;
-      // getBoundingClientRect is relative to the VISUAL viewport, so the
-      // field is in view while margin <= rect.top and rect.bottom <= h-margin.
       if (rect.top < marginPx) delta = rect.top - marginPx;
       else if (rect.bottom > h - marginPx) delta = rect.bottom - (h - marginPx);
       if (delta !== 0 && typeof win.scrollBy === 'function') {
@@ -140,20 +144,18 @@ export function attachKeyboardFocusGuard(
     };
 
     const scheduleKeepInView = (): void => {
-      if (keepInViewRaf) return;
-      let scheduled = true;
+      if (keepInViewScheduled) return;
+      keepInViewScheduled = true;
       raf(() => {
-        keepInViewRaf = 0;
-        if (scheduled && !disposed) keepInView();
+        keepInViewScheduled = false;
+        if (!disposed) keepInView();
       });
-      keepInViewRaf = 1;
     };
 
-    const saveSelection = (el: HTMLElement | null): void => {
+    const saveSelection = (): void => {
       savedSelection = null;
-      if (!el) return;
       try {
-        const anyEl = el as any;
+        const anyEl = element as any;
         if (typeof anyEl.selectionStart === 'number' && typeof anyEl.selectionEnd === 'number') {
           savedSelection = { start: anyEl.selectionStart, end: anyEl.selectionEnd };
         }
@@ -162,29 +164,28 @@ export function attachKeyboardFocusGuard(
       }
     };
 
-    const restoreSelection = (el: HTMLElement): void => {
+    const restoreSelection = (): void => {
       if (!savedSelection) return;
       try {
-        (el as any).setSelectionRange(savedSelection.start, savedSelection.end);
+        (element as any).setSelectionRange(savedSelection.start, savedSelection.end);
       } catch {
-        /* element not editable or value changed — caret defaults are fine */
+        /* not editable / value changed — default caret is fine */
       }
     };
 
     /**
-     * Called after one task following a blur. If focus simply dropped to
+     * Runs one task after the element blurred. If focus simply dropped to
      * <body> (layout jump / container glitch) while the keyboard is open and
-     * the field has recent typing/IME activity, restore it. If the user
+     * the element has recent typing/IME activity, restore it. If the user
      * moved focus to another control, or the keyboard is closed, do nothing.
      */
     const maybeRefocus = (): void => {
-      const el = targetRef.current;
-      if (!el || disposed) return;
-      if (doc.activeElement === el) return; // no longer blurred
+      if (!element || disposed) return;
+      if (doc.activeElement === element) return; // no longer blurred
       if (!keyboardOpen) return; // keyboard went away: the user likely left the field
       if (doc.hidden) return; // backgrounded app — never grab focus
       try {
-        if ((el as any).disabled) return;
+        if ((element as any).disabled) return;
       } catch {
         /* ignore */
       }
@@ -195,17 +196,17 @@ export function attachKeyboardFocusGuard(
       if (now - lastActivityAt > activityWindowMs) return; // no recent typing/IME activity
       if (now < backoffUntil) return;
       try {
-        el.focus({ preventScroll: true });
+        element.focus({ preventScroll: true });
       } catch {
         try {
-          el.focus();
+          element.focus();
         } catch {
           /* not focusable right now */
         }
       }
-      if (doc.activeElement === el) {
+      if (doc.activeElement === element) {
         failedRefocuses = 0;
-        restoreSelection(el);
+        restoreSelection();
         scheduleKeepInView();
       } else {
         failedRefocuses += 1;
@@ -216,9 +217,9 @@ export function attachKeyboardFocusGuard(
     const onFocusIn = (event: FocusEvent): void => {
       const t = event.target as HTMLElement | null;
       if (!t) return;
-      if (t === targetRef.current) {
+      if (t === element) {
         markActivity();
-        saveSelection(t);
+        saveSelection();
         return;
       }
       // The user moved focus somewhere else — the guard must not fight that.
@@ -226,32 +227,32 @@ export function attachKeyboardFocusGuard(
     };
 
     const onFocusOut = (event: FocusEvent): void => {
-      if (event.target !== targetRef.current) return;
+      if (event.target !== element) return;
       // Defer one task: a genuine focus target (another control) usually
       // receives focus in the same task, so the check below sees it.
       win.setTimeout(() => maybeRefocus(), 0);
     };
 
     const onInput = (event: Event): void => {
-      if (event.target !== targetRef.current) return;
+      if (event.target !== element) return;
       markActivity();
-      saveSelection(event.target as HTMLElement);
+      saveSelection();
     };
 
     const onKeyUp = (event: Event): void => {
-      if (event.target !== targetRef.current) return;
+      if (event.target !== element) return;
       markActivity();
-      saveSelection(event.target as HTMLElement);
+      saveSelection();
     };
 
     const onCompositionEnd = (event: Event): void => {
-      if (event.target !== targetRef.current) return;
-      saveSelection(event.target as HTMLElement);
+      if (event.target !== element) return;
+      saveSelection();
     };
 
     const onClick = (event: Event): void => {
-      if (event.target !== targetRef.current) return;
-      saveSelection(event.target as HTMLElement);
+      if (event.target !== element) return;
+      saveSelection();
     };
 
     const onVvResize = (): void => {
@@ -288,9 +289,7 @@ export function attachKeyboardFocusGuard(
     doc.addEventListener('compositionend', onCompositionEnd, true);
     doc.addEventListener('click', onClick, true);
 
-    const vvAttached = Boolean(
-      vv && typeof vv.addEventListener === 'function'
-    );
+    const vvAttached = Boolean(vv && typeof vv.addEventListener === 'function');
     if (vvAttached) {
       vv.addEventListener('resize', onVvResize);
       vv.addEventListener('scroll', onVvScroll);
@@ -323,11 +322,11 @@ export function attachKeyboardFocusGuard(
         win.clearTimeout(resizeDebounce);
         resizeDebounce = 0;
       }
-      keepInViewRaf = 0;
+      keepInViewScheduled = false;
     };
   } catch {
     // The guard is a pure enhancement — if anything is wrong with the
-    // environment, degrade to no-op instead of breaking the app.
+    // environment, degrade to a no-op instead of breaking the app.
     return () => undefined;
   }
 }

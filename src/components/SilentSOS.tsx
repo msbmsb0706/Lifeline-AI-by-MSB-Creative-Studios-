@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, CheckCircle2, MapPin, Radio, ShieldAlert, Smartphone, Video, X, Send, Save, Info } from 'lucide-react';
 import { classifyEmergencyOffline } from '../lib/offlineClassifier.ts';
 import { detectLanguage } from '../lib/languages.ts';
-import { useImeSafeTextarea } from '../lib/imeSafeTextarea.ts';
+import { isImeComposing, commitImeValueToState, imeEventHandlers } from '../utils/imeHelpers.ts';
+import { setupViewportGuard } from '../utils/viewportGuard.ts';
 import { EmergencyAnalysisResult, SeverityLevel } from '../types.ts';
 import {
   createSOSPackage,
@@ -52,9 +53,24 @@ function gpsErrorMessage(code?: number): string {
 export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSaveResult, onQueueUpdated }) => {
   const [selectedEvent, setSelectedEvent] = useState<QuickEvent | null>(null);
   const [message, setMessage] = useState('');
-  // IME-safe binding so Android keyboard voice dictation (Gboard mic) and
-  // Tamil/Hindi transliteration are never dropped mid-composition.
-  const messageIme = useImeSafeTextarea(message, setMessage);
+  // IME-resilient message input: the textarea is uncontrolled (no `value`
+  // prop) so no re-render can stamp stale state into the field while an
+  // Android keyboard dictation / transliteration composition is active; the
+  // DOM is mirrored back into state on input / compositionend / blur.
+  const messageRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const el = messageRef.current;
+    if (el && !isImeComposing(el) && el.value !== message) {
+      el.value = message;
+    }
+  }, [message]);
+
+  useEffect(() => {
+    const el = messageRef.current;
+    if (!el) return;
+    return setupViewportGuard(el);
+  }, []);
   const [location, setLocation] = useState<{
     text: string;
     coords?: { latitude: number; longitude: number; accuracyMeters?: number };
@@ -468,12 +484,15 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
           </div>
 
           <textarea
-            ref={messageIme.ref}
-            onChange={messageIme.onChange}
-            onCompositionStart={messageIme.onCompositionStart}
-            onCompositionEnd={messageIme.onCompositionEnd}
-            onFocus={messageIme.onFocus}
-            onBlur={messageIme.onBlur}
+            ref={messageRef}
+            defaultValue={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onCompositionStart={imeEventHandlers.onCompositionStart}
+            onCompositionEnd={(e) => {
+              imeEventHandlers.onCompositionEnd(e);
+              commitImeValueToState(e.currentTarget, message, setMessage);
+            }}
+            onBlur={(e) => commitImeValueToState(e.currentTarget, message, setMessage)}
             dir="auto"
             lang="mul"
             inputMode="text"

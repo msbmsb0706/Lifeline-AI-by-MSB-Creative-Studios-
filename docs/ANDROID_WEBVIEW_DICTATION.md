@@ -23,46 +23,32 @@ speaking ──▶ interim phrases stream into the field's DOM value (preedit)
 finish   ──▶ compositionend (the ONLY event that carries the final commit)
 ```
 
-Three things about this codebase turned that into data loss:
+Two things about this codebase turned that into data loss:
 
-### 1a. A controlled textarea re-applies a stale value mid-composition
+### 1a. The IME composition conflict (the main bug)
 
-The transcript field was a fully React-controlled input:
+The transcript field was a fully React-controlled input
+(`value={transcript}` + `onChange`). During a dictation session the DOM holds
+the growing dictation text, but the React `transcript` state still holds the
+**pre-dictation** value — React's `onChange` is not trusted to fire per-interim
+for IME text; the commit arrives at `compositionend`. LifeLine AI re-renders
+its tree for unrelated reasons at all times (network `online`/`offline` flaps
+→ `setNetworkAvailable`, the partner-queue subscription →
+`setPendingQueueCount`, service-worker status → `setOfflineShellReady`, the
+voice pipeline → `setVoiceNotice`/`setVoiceCapture`). Any re-render in that
+window makes React write the stale `value` prop back into the DOM.
 
-```tsx
-<textarea value={transcript} onChange={(e) => onTranscriptChange(e.target.value)} />
-```
+**Android's Chromium backend treats that external script write as a command
+override: it cancels the IME session and discards the entire dictation
+buffer.** That is exactly the reported symptom.
 
-During a dictation session the DOM holds the growing dictation text, but the
-React `transcript` state still holds the **pre-dictation** value — React's
-`onChange` is not trusted to fire per-interim for IME text; the commit arrives
-at `compositionend`. LifeLine AI re-renders its tree for unrelated reasons at
-all times (network `online`/`offline` flaps → `setNetworkAvailable`, the
-partner-queue subscription → `setPendingQueueCount`, service-worker status,
-the voice pipeline, geolocation). Any re-render in that window makes React
-write the stale `value` prop back into the DOM.
+### 1b. The viewport-shrink blur
 
-**A programmatic `textarea.value = <stale>` write while a composition session
-is active makes Android Chrome / WebView cancel the IME session and silently
-discard the entire pending utterance.** That is exactly the reported symptom.
-
-### 1b. Nothing keeps the field focused/visible while the keyboard animates
-
-When the soft keyboard opens, the visual viewport shrinks. In WebView
-containers (or with legacy `resizes-content` behaviour) that is a full layout
-reflow plus a page scroll. If the focused field moves out of the visual
-viewport — or the container's layout pass blurs it — Android fires `blur()` on
-the composing element, which **also cancels the dictation session**. The app
-had no `visualViewport` handling at all, and the transcript box sits well
-below the fold.
-
-### 1c. Missing hardening
-
-- The viewport `meta` did not opt into `interactive-widget=resizes-visual`,
-  so older Chrome behaviour (resize the *layout* viewport on keyboard open →
-  reflow → layout/scroll/focus churn) applied.
-- The field lacked `autoCorrect`/`autoCapitalize`/`spellCheck`/`enterKeyHint`
-  tuning, and the WebView host configuration (below) was not specified.
+When the soft keyboard slides up, the visual viewport undergoes a sudden
+layout jump. Without defensive focus handling, the focused textarea can
+experience a momentary `blur()` (container layout pass, or the field pushed
+out of the visual viewport). **On Android a blur event instantly kills active
+voice dictation.**
 
 ---
 
@@ -70,11 +56,11 @@ below the fold.
 
 | File | Change |
 |---|---|
-| `src/lib/imeSafeTextarea.ts` | **New** — `useImeSafeTextarea()` hook: the composition-proof input binding (see §3.1). |
-| `src/lib/keyboardFocusGuard.ts` | **New** — `attachKeyboardFocusGuard()`: focus + visual-viewport guard (see §3.2). |
-| `src/components/TranscriptArea.tsx` | Transcript field now uses the IME-safe binding (no `value` prop), IME input attributes, guard attached; Enter-to-submit reads the DOM value directly. |
-| `src/components/SilentSOS.tsx` | Same IME-safe binding applied to the Silent SOS message field (same bug class). |
-| `src/App.tsx` | `onTranscriptChange` is now a stable `useCallback` (the binding mirrors every input event through it, including mid-dictation interim text). |
+| `src/utils/imeHelpers.ts` | **New** — decoupled IME composition-session manager: `activeIMESession` singleton, `isImeComposing(el)` gate, `commitImeValueToState()` deterministic commit, `imeEventHandlers` (see §3.1). |
+| `src/utils/viewportGuard.ts` | **New** — `setupViewportGuard(element)`: keyboard visual-viewport guard (see §3.2). |
+| `src/components/TranscriptArea.tsx` | Transcript field is now an IME-resilient uncontrolled input (no `value` prop; state->DOM sync gated on `isImeComposing`; authoritative commit on `compositionend`/`blur`), viewport guard bound to its ref, IME input attributes; Enter-to-submit reads the DOM value directly. |
+| `src/components/SilentSOS.tsx` | Same IME-resilient pattern applied to the Silent SOS message field (same bug class). |
+| `src/App.tsx` | `onTranscriptChange` is a stable `useCallback` (the binding mirrors every input event through it, including mid-dictation interim text). |
 | `index.html` | Viewport meta: `viewport-fit=cover, interactive-widget=resizes-visual`. |
 | `src/index.css` | `overscroll-behavior: none` on `html, body` (no pull-to-refresh/gesture yank while the keyboard is open). |
 | `tests/mobile-dictation-input.test.ts` | **New** — 27-assertion regression suite (real `TranscriptArea` in jsdom: stale re-renders mid-composition, commit integrity, external writes, clear/preset, blur resync, focus-guard restore + no-focus-theft). |
@@ -83,81 +69,81 @@ below the fold.
 
 ---
 
-## 3. How the fix works (answers to the three questions)
+## 3. How the fix works
 
-### 3.1 Uncontrolled-during-composition input (the core fix)
+### 3.1 IME-resilient inputs (`src/utils/imeHelpers.ts`)
 
-`useImeSafeTextarea(value, onTextChange)` keeps the parent as the single
-source of truth while making it **impossible for a re-render to clobber an
-active IME session**:
+The design goal: **React keeps its state loop, but never programmatically
+overwrites the native DOM value while an IME composition session is active in
+that field.** Concretely, each protected field (TranscriptArea, SilentSOS):
 
-1. **The textarea is rendered without a `value` prop.** React therefore never
-   writes the DOM value — no re-render loop, debounce or not, can reset the
-   composition string mid-speech. (This is deliberately *not* a "just remove
-   value" hack: everything below keeps state and DOM in lockstep.)
-2. **DOM → state mirrors, synchronously, on every event that matters:**
-   - every `input` event (plain typing *and* IME interim text — the char
-     count, detected-language badge and submit button stay live),
-   - `compositionend` — the **authoritative commit** (some Android IMEs
-     deliver the final text with `compositionend` itself and never fire a
-     trailing `input`, so the handler re-reads the DOM, not the event),
-   - `blur` — catches an IME retracting preedit text (e.g. dictation
-     cancelled), so state always ends equal to what the user sees.
-3. **State → DOM happens in one guarded effect** for external writes only
-   (server-ASR voice capture, presets, Clear):
+1. **Renders its textarea without a `value` prop** (uncontrolled, with
+   `defaultValue` for the initial mount value). React therefore can never
+   write the DOM value — no re-render loop can reset the composition string
+   mid-speech.
+2. **Mirrors every DOM change up to state via `onChange`** — plain typing
+   *and* IME interim text, so the char count, detected-language badge and
+   submit button stay live.
+3. **Gates the state→DOM sync effect** — the only place state can reach the
+   DOM (external writes: server-ASR voice capture, presets, Clear):
 
    ```ts
    useEffect(() => {
-     const el = ref.current;
-     if (!el) return;
-     if (composingRef.current) return;  // ← the IME owns the value; NEVER touch it
-     if (el.value !== value) el.value = value;
-   }, [value]);
+     const el = textareaRef.current;
+     if (el && !isImeComposing(el) && el.value !== transcript) {
+       el.value = transcript;
+     }
+   }, [transcript]);
    ```
 
-   `composingRef` is set **synchronously** from native `compositionstart` /
-   `compositionend` — it does not rely on `e.nativeEvent.isComposing`, which
-   is not reliable across every Android IME build.
-4. **No debouncing anywhere on this path.** The mirror is synchronous; the
-   only "delay" is React's own commit, and because the DOM is unowned by
-   React, a late commit is harmless. (Debounce would be *worse* here: it is
-   precisely the async value round-trip that let the old code stamp stale
-   text into a live composition.)
-5. **Enter-to-submit reads `e.currentTarget.value`** (the DOM) instead of the
-   state prop, so even if a dictation commit and the Enter key land in the
-   same batch, the submitted text is what the user sees.
+   `isImeComposing(el)` reads the `activeIMESession` singleton set
+   **synchronously** by `imeEventHandlers.onCompositionStart` (it does not
+   rely on `e.nativeEvent.isComposing`, which is not reliable across every
+   Android IME build). The element argument matters: a composition in the
+   Silent SOS field never blocks a state→DOM sync in the transcript field.
+4. **Commits authoritatively on `compositionend` and `blur`** via
+   `commitImeValueToState(el, state, setState)` — a direct read of the DOM
+   value pushed into state. Some Android IMEs deliver the final dictation
+   text with `compositionend` itself and never fire a trailing `input`, so
+   the DOM must be read directly (the utility also dispatches a synthesized
+   `input` event as a second, browser-native path through React's
+   value-tracker `onChange`; the two are idempotent together). The `blur`
+   commit covers an IME retracting preedit text — state always ends equal to
+   what the user sees.
+5. **No debounce anywhere on this path.** The mirrors are synchronous; the
+   async state round-trip is precisely what let the old code stamp stale
+   text into a live composition.
+6. **Enter-to-submit reads `e.currentTarget.value`** (the DOM), so even if a
+   dictation commit and the Enter key land in the same batch, the submitted
+   text is what the user sees.
 
-External writes (e.g. the server-ASR path doing `setTranscript(data.transcript)`)
-arrive as a prop change and are written to the field by the effect — always
-while the field is unfocused in practice (the user was on the microphone
-button), and protected by the composition guard regardless.
+### 3.2 Keyboard visual-viewport guard (`src/utils/viewportGuard.ts`)
 
-### 3.2 Focus + visual-viewport guard (`keyboardFocusGuard.ts`)
+`setupViewportGuard(element)` (bound to each field's ref on mount; returns a
+cleanup). Defensive, best-effort, never throws, no-op on desktop:
 
-Attached to the field's ref on mount. Defensive, best-effort, never throws,
-no-op on desktop:
-
-- **Keyboard state:** tracks `window.visualViewport.height` (fallback:
-  `window.resize`, debounced). A drop of >120px below the running baseline =
+- **Keyboard state:** tracks `window.visualViewport.height` (debounced
+  `window.resize` fallback). A drop of >120px below the running baseline =
   keyboard open; growth back = closed. Baseline re-sets on orientation change.
 - **Keep-in-view:** while the keyboard is open **and the field owns focus**,
-  the field is kept ≥12px inside the visual viewport
-  (`getBoundingClientRect` is already visual-viewport-relative; a minimal
-  `window.scrollBy(delta)` corrects any shortfall, rAF-throttled). Android
-  dismisses the IME when its target is not visible — this prevents the most
-  common "text dropped" variant in WebView containers.
+  the field is kept ≥12px inside the visual viewport (rAF-throttled minimal
+  `scrollBy` — `getBoundingClientRect` is already visual-viewport-relative).
+  Android dismisses the IME when its target is not visible.
 - **Phantom-blur repair:** if the field blurs while the keyboard is open and
-  focus dropped to `<body>` (layout jump / container glitch) and there was
-  recent typing/IME activity, the guard re-focuses with
-  `focus({ preventScroll: true })` and restores the saved caret/selection
-  (saved on focus/input/keyup/click/compositionend).
-- **Never fights the user:** focus moves to another control (tracked via a
-  document-level `focusin` with a 1.2s window) are never overridden; the
-  guard requires recent activity, backs off after 3 failed refocus attempts,
-  and never grabs focus in a backgrounded tab.
+  focus dropped to `<body>` (layout jump / container glitch) with recent
+  typing/IME activity, focus is restored with `focus({preventScroll:true})`
+  plus the saved caret/selection (saved on focus/input/keyup/click/
+  compositionend).
+- **Never fights the user:** focus moves to another control (document-level
+  `focusin`, 1.2s window) are never overridden — a naive
+  `setTimeout(() => el.focus(), 30)` would yank focus back 30ms after the
+  user taps *any* other control (Attach GPS, a preset, a modal), which is a
+  real regression in an emergency app. The guard also requires recent
+  activity, backs off after 3 failed refocus attempts, and never grabs focus
+  in a backgrounded tab or on a disabled element.
 
-The document-level (capture) listeners mean the guard survives React
-remounting the element without re-attaching.
+Document-level (capture) listeners mean the guard survives React remounting
+the element without re-attaching.
 
 ### 3.3 HTML attributes + WebView host configuration
 
@@ -168,8 +154,8 @@ remounting the element without re-attaching.
 | `autoComplete="off"` | No autofill suggestions/rewrites of emergency text. |
 | `autoCapitalize="sentences"` | Dictation already capitalizes; typed messages get normal sentence capitalization. |
 | `autoCorrect="off"` | The IME must never "fix" a verbatim emergency message after the user finishes speaking. |
-| `spellCheck={false}` | No red squigglies / rewrites over distress text (10+ languages). |
-| `enterKeyHint="send"` | The field submits on Enter (existing behaviour), so the keyboard's action key shows Send. |
+| `spellCheck={false}` | No spell-rewrite layer over distress text (10+ languages). |
+| `enterKeyHint="send"` (transcript field) | The field submits on Enter, so the keyboard's action key shows Send. |
 | `inputMode="text"` | Explicitly keep the full IME-capable keyboard (voice dictation needs it; never `decimal`/`none`). |
 | `dir="auto"` / `lang="mul"` | RTL/LTR and multilingual text render correctly. |
 
@@ -182,9 +168,15 @@ remounting the element without re-attaching.
 
 `interactive-widget=resizes-visual` (Chrome 108+): when the keyboard opens,
 only the **visual** viewport resizes — the layout viewport keeps its size, so
-the page does **not** reflow while the IME is active. This removes the layout
-jump that used to blur the focused input (which cancels dictation). Older
-engines ignore the attribute and keep working.
+the page does **not** reflow while the IME is active. That removes the layout
+jump behind root cause 1b. Deliberate choices:
+
+- `resizes-visual`, **not** `resizes-content`: `resizes-content` (the
+  default) shrinks the *layout* viewport on keyboard open → full reflow +
+  `resize` storm → exactly the layout jump that can blur the focused input.
+- **No `maximum-scale=1.0, user-scalable=no`**: an emergency app must stay
+  pinch-zoomable (WCAG 1.4.4); disabling zoom is an accessibility regression
+  for the people most likely to use it.
 
 **CSS (`src/index.css`):** `html, body { overscroll-behavior: none; }` —
 stops pull-to-refresh / rubber-banding / gesture navigation from yanking the
@@ -211,6 +203,13 @@ webview.settings.apply {
     loadWithOverviewMode = false
 }
 ```
+
+Note: `webView.requestFocus(View.FOCUS_DOWN)` / `setFocusable(true)` /
+`setFocusableInTouchMode(true)` are standard WebView hygiene (hardware-key
+focus routing) but are **not** what makes IME text injection work — the soft
+keyboard writes into the focused DOM element regardless; the fixes that
+matter are `adjustResize`, a DOM that never fights the IME (§3.1), and the
+container pitfalls below.
 
 **Container pitfalls that independently cause this exact bug** — do not do
 these in the host app:

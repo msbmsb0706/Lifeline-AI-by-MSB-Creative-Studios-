@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   MapPin,
   Send,
@@ -17,8 +17,8 @@ import {
 import { QuickPreset, SupportedLanguageInfo, VoiceCaptureMetadata } from '../types.ts';
 import { SUPPORTED_LANGUAGES, detectLanguage } from '../lib/languages.ts';
 import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
-import { useImeSafeTextarea } from '../lib/imeSafeTextarea.ts';
-import { attachKeyboardFocusGuard } from '../lib/keyboardFocusGuard.ts';
+import { isImeComposing, commitImeValueToState, imeEventHandlers } from '../utils/imeHelpers.ts';
+import { setupViewportGuard } from '../utils/viewportGuard.ts';
 import { LocationPrivacyModal } from './LocationPrivacyModal.tsx';
 
 interface TranscriptAreaProps {
@@ -149,21 +149,44 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
   const [showLocationPrivacyModal, setShowLocationPrivacyModal] = useState(false);
 
   /**
-   * IME-safe transcript binding — THE fix for Android keyboard voice
-   * dictation (Gboard mic) being dropped. The textarea is rendered without a
-   * `value` prop so no re-render (network flaps, queue updates, the voice
-   * pipeline, ...) can write a stale value into the field while the IME
-   * composition session is still active; the DOM is mirrored back into the
-   * `transcript` state on every input / compositionend / blur.
-   * See src/lib/imeSafeTextarea.ts for the full rationale.
+   * IME-resilient transcript input — THE fix for Android keyboard voice
+   * dictation (Gboard mic) being dropped.
+   *
+   * The textarea is rendered WITHOUT a `value` prop (uncontrolled): React
+   * therefore can never write the DOM value mid-composition, so no
+   * re-render (network flaps, queue updates, the voice pipeline, ...) can
+   * stamp stale state into the field while the user is still speaking. The
+   * DOM is mirrored back into the `transcript` state on every `input` event,
+   * on the authoritative `compositionend` commit, and on `blur`.
+   * See src/utils/imeHelpers.ts for the full rationale.
    */
-  const imeSafe = useImeSafeTextarea(transcript, onTranscriptChange);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Keep the field focused and visible while the soft keyboard is open:
-  // restores focus after keyboard-animation "phantom blurs" (which cancel
-  // voice dictation) and keeps the field inside the visual viewport.
-  // `imeSafe.ref` is a stable ref object, so this attaches once on mount.
-  useEffect(() => attachKeyboardFocusGuard(imeSafe.ref), []);
+  // Sync state down to the DOM ONLY if the user is not actively composing
+  // (dictating / transliterating) in THIS field — an active IME session owns
+  // the value and must never be overwritten by a stale state write.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el && !isImeComposing(el) && el.value !== transcript) {
+      el.value = transcript;
+    }
+  }, [transcript]);
+
+  // Keyboard visual-viewport guard: keeps the field focused and visible
+  // while the soft keyboard is open (repairs keyboard-animation "phantom
+  // blurs" that would cancel voice dictation). The textarea element is
+  // stable for the lifetime of this component, so this attaches once.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    return setupViewportGuard(el);
+  }, []);
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // Always push changes up to React state so the app stays synchronized
+    // (fires for plain typing and for IME interim text).
+    onTranscriptChange(e.target.value);
+  };
 
   // Real-time automatic language detection
   const detectedLanguage = useMemo(() => {
@@ -303,12 +326,20 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
       <div className="relative">
         <textarea
           id="emergency-transcript-input"
-          ref={imeSafe.ref}
-          onChange={imeSafe.onChange}
-          onCompositionStart={imeSafe.onCompositionStart}
-          onCompositionEnd={imeSafe.onCompositionEnd}
-          onFocus={imeSafe.onFocus}
-          onBlur={imeSafe.onBlur}
+          ref={textareaRef}
+          defaultValue={transcript}
+          onChange={handleChange}
+          onCompositionStart={imeEventHandlers.onCompositionStart}
+          onCompositionEnd={(e) => {
+            // End the tracked IME session, then authoritatively commit the
+            // field's DOM text into state (some Android IMEs deliver the
+            // final dictation text with compositionend itself).
+            imeEventHandlers.onCompositionEnd(e);
+            commitImeValueToState(e.currentTarget, transcript, onTranscriptChange);
+          }}
+          onBlur={(e) =>
+            commitImeValueToState(e.currentTarget, transcript, onTranscriptChange)
+          }
           onKeyDown={handleKeyDown}
           dir="auto"
           lang="mul"

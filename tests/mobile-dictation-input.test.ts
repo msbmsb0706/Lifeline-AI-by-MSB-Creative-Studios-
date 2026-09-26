@@ -11,8 +11,9 @@
  * (onChange is deferred until compositionend). The old controlled
  * `<textarea value={transcript}>` therefore re-applied the stale value to the
  * DOM on re-renders, which makes Android Chrome/WebView cancel the IME
- * session and discard the whole utterance. The fix (src/lib/imeSafeTextarea.ts
- * + src/lib/keyboardFocusGuard.ts) must make the field composition-proof.
+ * session and discard the whole utterance. The fix (src/utils/imeHelpers.ts
+ * + src/utils/viewportGuard.ts, wired in TranscriptArea/SilentSOS) must make
+ * the fields composition-proof.
  *
  * HOW THE TESTS SIMULATE AN ANDROID IME IN JSDOM
  * ----------------------------------------------
