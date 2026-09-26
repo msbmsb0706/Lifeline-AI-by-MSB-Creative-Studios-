@@ -130,12 +130,65 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
           )}
 
           {isLocalOnly && (
-            <label className="block p-3 rounded-xl border border-amber-700 text-amber-100 text-xs">
-              <span className="flex items-start gap-2 font-bold"><input type="checkbox" checked={automaticRecovery}
-                onChange={(e) => setAutomaticRecovery(e.target.checked)} />
-                Automatically send this SOS when a verified Internet connection becomes available.</span>
-              <span className="block mt-2">If selected, LifeLine may attempt this confirmed SOS after verified connectivity only when a real authorized integration has been verified and enabled. None is included by default. No GPS or photo/video bytes will be sent automatically. If no destination is configured, your SOS stays local. Recovery works only while this web application can execute.</span>
-            </label>
+            <div className="p-3 rounded-xl border border-amber-700 bg-neutral-900/70 text-xs space-y-2">
+              <div className="font-black text-amber-200 uppercase tracking-wider text-[11px]">
+                Choose what happens when the connection comes back
+              </div>
+
+              <label
+                className={`block p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                  automaticRecovery ? 'border-emerald-600 bg-emerald-950/40' : 'border-neutral-700'
+                }`}
+              >
+                <span className="flex items-start gap-2 font-bold text-white">
+                  <input
+                    type="radio"
+                    name="lifeline-offline-choice"
+                    checked={automaticRecovery}
+                    onChange={() => setAutomaticRecovery(true)}
+                  />
+                  SAVE + AUTO-SEND WHEN THE CONNECTION RETURNS
+                </span>
+                <span className="block mt-1.5 text-neutral-300">
+                  LifeLine will try to send this exact SOS on its own as soon as ALL of these are true:
+                </span>
+                <ol className="mt-1.5 ml-4 list-decimal space-y-1 text-neutral-300">
+                  <li>This page is still open on this device and in the foreground (a tab that is closed or backgrounded cannot run).</li>
+                  <li>A real Internet connection is verified — not just a Wi-Fi icon. LifeLine pings this server and continues only on a genuine reply.</li>
+                  <li>An authorized partner destination is actually configured on the server. If none is, nothing is sent and the SOS stays here.</li>
+                  <li>You have not deleted the record or already sent it from the Pending SOS Queue.</li>
+                </ol>
+                <span className="block mt-1.5 text-neutral-400">
+                  Never sent automatically: GPS coordinates, photos, video. When it does send, the status card on
+                  your SOS turns 🟢 SOS SENT — until then it says <b>NOT SENT</b>.
+                </span>
+              </label>
+
+              <label
+                className={`block p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                  !automaticRecovery ? 'border-amber-500 bg-amber-950/40' : 'border-neutral-700'
+                }`}
+              >
+                <span className="flex items-start gap-2 font-bold text-white">
+                  <input
+                    type="radio"
+                    name="lifeline-offline-choice"
+                    checked={!automaticRecovery}
+                    onChange={() => setAutomaticRecovery(false)}
+                  />
+                  SAVE ON THIS DEVICE ONLY
+                </span>
+                <span className="block mt-1.5 text-neutral-300">
+                  Nothing is ever sent automatically, now or later. Open the Pending SOS Queue and use
+                  <b> SHARE VIA DEVICE</b> (WhatsApp / SMS / call) or <b>SEND NOW</b> yourself.
+                </span>
+              </label>
+
+              <p className="text-[11px] text-neutral-400">
+                Either way the record is stored on this device first, so it survives the connection dropping.
+                Browser storage can still be cleared by the operating system, so share it yourself if you can.
+              </p>
+            </div>
           )}
 
           {isAuthorizedApi && allowGpsSelection && (
@@ -226,6 +279,12 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
                   {sosPackage.originalTranscript}
                 </div>
               )}
+              {sosPackage.translation?.translatedMessage && (
+                <div className="text-emerald-300 col-span-1 sm:col-span-2" dir="auto">
+                  <b>Translation ({sosPackage.translation.targetLanguageName}):</b>{' '}
+                  {sosPackage.translation.translatedMessage}
+                </div>
+              )}
 
               <div className="flex items-center gap-2 text-emerald-300">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -305,7 +364,11 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
               {isOffline || isLocalOnly ? (
                 <>
                   <Save className="w-4 h-4" />
-                  <span>{isLocalOnly && automaticRecovery ? 'SAVE LOCALLY + AUTOMATIC RECOVERY' : 'SAVE LOCALLY'}</span>
+                  <span>
+                    {isLocalOnly && automaticRecovery
+                      ? 'SAVE + AUTO-SEND WHEN ONLINE'
+                      : 'SAVE ON THIS DEVICE ONLY'}
+                  </span>
                 </>
               ) : (
                 <>

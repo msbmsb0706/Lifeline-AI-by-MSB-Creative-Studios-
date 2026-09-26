@@ -34,6 +34,7 @@ await import('./voice-android-lifecycle.test.ts');
 await import('./offline-sos-android-flow.test.ts');
 await import('./ui-visibility.test.ts');
 await import('./automatic-sos-recovery.test.ts');
+await import('./pr28-user-defects.test.ts');
 // Previous browser tests install window/document stubs. Embedded PostgreSQL
 // must initialize in a genuine Node environment, not a partial browser stub.
 delete (globalThis as any).window;

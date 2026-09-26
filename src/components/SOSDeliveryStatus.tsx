@@ -38,6 +38,8 @@ interface SOSDeliveryStatusProps {
   onRetryFinished?: () => void;
   /** User-forced offline mode blocks retries even if the OS reports online. */
   offlineMode?: boolean;
+  /** Opens the Pending SOS Queue (share manually / review an authorized send). */
+  onOpenQueue?: () => void;
 }
 
 /**
@@ -56,11 +58,13 @@ interface SOSDeliveryStatusProps {
  *   network and stamps every transition as simulated). The normal TEST / DEMO
  *   dispatch path never fabricates these states.
  */
-export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId, onRetryFinished, offlineMode = false }) => {
+export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId, onRetryFinished, offlineMode = false, onOpenQueue }) => {
   const [item, setItem] = useState<PendingSOSItem | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [isRetrying, setIsRetrying] = useState<boolean>(false);
+  /** Ticks every second so the "next automatic check" countdown is live. */
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
   // TEST / DEMO ONLY local lifecycle simulator busy flag.
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
 
@@ -77,6 +81,11 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
     sync();
     return subscribeToQueue(sync);
   }, [sosId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Live connectivity for the "Connection" line and retry availability.
   useEffect(() => {
@@ -331,6 +340,66 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
           <span>Delivery details</span>
         </button>
       </div>
+
+      {/* WHAT HAPPENS NEXT — shown for every record that has NOT been sent.
+          "Saved locally" alone is not an answer to "will this ever reach anyone?":
+          the exact conditions, the live countdown and the manual escape hatch are
+          stated here, in plain language. */}
+      {(effectiveStatus === 'PENDING_LOCAL' || effectiveStatus === 'WAITING_FOR_CONNECTION') && (
+        <div
+          id="sos-what-happens-next"
+          className="mx-3 mb-3 p-2.5 rounded-lg bg-black/50 border border-neutral-800 text-[11px] text-neutral-300 space-y-1.5"
+        >
+          <div className="font-black uppercase tracking-wider text-[10px] text-amber-300">
+            What happens next — nothing has been sent yet
+          </div>
+
+          {item.automaticRecovery === true ? (
+            <ol className="ml-4 list-decimal space-y-1">
+              <li>
+                This SOS is stored on this device. It will be sent automatically ONLY while this page is open and in
+                the foreground.
+              </li>
+              <li>
+                LifeLine re-checks the connection{typeof item.nextRecoveryAt === 'number' && item.nextRecoveryAt > nowTick
+                  ? ` in ${Math.max(1, Math.ceil((item.nextRecoveryAt - nowTick) / 1000))} second(s)`
+                  : ' within about 5 minutes'}{' '}
+                and verifies it against this server — a Wi-Fi icon alone is not enough.
+              </li>
+              <li>
+                {item.errorMessage === 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION'
+                  ? 'No authorized partner destination is configured on the server right now, so nothing can be sent automatically. Use SEND NOW to review a destination, or SHARE VIA DEVICE.'
+                  : 'It then needs a configured authorized partner destination. If none is configured, nothing is sent and this card keeps saying NOT SENT.'}
+              </li>
+              <li>
+                GPS, photos and video are never sent automatically. When a send really happens this card turns
+                🟢 SOS SENT.
+              </li>
+            </ol>
+          ) : (
+            <ol className="ml-4 list-decimal space-y-1">
+              <li>This SOS is stored on this device. You chose manual sending, so LifeLine will never send it on its own.</li>
+              <li>Open the Pending SOS Queue to review the saved text.</li>
+              <li>
+                Use <b>SHARE VIA DEVICE</b> (WhatsApp, SMS, call — works on any network) or <b>SEND NOW</b> to review an
+                authorized destination when the connection is back.
+              </li>
+            </ol>
+          )}
+
+          {onOpenQueue && (
+            <button
+              id="sos-open-queue-btn"
+              type="button"
+              onClick={onOpenQueue}
+              className="w-full py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white font-black text-[11px] flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>OPEN PENDING SOS QUEUE — SHARE OR SEND IT MYSELF</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {expanded && (
         <div className="px-3 pb-3">

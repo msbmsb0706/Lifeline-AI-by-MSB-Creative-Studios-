@@ -57,14 +57,17 @@ if (!jsdomReady) {
   async function mount(options?: {
     selectedLanguage?: string;
     onResolveVoiceMode?: () => Promise<'server' | 'browser'>;
+    onVoiceRecordingStopped?: (audioBase64: string, mimeType: string, durationMs: number) => void;
     micPermission?: 'granted' | 'denied' | 'prompt';
     micProbeErrorName?: string | null;
     navigatorLanguages?: string[];
+    withMediaRecorder?: boolean;
   }): Promise<Harness> {
     const h = installDomHarness({
       micPermission: options?.micPermission,
       micProbeErrorName: options?.micProbeErrorName,
-      navigatorLanguages: options?.navigatorLanguages
+      navigatorLanguages: options?.navigatorLanguages,
+      withMediaRecorder: options?.withMediaRecorder
     });
     const changes: Array<{ text: string; isFinal: boolean }> = [];
     const submissions: string[] = [];
@@ -78,7 +81,8 @@ if (!jsdomReady) {
           soundEnabled: false,
           highContrast: false,
           selectedLanguage: options?.selectedLanguage || 'en',
-          onResolveVoiceMode: options?.onResolveVoiceMode
+          onResolveVoiceMode: options?.onResolveVoiceMode,
+          onVoiceRecordingStopped: options?.onVoiceRecordingStopped
         })
       );
     });
@@ -335,106 +339,146 @@ if (!jsdomReady) {
   }
 
   // -------------------------------------------------------------------------
-  section('Microphone permission probe: stream is stopped BEFORE recognition starts');
+  // The getUserMedia() permission probe was REMOVED from the browser voice path.
+  //
+  // On Chrome/Android that probe was the reason live voice failed: it grabbed
+  // the microphone and, even after track.stop(), the Android audio stack had
+  // not released it when recognition.start() ran — the recognizer failed with
+  // 'audio-capture' having heard nothing. Awaiting the probe also pushed
+  // recognition.start() outside the tap's user-activation window, so Chrome
+  // could answer 'not-allowed' and the app reported a permission denial the
+  // user never saw a prompt for.
+  // -------------------------------------------------------------------------
+  section('Browser voice path opens NO getUserMedia probe — the recognizer owns the mic');
   {
     const v = await mount({ micPermission: 'prompt' });
     await v.tap();
     await flush(30);
-    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'one getUserMedia permission probe per user tap');
-    assertEqual(v.h.mic.trackStops, 1, 'probe stream track is stopped immediately — the permission was all that was needed');
-    const log = FakeSpeechRecognition.orderLog;
-    const granted = log.indexOf('mic-permission-granted');
-    const stopped = log.indexOf('mic-track-stopped');
-    const started = log.indexOf('recognition-start');
-    assert(granted !== -1 && stopped !== -1 && started !== -1 && granted < stopped && stopped < started,
-      'order is permission granted → tracks stopped → recognition.start()');
-    assertEqual(v.rec.startCalls, 1, 'SpeechRecognition starts only after the probe stream is closed');
-    assert(v.label().includes('Listening'), 'listening UI appears after the probe succeeds');
+    assertEqual(v.h.mic.getUserMediaCalls.length, 0, 'no getUserMedia probe on the browser voice path');
+    assertEqual(v.h.mic.trackStops, 0, 'no probe stream is opened, so none needs closing');
+    assertEqual(v.rec.startCalls, 1, 'SpeechRecognition opens the microphone itself');
+    assert(v.label().includes('Listening'), 'listening UI appears from the recognizer alone');
     assertEqual(v.h.mic.alerts, 0, 'no browser alert dialog in the emergency voice UI');
     await v.stop();
   }
 
   // -------------------------------------------------------------------------
-  section('Permission already granted: no probe, no extra microphone open/close');
+  section('recognition.start() runs synchronously inside the tap (user gesture intact)');
   {
-    const v = await mount({ micPermission: 'granted' });
-    await v.tap();
-    await flush(30);
-    assertEqual(v.h.mic.getUserMediaCalls.length, 0, 'a granted permission skips the getUserMedia probe');
-    assertEqual(v.h.mic.trackStops, 0, 'no extra microphone open/close cycle for a granted permission');
-    assertEqual(v.rec.startCalls, 1, 'recognition still starts directly');
-    await v.stop();
-  }
-
-  // -------------------------------------------------------------------------
-  section('Permission denied: in-app message only, recognizer never starts');
-  {
-    const v = await mount({ micPermission: 'denied' });
-    await v.tap();
-    await flush(30);
-    assertEqual(v.h.mic.getUserMediaCalls.length, 0, 'a known denial does not re-open the microphone');
-    assertEqual(v.rec.startCalls, 0, 'SpeechRecognition never starts without permission');
-    assert(v.status().includes('permission'), 'the denial is explained in plain language, in-app');
-    assertEqual(v.h.mic.alerts, 0, 'the denial is not a public browser alert');
-    await v.stop();
-  }
-
-  // -------------------------------------------------------------------------
-  section('Probe rejections are reported in-app; the next tap re-checks the permission');
-  {
-    const v = await mount({ micPermission: 'prompt', micProbeErrorName: 'NotAllowedError' });
-    await v.tap();
-    await flush(30);
-    assertEqual(v.rec.startCalls, 0, 'a rejected probe never starts recognition');
-    assert(v.status().includes('permission'), 'probe rejection is explained as a permission problem');
-    assertEqual(v.h.mic.alerts, 0, 'probe rejection is not a browser alert');
-    v.h.mic.setProbeError(null); // the person allowed the mic in browser settings
-    await v.tap();
-    await flush(30);
-    assertEqual(v.h.mic.getUserMediaCalls.length, 2, 'the next tap re-runs the probe instead of staying locked out');
-    assertEqual(v.rec.startCalls, 1, 'after the probe succeeds, recognition starts');
-    await v.stop();
-
-    const missing = await mount({ micPermission: 'prompt', micProbeErrorName: 'NotFoundError' });
-    await missing.tap();
-    await flush(30);
-    assertEqual(missing.rec.startCalls, 0, 'a missing microphone never starts recognition');
-    assert(missing.status().includes('No microphone found'), 'missing hardware is explained in-app');
-    assertEqual(missing.h.mic.alerts, 0, 'hardware errors are not browser alerts either');
-    await missing.stop();
-  }
-
-  // -------------------------------------------------------------------------
-  section('Rapid second tap during the permission probe cannot double-open the microphone');
-  {
-    // A slow permission prompt: the probe Promise resolves only after 80 ms.
     const v = await mount({ micPermission: 'prompt' });
-    v.h.window.navigator.mediaDevices.getUserMedia = (constraints: any) => {
-      v.h.mic.getUserMediaCalls.push(constraints);
-      return new Promise((resolve) => {
-        const track = {
-          kind: 'audio',
-          stop: () => {
-            v.h.mic.trackStops += 1;
-            FakeSpeechRecognition.orderLog.push('mic-track-stopped');
-          }
-        };
-        FakeSpeechRecognition.orderLog.push('mic-permission-granted');
-        setTimeout(() => resolve({ getTracks: () => [track], active: true }), 80);
-      });
-    };
+    // Dispatch the click and inspect IMMEDIATELY, before any microtask or timer
+    // can run: a start that survives this check cannot have awaited anything.
+    await act(async () => {
+      v.h.document
+        .getElementById('emergency-voice-record-btn')
+        .dispatchEvent(new v.h.window.MouseEvent('click', { bubbles: true }));
+    });
+    assertEqual(v.rec.startCalls, 1, 'recognition started synchronously within the tap handler');
+    assertEqual(v.rec.startLangs.length, 1, 'exactly one start was issued by the tap');
+    assert(v.rec.started, 'the recognizer is running without a preceding getUserMedia round trip');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Insecure origin: honest https explanation, recognizer never starts');
+  {
+    const v = await mount();
+    // Chrome/Android refuses microphone access on an insecure origin — a very
+    // common way to hit "the mic does nothing" on a LAN test build.
+    v.h.window.isSecureContext = false;
     await v.tap();
-    await flush(20); // first tap's probe is still in flight
-    await v.tap(); // toggle semantics: this tap closes the in-flight start
-    await flush(120);
-    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'only ONE permission probe runs, even with a rapid double tap');
-    assertEqual(v.h.mic.trackStops, 1, 'the single probe stream is stopped exactly once');
-    assertEqual(v.rec.startCalls, 0, 'the second tap cancelled the in-flight start — no session, no phantom listening');
-    await v.tap(); // a clean third tap
     await flush(30);
-    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'the cached permission skips a second probe');
-    assertEqual(v.rec.startCalls, 1, 'the clean third tap starts exactly one session');
-    assert(v.label().includes('Listening'), 'listening UI restored after the cancelled start');
+    assertEqual(v.rec.startCalls, 0, 'no recognition attempt on an insecure origin');
+    assert(v.status().includes('https'), 'the page explains that a secure (https) connection is required');
+    assert(v.status().includes('type your emergency below'), 'typing is offered as the always-working path');
+    assertEqual(v.h.mic.alerts, 0, 'the explanation is in-app, not a browser alert');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section("Browser engine unreachable ('network'): explained in-app, LifeLine recorder offered");
+  {
+    let resolveCalls = 0;
+    const v = await mount({
+      micPermission: 'prompt',
+      withMediaRecorder: true,
+      onVoiceRecordingStopped: () => {},
+      onResolveVoiceMode: async () => {
+        resolveCalls += 1;
+        return 'server';
+      }
+    });
+    await v.tap();
+    await flush(20);
+    // Android Chrome: Google's speech service is unreachable → one 'network'
+    // error, nothing heard. The old UI just stopped and said nothing.
+    v.rec.fireError('network');
+    v.rec.autoEnd();
+    await flush(60);
+    assert(v.status().includes('unreachable'), "the failure is named: Chrome's speech service is unreachable");
+    assertEqual(resolveCalls, 1, 'the server transcription availability is checked exactly once');
+    const fallbackBtn = v.h.document.getElementById('voice-engine-fallback-btn');
+    assert(Boolean(fallbackBtn), 'a RECORD WITH LIFELINE VOICE fallback is offered');
+    assertEqual(v.h.mic.alerts, 0, 'still no browser alert dialog');
+    // Tapping the fallback must open a real MediaRecorder capture.
+    await act(async () => {
+      fallbackBtn!.dispatchEvent(new v.h.window.MouseEvent('click', { bubbles: true }));
+    });
+    await flush(60);
+    assertEqual(v.h.mic.recorderStarts, 1, 'the fallback recorder starts exactly one MediaRecorder capture');
+    assert(v.h.mic.getUserMediaCalls.length >= 1, 'the fallback recorder opens the microphone via getUserMedia');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Browser engine unreachable but no server ASR: typing is offered, no dead end');
+  {
+    const v = await mount({ onResolveVoiceMode: async () => 'browser', onVoiceRecordingStopped: () => {} });
+    await v.tap();
+    await flush(20);
+    v.rec.fireError('network');
+    v.rec.autoEnd();
+    await flush(60);
+    assert(v.status().includes('unreachable'), 'the engine failure is still stated plainly');
+    assert(v.status().includes('type the emergency below'), 'typing is presented as the always-working path');
+    assert(
+      v.h.document.getElementById('voice-engine-fallback-btn') === null,
+      'no server-recorder fallback is offered when server ASR is not configured'
+    );
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Nothing heard within the watchdog: the session is diagnosed, never left silent');
+  {
+    const { NO_SPEECH_WATCHDOG_MS } = await import('../src/components/EmergencyVoiceButton.tsx');
+    const v = await mount({ onResolveVoiceMode: async () => 'browser' });
+    await v.tap();
+    await flush(20);
+    assert(!v.status().includes('unreachable'), 'no failure is claimed while results may still arrive');
+    await flush(NO_SPEECH_WATCHDOG_MS + 120);
+    assert(
+      v.status().includes('unreachable') || v.status().includes('type'),
+      'a session that produced nothing is reported instead of pulsing forever'
+    );
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Real speech cancels the watchdog and any fallback offer');
+  {
+    const v = await mount({ onResolveVoiceMode: async () => 'server' });
+    await v.tap();
+    await flush(20);
+    v.rec.emit([{ transcript: 'fire in the kitchen', isFinal: true }]);
+    await flush(40);
+    assertEqual(v.changes.length > 0, true, 'the transcript reached the parent');
+    await flush(9000);
+    assert(!v.status().includes('unreachable'), 'a session that heard speech is never reported as failed');
+    assert(
+      v.h.document.getElementById('voice-engine-fallback-btn') === null,
+      'no fallback offer survives a working session'
+    );
     await v.stop();
   }
 

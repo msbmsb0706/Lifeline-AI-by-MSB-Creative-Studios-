@@ -152,6 +152,8 @@ export function createSOSPackage(params: {
   voiceCapture?: { detectedLanguage?: { code: string; name: string } | null; originalTranscript?: string; englishTranslation?: string } | null;
   /** Synthetic directory example, never set for real user emergencies. */
   demoOnly?: boolean;
+  /** Faithful translation of the original transmission, when one exists. */
+  translation?: { targetLanguage: string; targetLanguageName: string; translatedMessage: string } | null;
 }): SOSPackage {
   return {
     sosId: generateSOSId(),
@@ -168,7 +170,8 @@ export function createSOSPackage(params: {
     ...(params.demoOnly ? { demoOnly: true } : {}),
     detectedLanguage: params.voiceCapture?.detectedLanguage || params.detectedLanguage || null,
     originalTranscript: params.voiceCapture?.originalTranscript || params.originalTranscript || null,
-    englishTranslation: params.voiceCapture?.englishTranslation || null
+    englishTranslation: params.voiceCapture?.englishTranslation || null,
+    translation: params.translation || null
   };
 }
 

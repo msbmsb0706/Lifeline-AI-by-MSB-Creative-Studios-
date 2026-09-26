@@ -57,6 +57,21 @@ interface SpeechRecognitionEvent {
 const MAX_RECORDING_MS = 60_000; // safety cap — capture is always user-activated
 const SILENCE_COMMIT_MS = 1_600;
 /**
+ * A live session that has produced NO result at all after this long is not
+ * "listening" from the user's point of view. Chrome/Android very often ends
+ * such a session silently (its speech service unreachable, a muted mic, a
+ * blocked speech endpoint), so the UI must say so instead of pulsing forever.
+ */
+export const NO_SPEECH_WATCHDOG_MS = 8_000;
+/**
+ * Recognition errors that mean the BROWSER'S speech engine itself cannot be
+ * used right now (not a permission problem, not user silence). On Android
+ * Chrome 'network' is by far the most common: webkitSpeechRecognition depends
+ * on Google's cloud speech service, which is unreachable offline and on some
+ * mobile networks. For these the app offers its own transcription recorder.
+ */
+export const ENGINE_UNAVAILABLE_CODES = ['network', 'audio-capture', 'language-not-supported', 'service-not-allowed'];
+/**
  * Chrome/Android ends a continuous recognition session on its own speech
  * end-point. Restarting is correct, but a browser that keeps ending the
  * session without hearing anything (no-speech loop, offline, muted mic) must
@@ -130,6 +145,11 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   onSubmitEmergencyRef.current = onSubmitEmergency;
   soundEnabledRef.current = soundEnabled;
   selectedLanguageRef.current = selectedLanguage;
+  /** Ref mirrors so the once-created recognizer can call the latest callbacks. */
+  const onResolveVoiceModeRef = useRef(onResolveVoiceMode);
+  const onVoiceRecordingStoppedRef = useRef(onVoiceRecordingStopped);
+  onResolveVoiceModeRef.current = onResolveVoiceMode;
+  onVoiceRecordingStoppedRef.current = onVoiceRecordingStopped;
 
   // Server ASR (MediaRecorder) capture refs — audio is held transiently in memory only
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -143,14 +163,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   // While a server recording is active the lock stays held by the recording
   // itself and is released only when it ends (stop / error / cleanup).
   const voiceStartLockRef = useRef(false);
-  // Set while startBrowserSession is awaiting the microphone permission probe,
-  // so the start-lock stays held across that async gap: a rapid second tap must
-  // never open a second getUserMedia()/SpeechRecognition pair.
-  const browserStartInFlightRef = useRef(false);
-  // Verified microphone permission for this mount. Only 'granted' is cached
-  // (it skips repeated probes); a denial is NOT cached, so the next tap re-checks
-  // — a permission granted later in browser settings takes effect on the next tap.
-  const micPermissionRef = useRef<'unknown' | 'granted'>('unknown');
   // Ref mirror of isServerRecording so the async start path can trust capture
   // state synchronously without waiting for a React re-render.
   const isServerRecordingRef = useRef(false);
@@ -171,6 +183,21 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
    * never be reached and the restart loop runs forever.
    */
   const restartCountRef = useRef(0);
+  /** true once this session has produced ANY result (interim or final). */
+  const heardAnyResultRef = useRef(false);
+  const noSpeechTimerRef = useRef<number | null>(null);
+  /**
+   * Browser-engine health for the CURRENT session. 'none' = nothing reported;
+   * 'unreachable' states mean the browser's speech engine cannot be used right
+   * now (network / audio-capture / language-not-supported). Drives the explicit
+   * in-app fallback offer to LifeLine's own transcription recorder.
+   */
+  const [engineFallback, setEngineFallback] = useState<'none' | 'checking' | 'offered' | 'unavailable'>('none');
+  const engineFallbackRef = useRef<'none' | 'checking' | 'offered' | 'unavailable'>('none');
+  const syncEngineFallback = (next: 'none' | 'checking' | 'offered' | 'unavailable') => {
+    engineFallbackRef.current = next;
+    setEngineFallback(next);
+  };
   const silenceTimerRef = useRef<number | null>(null);
   const browserCapTimerRef = useRef<number | null>(null);
   const submitFallbackTimerRef = useRef<number | null>(null);
@@ -202,6 +229,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   };
 
   const clearBrowserTimers = () => {
+    if (noSpeechTimerRef.current !== null) {
+      window.clearTimeout(noSpeechTimerRef.current);
+      noSpeechTimerRef.current = null;
+    }
     if (silenceTimerRef.current !== null) {
       window.clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
@@ -279,6 +310,72 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     onSubmitEmergencyRef.current(text);
   };
 
+  /**
+   * True from mount until unmount. Every timer/promise in this component can
+   * outlive it (Chrome fires onend asynchronously; the fallback check awaits the
+   * network), so late callbacks must not update state after teardown.
+   */
+  const disposedRef = useRef(false);
+  useEffect(() => {
+    disposedRef.current = false;
+    return () => { disposedRef.current = true; };
+  }, []);
+
+  /** Cancel the "nothing heard yet" watchdog (real results arrived / session over). */
+  const clearNoSpeechWatchdog = () => {
+    if (noSpeechTimerRef.current !== null) {
+      window.clearTimeout(noSpeechTimerRef.current);
+      noSpeechTimerRef.current = null;
+    }
+  };
+
+  /**
+   * The browser's own speech engine cannot be used right now. Never leave the
+   * person staring at a pulsing "Listening" that will produce nothing:
+   *  - state exactly what failed, in plain words;
+   *  - check (cached, no repeated network call) whether this server can
+   *    transcribe a recording itself, and if so offer that recorder — it does
+   *    NOT depend on Google's speech service, which is the part that failed.
+   */
+  const reportEngineUnavailable = (code: string) => {
+    if (disposedRef.current) return;
+    if (engineFallbackRef.current !== 'none') return;
+    syncEngineFallback('checking');
+    const reason = code === 'network'
+      ? "Chrome's live voice service is unreachable — voice recognition needs a network connection to the browser's speech servers, which are blocked or unavailable on this connection."
+      : code === 'audio-capture'
+      ? 'The microphone could not be opened — it may be in use by another app, or the device released it too slowly.'
+      : code === 'language-not-supported'
+      ? 'This browser cannot listen in the selected language.'
+      : 'This browser cannot use its speech service right now.';
+    setMicError(`${reason} Tap again to retry, type below, or record with LifeLine transcription.`);
+    if (!onVoiceRecordingStoppedRef.current || !onResolveVoiceModeRef.current) {
+      syncEngineFallback('unavailable');
+      return;
+    }
+    void (async () => {
+      let mode: 'server' | 'browser' = 'browser';
+      try {
+        mode = await onResolveVoiceModeRef.current!();
+      } catch {
+        mode = 'browser';
+      }
+      if (disposedRef.current || engineFallbackRef.current !== 'checking') return;
+      syncEngineFallback(mode === 'server' ? 'offered' : 'unavailable');
+    })();
+  };
+
+  /** Arm the watchdog that catches a session which never produces a result. */
+  const armNoSpeechWatchdog = () => {
+    clearNoSpeechWatchdog();
+    noSpeechTimerRef.current = window.setTimeout(() => {
+      noSpeechTimerRef.current = null;
+      if (disposedRef.current) return;
+      if (!sessionActiveRef.current || heardAnyResultRef.current || userStopRef.current) return;
+      reportEngineUnavailable('network');
+    }, NO_SPEECH_WATCHDOG_MS);
+  };
+
   const finishBrowserSession = () => {
     clearBrowserTimers();
     userStopRef.current = true;
@@ -339,8 +436,12 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         const { finalText, interimText } = buildTranscript(event.results);
         if (finalText.trim() || interimText.trim()) {
           // Real speech heard — the session is healthy, so the auto-restart
-          // budget starts over.
+          // budget starts over and the "nothing heard" watchdog is disarmed.
           restartCountRef.current = 0;
+          heardAnyResultRef.current = true;
+          clearNoSpeechWatchdog();
+          // Real speech proves the engine works: drop any fallback offer.
+          syncEngineFallback('none');
         }
         if (finalText.trim()) {
           committedRef.current = mergeFinalChunk(committedRef.current, finalText);
@@ -381,7 +482,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           console.error('Speech recognition error:', code);
         }
         if (code === 'not-allowed' || code === 'service-not-allowed') {
-          micPermissionRef.current = 'unknown'; // the next tap re-checks the permission
           sessionActiveRef.current = false;
           userStopRef.current = true;
           setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
@@ -389,7 +489,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         } else {
           const message = speechErrorMessage(code);
           if (message) setMicError(message);
-          if (code === 'audio-capture') micPermissionRef.current = 'unknown'; // the device may have gone away
           if (FATAL_RECOGNITION_ERRORS.includes(code)) {
             // Chrome ends this session by itself after one of these errors, and
             // restarting would only repeat it (an endless, silent loop on
@@ -397,6 +496,12 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
             sessionActiveRef.current = false;
             userStopRef.current = true;
             setIsListening(false);
+            clearNoSpeechWatchdog();
+          }
+          // The browser's speech ENGINE is unusable (not the user, not a
+          // permission choice): say so explicitly and offer our own recorder.
+          if (ENGINE_UNAVAILABLE_CODES.includes(code) && !heardAnyResultRef.current) {
+            reportEngineUnavailable(code);
           }
         }
       };
@@ -405,10 +510,13 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       // pop up "in public" over someone else's shoulder or a shared screen.
 
       recognition.onend = () => {
+        // A late onend after this component unmounted must not update state.
+        if (disposedRef.current) return;
         // Chrome/Android may end at its speech end-point with only interim
         // text. Promote it so a restart or submit never loses what was heard.
         if (liveTextRef.current.trim()) committedRef.current = liveTextRef.current.trim();
         runningRef.current = false;
+        clearNoSpeechWatchdog();
         if (pendingStartRef.current) {
           // A new tap arrived while the old session was closing: start clean now.
           runQueuedStart();
@@ -472,10 +580,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   useEffect(() => {
     return () => {
       // Unmount: release the start lock and ALWAYS stop every microphone track,
-      // even if a start (or its permission probe) was still in flight.
+      // even if a start was still in flight.
       voiceStartLockRef.current = false;
-      browserStartInFlightRef.current = false;
       isServerRecordingRef.current = false;
+      clearNoSpeechWatchdog();
       clearMaxDurationTimer();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try {
@@ -597,76 +705,56 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   };
 
   /**
-   * Verify the microphone is allowed BEFORE the Web Speech API opens it.
+   * WHY THERE IS NO getUserMedia() PROBE ON THIS PATH (Android Chrome fix).
    *
-   * The probe opens the microphone with getUserMedia only to obtain the
-   * browser permission (on Chrome/Android the permission prompt is reliably
-   * attached to this user-gesture call). It then IMMEDIATELY stops every
-   * track: we only needed the permission. Leaving the probe stream open would
-   * keep the microphone busy and the recognition engine would fail with
-   * 'audio-capture' ("mic is in use by another app").
+   * An earlier version opened the microphone with getUserMedia() first "to
+   * attach the permission prompt to the tap", stopped the track, and only then
+   * called recognition.start(). On Chrome for Android that reliably broke live
+   * voice, for two independent reasons:
    *
-   * No network is involved, so the probe is equally valid offline. Errors are
-   * reported in-app (micError banner), never with a browser alert dialog.
-   * Returning true means "let the recognizer open the microphone itself".
+   *  1. Device contention — the probe grabs the microphone. Even after
+   *     track.stop() the Android audio stack needs time to release it, so the
+   *     recognizer that immediately follows fails with 'audio-capture'
+   *     ("the mic is in use by another app") and the session ends having heard
+   *     nothing. The user sees a pulsing "Listening" and then silence.
+   *  2. Lost user gesture — because the probe was awaited, recognition.start()
+   *     ran OUTSIDE the tap's user-activation window, and Chrome/Android can
+   *     refuse microphone access with 'not-allowed' in that state. The app then
+   *     reported "permission denied", which was not true: the user never saw a
+   *     prompt.
+   *
+   * The Web Speech API opens the microphone itself and shows Chrome's own
+   * permission prompt; the outcome arrives through onerror, which is mapped to
+   * an in-app message below. No probe is needed — and none is safe here.
+   * getUserMedia() is still used on the server-recorder path, where a real
+   * MediaStream is genuinely required.
    */
-  const ensureMicrophonePermission = async (): Promise<boolean> => {
-    if (micPermissionRef.current === 'granted') return true;
-    let permissionState: string | undefined;
-    try {
-      const permissions = (navigator as any).permissions;
-      const query = permissions?.query;
-      if (typeof query === 'function') {
-        permissionState = (await query.call(permissions, { name: 'microphone' })).state;
-      }
-    } catch {
-      permissionState = undefined; // query unsupported — fall back to the probe
-    }
-    if (permissionState === 'granted') {
-      micPermissionRef.current = 'granted';
-      return true;
-    }
-    if (permissionState === 'denied') {
-      setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
-      return false;
-    }
-    if (typeof navigator.mediaDevices?.getUserMedia !== 'function') {
-      return true; // no probe possible — the recognizer reports its own errors
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Stop the stream immediately: only the permission was needed.
-      stream.getTracks().forEach((track) => track.stop());
-      micPermissionRef.current = 'granted';
-      return true;
-    } catch (err: any) {
-      if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError' || err?.name === 'PermissionDeniedError') {
-        setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
-        return false;
-      }
-      if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
-        setMicError('No microphone found. You can type distress details directly.');
-        return false;
-      }
-      // Transient device hiccup: let the recognizer try its own mic access.
-      console.warn('Microphone permission probe failed; letting the recognizer open the mic:', err?.message || err);
-      return true;
-    }
-  };
 
-  const startBrowserSession = async () => {
+  /**
+   * Start the browser recognizer. SYNCHRONOUS — no await, no probe, no fetch.
+   *
+   * It must stay synchronous because it is called directly from the tap
+   * handler: `recognition.start()` has to run inside the user-activation window
+   * or Chrome/Android can refuse the microphone (see the note above).
+   */
+  const startBrowserSession = (): void => {
     const recognition = recognitionRef.current;
-    // Hold the tap start-lock across the (possibly slow) permission probe: a
-    // rapid second tap must never open a second microphone/recognizer pair.
-    // (The lock was acquired by toggleRecording before this call.)
-    browserStartInFlightRef.current = true;
-    const releaseStartLock = () => {
-      browserStartInFlightRef.current = false;
-      voiceStartLockRef.current = false;
-    };
     if (!recognition) {
       setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
-      releaseStartLock();
+      voiceStartLockRef.current = false;
+      return;
+    }
+    // Chrome/Android refuses microphone access on an insecure origin, and the
+    // Web Speech API fails there too. Say exactly that instead of a misleading
+    // "permission denied" — this is a very common way to test a local build.
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      setMicError(
+        'The microphone needs a secure (https://) connection. This page is not secure, so voice is unavailable here — type your emergency below.'
+      );
+      sessionActiveRef.current = false;
+      userStopRef.current = true;
+      setIsListening(false);
+      voiceStartLockRef.current = false;
       return;
     }
     userStopRef.current = false;
@@ -674,6 +762,8 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     sessionActiveRef.current = true;
     restartForLangRef.current = false;
     autoSwitchedRef.current = false;
+    heardAnyResultRef.current = false;
+    syncEngineFallback('none');
     // A user-initiated session always gets a full restart budget.
     restartCountRef.current = 0;
     committedRef.current = '';
@@ -686,17 +776,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     setHeardLanguage(startCode);
     activeModeRef.current = 'browser';
 
-    const allowed = await ensureMicrophonePermission();
-    if (!allowed || userStopRef.current || !sessionActiveRef.current) {
-      // Permission denied — or the person closed the session while the probe
-      // was open. Never open a microphone that will just fail again.
-      userStopRef.current = true;
-      sessionActiveRef.current = false;
-      setIsListening(false);
-      releaseStartLock();
-      return;
-    }
-    releaseStartLock();
     recognition.lang = getSpeechRecognitionLocale(startCode);
     if (soundEnabledRef.current) playPing('start');
     try {
@@ -721,6 +800,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       setMicError('Could not start microphone. You can type distress details directly.');
       return;
     }
+    armNoSpeechWatchdog();
     if (browserCapTimerRef.current !== null) window.clearTimeout(browserCapTimerRef.current);
     browserCapTimerRef.current = window.setTimeout(() => {
       if (sessionActiveRef.current) finishBrowserSession();
@@ -790,9 +870,10 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       // server recorder is only the fallback when this browser cannot listen live.
       const browserReady = Boolean(recognitionRef.current) && speechSupported && !(offlineMode && !localSpeechSupported);
       if (browserReady) {
-        // Async: the tap start-lock stays held across the microphone
-        // permission probe until the recognizer actually starts (or fails).
-        void startBrowserSession();
+        // SYNCHRONOUS: recognition.start() must run inside the tap's
+        // user-activation window (see the Android Chrome note above). The
+        // start-lock is released by the finally block below.
+        startBrowserSession();
         return;
       }
 
@@ -826,9 +907,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
     } finally {
       // Release the lock for every start path that did not end up owning an
-      // active server recording or an in-flight browser permission probe
-      // (browser voice, permission denial, failures).
-      if (!isServerRecordingRef.current && !browserStartInFlightRef.current) {
+      // active server recording (browser voice starts synchronously and needs
+      // no lock; only a live MediaRecorder owns it until it stops).
+      if (!isServerRecordingRef.current) {
         voiceStartLockRef.current = false;
       }
     }
@@ -999,9 +1080,51 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         )}
 
         {micError && (
-          <div className="mt-2 text-xs text-amber-400 bg-amber-950/60 border border-amber-800 px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 max-w-sm mx-auto">
+          <div
+            id="voice-mic-error"
+            className="mt-2 text-xs text-amber-400 bg-amber-950/60 border border-amber-800 px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 max-w-sm mx-auto"
+          >
             <AlertCircle className="w-3.5 h-3.5 shrink-0" />
             <span>{micError}</span>
+          </div>
+        )}
+
+        {/* The browser's own speech engine failed. Never a dead end: offer this
+            server's own transcription recorder, which does not depend on the
+            browser's cloud speech service. */}
+        {engineFallback === 'checking' && (
+          <div className="mt-2 text-xs text-neutral-400 flex items-center justify-center gap-1.5">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            <span>Checking LifeLine's own voice transcription…</span>
+          </div>
+        )}
+        {engineFallback === 'offered' && (
+          <div className="mt-2 max-w-sm mx-auto p-2.5 rounded-lg bg-neutral-900 border border-emerald-800 text-xs">
+            <p className="text-emerald-200 font-bold">
+              LifeLine's own transcription is available on this server. It records here and
+              transcribes on the server — no browser speech service needed.
+            </p>
+            <button
+              id="voice-engine-fallback-btn"
+              type="button"
+              onClick={() => {
+                syncEngineFallback('none');
+                setMicError(null);
+                void (async () => {
+                  if (!voiceStartLockRef.current) voiceStartLockRef.current = true;
+                  await startServerRecording();
+                })();
+              }}
+              className="mt-2 w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Mic className="w-4 h-4" />
+              <span>RECORD WITH LIFELINE VOICE</span>
+            </button>
+          </div>
+        )}
+        {engineFallback === 'unavailable' && (
+          <div className="mt-2 max-w-sm mx-auto text-[11px] text-neutral-400">
+            Server transcription is not configured, so type the emergency below — that always works, online or offline.
           </div>
         )}
       </div>

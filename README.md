@@ -150,6 +150,57 @@ Silent SOS provides a non-verbal emergency workflow for active threats, entrapme
    - Generates an on-screen visual SOS card featuring color-coded severity badges, international priority icons, immediate action steps, first-aid directives, and responder instructions.
    - Formats a concise, standardized radio-dispatch alert ready for rapid copying or sharing.
 
+### 5. Original-Text, Public Numbers & Offline-Send Transparency
+
+These are hard display and trust rules, not cosmetic choices:
+
+- **Your own words are always on the card.** The SOS card shows the person's original
+  transmission in *every* state — including before any translation exists. Previously that
+  state displayed only the generated `DISPATCH ALERT ...` text, so the original message
+  disappeared. The generated responder text is now shown separately and labelled
+  *"Responder transmission (generated)"*. The original text is resolved with the same
+  priority the translator uses (`raw_transcript` → `original_message` → legacy `transcript`);
+  a record with no stored original says so explicitly instead of passing generated text off
+  as the user's words.
+- **A saved SOS keeps its translation.** When a translation of the original words exists, it
+  is stored with the local record and displayed in the Pending SOS Queue and the consent
+  review, so a responder can read the person's own words in either language.
+- **Government emergency numbers are public.** Every verified public/government number
+  (e.g. India 112 / 108 / 100 / 101, EU 112, UK 999, US & CA 911, AU 000) is listed on the
+  home screen, on the SOS card and at the top of the Partners directory. The list needs **no
+  GPS or geolocation**, **no country selection** and **no sign-in or partner
+  authentication**. The country picker only decides which single number is promoted in the
+  banner — it never hides the others. Numbers come from verified official sources only and
+  are never invented.
+- **Offline saving states exactly what happens next.** The confirmation dialog offers two
+  explicit, self-explaining choices — **SAVE ON THIS DEVICE ONLY** (default) and **SAVE +
+  AUTO-SEND WHEN THE CONNECTION RETURNS** — and the automatic option lists its real
+  preconditions (page open and in the foreground, connectivity verified against the server,
+  an authorized destination actually configured, record not deleted or already sent). Every
+  unsent record also carries a **"What happens next"** panel with a live countdown to the
+  next automatic check and a button to open the queue and send or share it manually. Until a
+  send really happens, the card keeps saying **NOT SENT**.
+
+### 6. Android / Chrome Live Voice Reliability
+
+The microphone path was rebuilt around how Chrome for Android actually behaves:
+
+- **No `getUserMedia()` permission probe before recognition.** The previous probe grabbed the
+  microphone and, even after the track was stopped, the Android audio stack had not released
+  it when `recognition.start()` ran — the recognizer failed with `audio-capture` having heard
+  nothing. Awaiting the probe also pushed `recognition.start()` outside the tap's
+  user-activation window, so Chrome could answer `not-allowed` and the app reported a
+  permission denial the user never saw a prompt for. The Web Speech API opens the microphone
+  itself; the recognizer now starts **synchronously inside the tap**.
+- **Honest diagnostics instead of a silent "Listening".** An insecure origin (`http://`) is
+  reported as needing `https://`; an unreachable browser speech service, an unopenable
+  microphone or an unsupported language each produce a specific in-app message.
+- **Nothing is left hanging.** A session that produces no result within 8 seconds is
+  diagnosed rather than pulsing forever, and when this server can transcribe audio itself the
+  app offers **RECORD WITH LIFELINE VOICE** — a recorder path that does not depend on the
+  browser's cloud speech service.
+- Typing always works and is never blocked by voice state.
+
 ---
 
 ## Emergency Organization Integration Framework

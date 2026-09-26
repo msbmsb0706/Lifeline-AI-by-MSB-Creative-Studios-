@@ -47,8 +47,23 @@ assert(onend.includes('pendingStartRef.current'), 'queued restart handled in one
 assert(src.includes('submitOnce'), 'submission happens once per session');
 assert(src.includes('getSpeechRecognitionLocale(startCode)'), 'selected/locked language applied on start');
 assert(!src.includes('Nebius'), 'no provider name in public voice UI');
-assert(src.includes('stream.getTracks().forEach((track) => track.stop())'),
-  'the permission probe stream is stopped immediately — only the permission was needed');
+// The getUserMedia() permission probe was REMOVED from the browser voice path:
+// on Chrome/Android it grabbed the mic and, even after the track was stopped,
+// the recognizer that followed failed with 'audio-capture'. It also pushed
+// recognition.start() outside the tap's user-activation window.
+const browserStart = src.slice(src.indexOf('const startBrowserSession'), src.indexOf('startBrowserSessionRef.current'));
+assert(!/getUserMedia/.test(browserStart),
+  'the browser voice path opens NO getUserMedia probe — the recognizer owns the microphone');
+assert(!/await /.test(browserStart),
+  'recognition.start() is synchronous inside the tap, so the user gesture is intact');
+assert(src.includes('window.isSecureContext === false'),
+  'an insecure origin is reported honestly instead of a false "permission denied"');
+assert(src.includes('ENGINE_UNAVAILABLE_CODES') && src.includes('reportEngineUnavailable'),
+  'an unusable browser speech engine is diagnosed in-app, with a server-transcription offer');
+assert(src.includes('NO_SPEECH_WATCHDOG_MS'),
+  'a session that never produces a result is reported instead of pulsing forever');
+assert(src.includes('disposedRef.current'),
+  'late recognizer/timer callbacks cannot update state after unmount');
 assert(!src.includes('alert('), 'no browser alert dialogs in the voice UI — errors stay in-app, never public');
 
 section('EmergencyVoiceButton — Chrome auto-end churn is bounded');
