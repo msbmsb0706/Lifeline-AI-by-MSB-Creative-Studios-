@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      interactive-widget=resizes-visual (Chrome 108+): when the soft keyboard
+      opens, only the VISUAL viewport resizes — the layout viewport keeps its
+      size, so the page does NOT reflow while the IME is active. This removes
+      the layout jump that can blur the focused input (which cancels Android
+      voice dictation). Older engines ignore the attribute and behave as
+      before. See docs/ANDROID_WEBVIEW_DICTATION.md.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual" />
     <title>LifeLine AI by MSB Creative Studios</title>
     <meta name="description" content="Emergency communication assistant with speech-to-text triage, Nemotron-powered rapid classification via Nebius Token Factory, deterministic high-contrast SOS visual cards, and resilient offline fallback mode." />
     <meta property="og:title" content="LifeLine AI by MSB Creative Studios" />

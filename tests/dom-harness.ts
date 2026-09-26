@@ -285,6 +285,15 @@ export function installDomHarness(options?: {
     disconnect() {}
   };
   win.scrollTo = win.scrollTo || (() => {});
+  // React's legacy change-event polyfill (activated when react-dom was loaded
+  // before any DOM existed and so believes it is in old IE) calls
+  // element.attachEvent/detachEvent when a text input receives focus. jsdom
+  // elements do not have those IE APIs; no-op them so focusing inputs in
+  // tests never crashes (the polyfill is otherwise inert in jsdom).
+  if (typeof (win.HTMLElement.prototype as any).attachEvent !== 'function') {
+    (win.HTMLElement.prototype as any).attachEvent = () => {};
+    (win.HTMLElement.prototype as any).detachEvent = () => {};
+  }
   if (!win.speechSynthesis) {
     win.speechSynthesis = {
       speak: () => {},

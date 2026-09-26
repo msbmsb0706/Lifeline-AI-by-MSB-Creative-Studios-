@@ -32,6 +32,7 @@ await import('./partner-tracking.test.ts');
 await import('./speech-capture-android.test.ts');
 await import('./voice-android-lifecycle.test.ts');
 await import('./offline-sos-android-flow.test.ts');
+await import('./mobile-dictation-input.test.ts');
 await import('./ui-visibility.test.ts');
 await import('./automatic-sos-recovery.test.ts');
 await import('./pr28-user-defects.test.ts');

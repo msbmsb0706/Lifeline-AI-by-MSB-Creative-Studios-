@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   MapPin,
   Send,
@@ -17,6 +17,8 @@ import {
 import { QuickPreset, SupportedLanguageInfo, VoiceCaptureMetadata } from '../types.ts';
 import { SUPPORTED_LANGUAGES, detectLanguage } from '../lib/languages.ts';
 import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
+import { isImeComposing, commitImeValueToState, imeEventHandlers } from '../utils/imeHelpers.ts';
+import { setupViewportGuard } from '../utils/viewportGuard.ts';
 import { LocationPrivacyModal } from './LocationPrivacyModal.tsx';
 
 interface TranscriptAreaProps {
@@ -146,6 +148,46 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
   });
   const [showLocationPrivacyModal, setShowLocationPrivacyModal] = useState(false);
 
+  /**
+   * IME-resilient transcript input — THE fix for Android keyboard voice
+   * dictation (Gboard mic) being dropped.
+   *
+   * The textarea is rendered WITHOUT a `value` prop (uncontrolled): React
+   * therefore can never write the DOM value mid-composition, so no
+   * re-render (network flaps, queue updates, the voice pipeline, ...) can
+   * stamp stale state into the field while the user is still speaking. The
+   * DOM is mirrored back into the `transcript` state on every `input` event,
+   * on the authoritative `compositionend` commit, and on `blur`.
+   * See src/utils/imeHelpers.ts for the full rationale.
+   */
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Sync state down to the DOM ONLY if the user is not actively composing
+  // (dictating / transliterating) in THIS field — an active IME session owns
+  // the value and must never be overwritten by a stale state write.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el && !isImeComposing(el) && el.value !== transcript) {
+      el.value = transcript;
+    }
+  }, [transcript]);
+
+  // Keyboard visual-viewport guard: keeps the field focused and visible
+  // while the soft keyboard is open (repairs keyboard-animation "phantom
+  // blurs" that would cancel voice dictation). The textarea element is
+  // stable for the lifetime of this component, so this attaches once.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    return setupViewportGuard(el);
+  }, []);
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // Always push changes up to React state so the app stays synchronized
+    // (fires for plain typing and for IME interim text).
+    onTranscriptChange(e.target.value);
+  };
+
   // Real-time automatic language detection
   const detectedLanguage = useMemo(() => {
     return detectLanguage(transcript);
@@ -208,14 +250,18 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Multilingual typing: while an IME / transliteration keyboard (Tamil,
-    // Hindi, Gboard transliteration, etc.) is composing, Enter confirms the
-    // word — it must never submit a half-typed SOS.
+    // Hindi, Gboard transliteration, voice dictation, etc.) is composing,
+    // Enter confirms the word — it must never submit a half-typed SOS.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || (e.key === 'Enter' && !e.shiftKey)) {
       e.preventDefault();
-      if (transcript.trim() && !isAnalyzing) {
+      // Read the DOM directly: at the moment of Enter the field's own text
+      // is authoritative — it can never be staler than the state mirror,
+      // even if a dictation commit and the Enter key land in one batch.
+      const text = e.currentTarget.value;
+      if (text.trim() && !isAnalyzing) {
         // Explicit string argument — never hand the keyboard event to the triage handler.
-        onSubmitEmergency(transcript);
+        onSubmitEmergency(text);
       }
     }
   };
@@ -274,16 +320,35 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
         )}
       </div>
 
-      {/* Main Textarea */}
+      {/* Main Textarea — IME-safe binding (no `value` prop): Android voice
+          dictation commits through an IME composition session, and React
+          must never write the DOM value while that session is active. */}
       <div className="relative">
         <textarea
           id="emergency-transcript-input"
-          value={transcript}
-          onChange={(e) => onTranscriptChange(e.target.value)}
+          ref={textareaRef}
+          defaultValue={transcript}
+          onChange={handleChange}
+          onCompositionStart={imeEventHandlers.onCompositionStart}
+          onCompositionEnd={(e) => {
+            // End the tracked IME session, then authoritatively commit the
+            // field's DOM text into state (some Android IMEs deliver the
+            // final dictation text with compositionend itself).
+            imeEventHandlers.onCompositionEnd(e);
+            commitImeValueToState(e.currentTarget, transcript, onTranscriptChange);
+          }}
+          onBlur={(e) =>
+            commitImeValueToState(e.currentTarget, transcript, onTranscriptChange)
+          }
           onKeyDown={handleKeyDown}
           dir="auto"
           lang="mul"
+          inputMode="text"
           autoComplete="off"
+          autoCapitalize="sentences"
+          autoCorrect="off"
+          spellCheck={false}
+          enterKeyHint="send"
           placeholder="Fallback typing only. Prefer the microphone — it listens live in any language (English, தமிழ், हिन्दी, తెలుగు, ಕನ್ನಡ, മലയാളം, বাংলা, मराठी, Español, Français) and shows the answer on screen..."
           rows={4}
           disabled={isAnalyzing}

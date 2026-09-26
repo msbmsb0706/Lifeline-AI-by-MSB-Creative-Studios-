@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, CheckCircle2, MapPin, Radio, ShieldAlert, Smartphone, Video, X, Send, Save, Info } from 'lucide-react';
 import { classifyEmergencyOffline } from '../lib/offlineClassifier.ts';
 import { detectLanguage } from '../lib/languages.ts';
+import { isImeComposing, commitImeValueToState, imeEventHandlers } from '../utils/imeHelpers.ts';
+import { setupViewportGuard } from '../utils/viewportGuard.ts';
 import { EmergencyAnalysisResult, SeverityLevel } from '../types.ts';
 import {
   createSOSPackage,
@@ -51,6 +53,24 @@ function gpsErrorMessage(code?: number): string {
 export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSaveResult, onQueueUpdated }) => {
   const [selectedEvent, setSelectedEvent] = useState<QuickEvent | null>(null);
   const [message, setMessage] = useState('');
+  // IME-resilient message input: the textarea is uncontrolled (no `value`
+  // prop) so no re-render can stamp stale state into the field while an
+  // Android keyboard dictation / transliteration composition is active; the
+  // DOM is mirrored back into state on input / compositionend / blur.
+  const messageRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const el = messageRef.current;
+    if (el && !isImeComposing(el) && el.value !== message) {
+      el.value = message;
+    }
+  }, [message]);
+
+  useEffect(() => {
+    const el = messageRef.current;
+    if (!el) return;
+    return setupViewportGuard(el);
+  }, []);
   const [location, setLocation] = useState<{
     text: string;
     coords?: { latitude: number; longitude: number; accuracyMeters?: number };
@@ -464,10 +484,22 @@ export const SilentSOS: React.FC<SilentSOSProps> = ({ offlineMode, onClose, onSa
           </div>
 
           <textarea
-            value={message}
+            ref={messageRef}
+            defaultValue={message}
             onChange={(e) => setMessage(e.target.value)}
+            onCompositionStart={imeEventHandlers.onCompositionStart}
+            onCompositionEnd={(e) => {
+              imeEventHandlers.onCompositionEnd(e);
+              commitImeValueToState(e.currentTarget, message, setMessage);
+            }}
+            onBlur={(e) => commitImeValueToState(e.currentTarget, message, setMessage)}
             dir="auto"
             lang="mul"
+            inputMode="text"
+            autoComplete="off"
+            autoCapitalize="sentences"
+            autoCorrect="off"
+            spellCheck={false}
             rows={2}
             placeholder="Optional emergency message (no speaking required)"
             className="w-full rounded-xl bg-black border border-neutral-700 p-3 text-sm outline-none focus:border-red-500"
