@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   MapPin,
   Send,
@@ -17,6 +17,8 @@ import {
 import { QuickPreset, SupportedLanguageInfo, VoiceCaptureMetadata } from '../types.ts';
 import { SUPPORTED_LANGUAGES, detectLanguage } from '../lib/languages.ts';
 import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
+import { useImeSafeTextarea } from '../lib/imeSafeTextarea.ts';
+import { attachKeyboardFocusGuard } from '../lib/keyboardFocusGuard.ts';
 import { LocationPrivacyModal } from './LocationPrivacyModal.tsx';
 
 interface TranscriptAreaProps {
@@ -146,6 +148,23 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
   });
   const [showLocationPrivacyModal, setShowLocationPrivacyModal] = useState(false);
 
+  /**
+   * IME-safe transcript binding — THE fix for Android keyboard voice
+   * dictation (Gboard mic) being dropped. The textarea is rendered without a
+   * `value` prop so no re-render (network flaps, queue updates, the voice
+   * pipeline, ...) can write a stale value into the field while the IME
+   * composition session is still active; the DOM is mirrored back into the
+   * `transcript` state on every input / compositionend / blur.
+   * See src/lib/imeSafeTextarea.ts for the full rationale.
+   */
+  const imeSafe = useImeSafeTextarea(transcript, onTranscriptChange);
+
+  // Keep the field focused and visible while the soft keyboard is open:
+  // restores focus after keyboard-animation "phantom blurs" (which cancel
+  // voice dictation) and keeps the field inside the visual viewport.
+  // `imeSafe.ref` is a stable ref object, so this attaches once on mount.
+  useEffect(() => attachKeyboardFocusGuard(imeSafe.ref), []);
+
   // Real-time automatic language detection
   const detectedLanguage = useMemo(() => {
     return detectLanguage(transcript);
@@ -208,14 +227,18 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Multilingual typing: while an IME / transliteration keyboard (Tamil,
-    // Hindi, Gboard transliteration, etc.) is composing, Enter confirms the
-    // word — it must never submit a half-typed SOS.
+    // Hindi, Gboard transliteration, voice dictation, etc.) is composing,
+    // Enter confirms the word — it must never submit a half-typed SOS.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || (e.key === 'Enter' && !e.shiftKey)) {
       e.preventDefault();
-      if (transcript.trim() && !isAnalyzing) {
+      // Read the DOM directly: at the moment of Enter the field's own text
+      // is authoritative — it can never be staler than the state mirror,
+      // even if a dictation commit and the Enter key land in one batch.
+      const text = e.currentTarget.value;
+      if (text.trim() && !isAnalyzing) {
         // Explicit string argument — never hand the keyboard event to the triage handler.
-        onSubmitEmergency(transcript);
+        onSubmitEmergency(text);
       }
     }
   };
@@ -274,16 +297,27 @@ export const TranscriptArea: React.FC<TranscriptAreaProps> = ({
         )}
       </div>
 
-      {/* Main Textarea */}
+      {/* Main Textarea — IME-safe binding (no `value` prop): Android voice
+          dictation commits through an IME composition session, and React
+          must never write the DOM value while that session is active. */}
       <div className="relative">
         <textarea
           id="emergency-transcript-input"
-          value={transcript}
-          onChange={(e) => onTranscriptChange(e.target.value)}
+          ref={imeSafe.ref}
+          onChange={imeSafe.onChange}
+          onCompositionStart={imeSafe.onCompositionStart}
+          onCompositionEnd={imeSafe.onCompositionEnd}
+          onFocus={imeSafe.onFocus}
+          onBlur={imeSafe.onBlur}
           onKeyDown={handleKeyDown}
           dir="auto"
           lang="mul"
+          inputMode="text"
           autoComplete="off"
+          autoCapitalize="sentences"
+          autoCorrect="off"
+          spellCheck={false}
+          enterKeyHint="send"
           placeholder="Fallback typing only. Prefer the microphone — it listens live in any language (English, தமிழ், हिन्दी, తెలుగు, ಕನ್ನಡ, മലയാളം, বাংলা, मराठी, Español, Français) and shows the answer on screen..."
           rows={4}
           disabled={isAnalyzing}

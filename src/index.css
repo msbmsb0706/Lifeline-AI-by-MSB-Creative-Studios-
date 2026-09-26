@@ -1,1 +1,14 @@
 @import "tailwindcss";
+
+/*
+ * Android keyboard / IME hardening:
+ * - overscroll-behavior: none — stops pull-to-refresh / rubber-banding /
+ *   gesture-navigation from moving the page while the soft keyboard is open
+ *   (a page yank can blur the focused input and cancel voice dictation).
+ * - :focus-visible on text inputs is already provided by the components;
+ *   nothing here may touch .value or focus programmatically.
+ */
+html,
+body {
+  overscroll-behavior: none;
+}

@@ -330,6 +330,24 @@ export default function App() {
     setVoiceNotice(null);
   }, []);
 
+  /**
+   * Manual transcript changes — typing, presets, Clear, or Android keyboard
+   * voice dictation committing through an IME composition session — invalidate
+   * the previous bilingual voice capture so it can never be attached to an
+   * analysis it did not produce. The server-voice path updates the transcript
+   * directly (handleVoiceRecordingStopped) and is not affected.
+   *
+   * Kept as a stable callback: the IME-safe textarea mirrors EVERY input
+   * event (including mid-dictation interim text) through here, so the handler
+   * identity must not churn per render.
+   */
+  const handleTranscriptManualChange = useCallback((text: string) => {
+    setTranscript(text);
+    setVoiceCapture(null);
+    voiceCaptureRef.current = null;
+    setVoiceNotice(null);
+  }, []);
+
   const handleLocationUpdate = (
     loc: string,
     coords?: { latitude: number; longitude: number; accuracyMeters?: number }
@@ -799,16 +817,7 @@ export default function App() {
         {/* Speech-to-Text Transcript Area & Presets */}
         <TranscriptArea
           transcript={transcript}
-          onTranscriptChange={(text) => {
-            setTranscript(text);
-            // ANY manual transcript change (typing, presets, clearing)
-            // invalidates the previous bilingual voice capture so it can never
-            // be attached to an analysis it did not produce. The server voice
-            // path updates the transcript directly and is not affected.
-            setVoiceCapture(null);
-            voiceCaptureRef.current = null;
-            setVoiceNotice(null);
-          }}
+          onTranscriptChange={handleTranscriptManualChange}
           onSubmitEmergency={handleAnalyzeEmergency}
           onOfflineTest={(testText) => {
             setTranscript(testText);
