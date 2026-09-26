@@ -294,28 +294,28 @@ if (!jsdomReady) {
   }
 
   // -------------------------------------------------------------------------
-  section('No language option while speaking — the recognizer follows what it hears');
+  section('Language choices remain available while speaking, without an Any language chip');
   {
     const v = await mount();
     await v.tap();
     assertEqual(v.rec.lang, 'en-US', 'auto mode starts from the app/device language');
-    assertEqual(
-      v.h.document.getElementById('voice-language-chips'),
-      null,
-      'no row of language chips is rendered under the microphone'
+    const languageChips = v.h.document.querySelectorAll('#voice-language-chips button');
+    assertEqual(languageChips.length, 10, 'all supported language choices are available while speaking');
+    assert(
+      Array.from(languageChips as NodeListOf<HTMLButtonElement>).some((button) => button.textContent?.includes('தமிழ்')),
+      'Tamil remains available as a microphone language'
     );
-    assertEqual(
-      v.h.document.querySelectorAll('#voice-language-chips button').length,
-      0,
-      'there is no language option to choose mid-speech (it confused people while speaking)'
+    assert(
+      Array.from(languageChips as NodeListOf<HTMLButtonElement>).every((button) => !button.textContent?.includes('Any language')),
+      'only the Any language choice is removed from the language picker'
     );
     assert(
       v.caption().includes('Auto'),
       'the live caption still reports the language being heard automatically'
     );
     assert(
-      v.label().includes('Any language'),
-      'the button still says any language can be spoken'
+      !v.label().includes('Any language'),
+      'the Any language wording is removed from the microphone button too'
     );
 
     // What the chips used to do by hand now happens by itself: hearing another
@@ -330,6 +330,25 @@ if (!jsdomReady) {
       v.caption().includes('தமிழ்') || v.caption().includes('Tamil'),
       'the caption names the language now being heard'
     );
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Choosing a language chip switches the active recognizer');
+  {
+    const v = await mount();
+    await v.tap();
+    const hindiChip = Array.from(
+      v.h.document.querySelectorAll('#voice-language-chips button') as NodeListOf<HTMLButtonElement>
+    ).find((button) => button.textContent?.includes('हिन्दी'));
+    assert(Boolean(hindiChip), 'Hindi language chip is present');
+    await act(async () => {
+      hindiChip!.dispatchEvent(new v.h.window.MouseEvent('click', { bubbles: true }));
+    });
+    await flush(30);
+    assertEqual(v.rec.lang, 'hi-IN', 'selecting Hindi switches the active browser recognizer');
+    assert(v.caption().includes('Locked'), 'the caption shows that a language was explicitly selected');
+    assertEqual(v.rec.started, true, 'recognition continues after the language switch');
     await v.stop();
   }
 

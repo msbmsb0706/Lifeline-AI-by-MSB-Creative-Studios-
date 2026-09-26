@@ -55,12 +55,12 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-md overflow-y-auto p-3 sm:p-6 flex items-center justify-center"
+      className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-md overflow-y-auto overscroll-contain p-3 sm:p-6 flex items-start sm:items-center justify-center"
       role="dialog"
       aria-modal="true"
       aria-labelledby="consent-modal-title"
     >
-      <div className="w-full max-w-xl rounded-2xl border-2 border-red-600 bg-neutral-950 text-white shadow-2xl overflow-hidden my-4">
+      <div className="w-full max-w-xl max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] rounded-2xl border-2 border-red-600 bg-neutral-950 text-white shadow-2xl overflow-hidden my-0 sm:my-4 flex flex-col">
         {/* Modal Header */}
         <div className="p-4 sm:p-5 bg-neutral-900 border-b border-neutral-800 flex items-start justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -85,7 +85,12 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
           </button>
         </div>
 
-        <div className="p-4 sm:p-5 space-y-4 text-xs sm:text-sm">
+        <div
+          role="region"
+          tabIndex={0}
+          aria-label="Consent details. Scroll or swipe vertically to review."
+          className="min-h-0 overflow-y-auto overscroll-contain touch-pan-y p-4 sm:p-5 space-y-4 text-xs sm:text-sm"
+        >
           {/* Destination Provider Box */}
           <div className="p-3.5 rounded-xl bg-neutral-900 border border-neutral-800 space-y-2">
             <div className="text-[10px] font-bold tracking-wider text-neutral-400 uppercase">
@@ -124,8 +129,8 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
             The offline choice is the FIRST thing after the destination: on a
             phone the old layout pushed "SAVE ON THIS DEVICE ONLY" below the
             fold, so only the auto-send option was visible without scrolling.
-            Both choices are now compact and side by side, with the full
-            consequences of each rendered underneath them.
+            Both choices are stacked vertically before the long details, and the
+            dialog body scrolls up and down on smaller screens.
           */}
           {isLocalOnly && (
             <div
@@ -135,8 +140,11 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
               <div className="font-black text-amber-200 uppercase tracking-wider text-[11px]">
                 Choose what happens when the connection comes back
               </div>
+              <p className="text-[11px] text-neutral-400">
+                Both choices are above. Swipe or scroll down to review the details.
+              </p>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="flex flex-col gap-2">
                 <label
                   className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors font-bold text-white ${
                     !automaticRecovery ? 'border-amber-500 bg-amber-950/40' : 'border-neutral-700 bg-neutral-950/40'

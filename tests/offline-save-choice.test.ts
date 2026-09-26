@@ -9,7 +9,7 @@
  * scrolling, and the dialog read as if automatic sending were the only offer.
  *
  * Fix (PartnerConsentModal.tsx): the two choices are rendered FIRST, compact and
- * side by side, immediately after the destination box and before the long
+ * stacked vertically, immediately after the destination box and before the long
  * "data saved on this device" checklist; the full consequences of each choice
  * (including all four auto-send preconditions) are rendered underneath them, so
  * nothing is hidden and nothing has to be scrolled past to make the choice.
@@ -17,9 +17,9 @@
  * Pinned here:
  *  1. Both choices are rendered as radios in one block, device-only by default.
  *  2. The choice block comes before the notice and before the data checklist.
- *  3. Neither compact choice contains the long precondition list (that is what
- *     used to push the second choice off screen) — the detail follows below.
- *  4. Behaviour: both radios are on screen together, the confirm button names
+ *  3. The choices are stacked vertically and the dialog body can scroll up/down;
+ *     neither compact choice contains the long precondition list.
+ *  4. Behaviour: both radios are offered before the checklist, the confirm button names
  *     the selected action, and the choice is passed to onConfirm exactly.
  *  5. Every precondition sentence the earlier PR #28 tests require still exists.
  */
@@ -82,16 +82,20 @@ assert(
 // The compact choice row must not contain the long precondition list — that list
 // is what pushed the second choice below the fold before.
 {
-  const gridStart = src.indexOf('<div className="grid grid-cols-1 sm:grid-cols-2 gap-2">', choiceIndex);
-  assert(gridStart !== -1 && gridStart > choiceIndex, 'the two choices sit in one compact grid');
-  const detailStart = src.indexOf('— what it does', gridStart);
-  assert(detailStart !== -1, 'the consequences of each choice are rendered below the grid');
-  const gridBlock = src.slice(gridStart, detailStart);
-  assert(!gridBlock.includes('list-decimal'), 'the compact choice grid holds no long numbered list');
+  const choicesStart = src.indexOf('<div className="flex flex-col gap-2">', choiceIndex);
+  assert(choicesStart !== -1 && choicesStart > choiceIndex, 'the two choices are stacked vertically');
+  const detailStart = src.indexOf('— what it does', choicesStart);
+  assert(detailStart !== -1, 'the consequences of each choice are rendered below the choices');
+  const choicesBlock = src.slice(choicesStart, detailStart);
+  assert(!choicesBlock.includes('list-decimal'), 'the compact choices hold no long numbered list');
   assert(
-    gridBlock.split('\n').length < 60,
-    `the two choices together stay short enough to see at once (${gridBlock.split('\n').length} lines)`
+    choicesBlock.split('\n').length < 60,
+    `the two choices together stay short (${choicesBlock.split('\n').length} lines)`
   );
+  assert(src.includes('overflow-y-auto overscroll-contain touch-pan-y'), 'the dialog body supports vertical touch/trackpad scrolling');
+  assert(src.includes('tabIndex={0}'), 'the scroll area is keyboard-focusable');
+  assert(src.includes('Swipe or scroll down to review the details.'), 'the dialog tells users how to reveal the full details');
+  assert(src.includes('max-h-[calc(100dvh-1.5rem)]'), 'the dialog is constrained to the viewport height');
 }
 
 // The honest detail is still present, word for word.
@@ -192,7 +196,7 @@ if (!jsdomReady) {
       );
       assert(
         Math.abs(deviceOnlyAt - autoSendAt) < 400,
-        'the two choices sit next to each other, not separated by the long precondition list'
+        'both vertically stacked choices appear before the long precondition list'
       );
       assert(
         body.indexOf('page is still open on this device and in the foreground') > autoSendAt,
