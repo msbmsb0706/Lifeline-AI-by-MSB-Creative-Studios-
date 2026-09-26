@@ -1,13 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Mic, AlertCircle, Loader2, Volume2 } from 'lucide-react';
+import { Mic, AlertCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { playPing } from '../lib/audio.ts';
 import { getSpeechRecognitionLocale, SUPPORTED_LANGUAGES } from '../lib/languages.ts';
 import {
   pickStartLanguage,
-  primeSpeechEngine,
-  shouldSwitchRecognitionLanguage,
-  stopSpeaking
+  shouldSwitchRecognitionLanguage
 } from '../lib/speech.ts';
 import { mergeFinalChunk, buildTranscript, speechErrorMessage } from '../lib/speechCapture.ts';
 import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
@@ -36,10 +34,10 @@ interface EmergencyVoiceButtonProps {
   voicePhase?: 'idle' | 'listening' | 'transcribing' | 'translating';
   /** One-line explanation of why the multilingual path is (un)available. */
   voiceModeNotice?: string | null;
-  /** True while the spoken emergency answer is playing. Tap stops it. */
-  isSpeakingAnswer?: boolean;
-  /** Parent clears its speaking flag when the person stops playback. */
-  onCancelSpeech?: () => void;
+  /**
+   * NOTE: there is deliberately no "speaking answer" state here anymore — the
+   * emergency answer is shown on screen and is never spoken back automatically.
+   */
 }
 
 // Browser SpeechRecognition polyfill interface
@@ -112,9 +110,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   onResolveVoiceMode,
   onVoiceRecordingStopped,
   voicePhase = 'idle',
-  voiceModeNotice,
-  isSpeakingAnswer = false,
-  onCancelSpeech
+  voiceModeNotice
 }) => {
   const [isListening, setIsListening] = useState(false);
   const [isServerRecording, setIsServerRecording] = useState(false);
@@ -673,8 +669,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       releaseStartLock();
       return;
     }
-    stopSpeaking();
-    onCancelSpeech?.();
     userStopRef.current = false;
     submittedRef.current = false;
     sessionActiveRef.current = true;
@@ -691,8 +685,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     activeLangRef.current = startCode;
     setHeardLanguage(startCode);
     activeModeRef.current = 'browser';
-    // Unlock spoken answers in this tap, then listen. Do not speak while the mic is open.
-    if (soundEnabledRef.current) primeSpeechEngine();
 
     const allowed = await ensureMicrophonePermission();
     if (!allowed || userStopRef.current || !sessionActiveRef.current) {
@@ -754,14 +746,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   };
 
   const toggleRecording = async () => {
-    if (isSpeakingAnswer) {
-      stopSpeaking();
-      onCancelSpeech?.();
-      return;
-    }
     if (isAnalyzing || isBusyAsr) return;
 
-    // Active capture → stop it and speak the answer (parent handles speech).
+    // Active capture → stop it (the answer is read on screen, never auto-spoken).
     // The recognizer's REAL state decides, not React state: Chrome can end a
     // session a render before React notices, and a stale "Listening" label must
     // never swallow the next tap.
@@ -848,9 +835,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   };
 
   const busyLabel = voicePhase === 'translating' ? 'Translating…' : 'Transcribing…';
-  const busySubLabel = voicePhase === 'translating'
-    ? 'Then the answer is spoken'
-    : 'Then the answer is spoken';
+  const busySubLabel = 'Then the answer is on screen';
   const captionLang = getSpeechRecognitionLocale(heardLanguage);
 
   return (
@@ -886,17 +871,13 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           onClick={toggleRecording}
           disabled={isAnalyzing || isBusyAsr}
           aria-label={
-            isSpeakingAnswer
-              ? 'Stop speaking the answer'
-              : isVoiceActive
-              ? 'Stop listening and hear the spoken answer'
-              : 'Speak your emergency in any language. The answer is spoken aloud.'
+            isVoiceActive
+              ? 'Stop listening'
+              : 'Speak your emergency in any language. The answer appears on screen.'
           }
           className={`relative z-10 w-32 h-32 sm:w-36 sm:h-36 rounded-full flex flex-col items-center justify-center text-white shadow-2xl transition-all select-none ${
             isVoiceActive
               ? 'bg-red-600 shadow-red-600/60 ring-4 ring-white ring-offset-4 ring-offset-black'
-              : isSpeakingAnswer
-              ? 'bg-amber-500 text-black shadow-amber-500/40 ring-4 ring-white ring-offset-4 ring-offset-black'
               : highContrast
               ? 'bg-red-600 border-4 border-white shadow-white/20'
               : 'bg-gradient-to-b from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 shadow-red-900/50 ring-2 ring-red-400/40'
@@ -904,37 +885,31 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         >
           {isAnalyzing || isBusyAsr ? (
             <Loader2 className="w-10 h-10 animate-spin mb-1 text-white" />
-          ) : isSpeakingAnswer ? (
-            <Volume2 className="w-12 h-12 mb-1 animate-pulse text-black drop-shadow-md" />
           ) : isVoiceActive ? (
             <Mic className="w-12 h-12 mb-1 animate-pulse text-white drop-shadow-md" />
           ) : (
             <Mic className="w-11 h-11 mb-1 text-white drop-shadow-md" />
           )}
 
-          <span className={`text-xs sm:text-sm font-black uppercase tracking-wider drop-shadow ${isSpeakingAnswer ? 'text-black' : 'text-white'}`}>
+          <span className="text-xs sm:text-sm font-black uppercase tracking-wider drop-shadow text-white">
             {offlineMode && !localSpeechSupported
               ? 'Voice unavailable'
               : isAnalyzing
               ? 'Analyzing...'
               : isBusyAsr
               ? busyLabel
-              : isSpeakingAnswer
-              ? 'Speaking'
               : isVoiceActive
               ? 'Listening'
               : 'Tap to Speak'}
           </span>
-          <span className={`text-[10px] font-medium text-center px-2 ${isSpeakingAnswer ? 'text-black/80' : 'text-white/80'}`}>
+          <span className="text-[10px] font-medium text-center px-2 text-white/80">
             {offlineMode && !localSpeechSupported
               ? 'Type below if needed'
-              : isSpeakingAnswer
-              ? 'Tap to stop'
               : isVoiceActive
-              ? 'Any language • pause to hear'
+              ? 'Any language • pause to review'
               : isBusyAsr
               ? busySubLabel
-              : 'Any language • spoken answer'}
+              : 'Any language • answer on screen'}
           </span>
         </motion.button>
       </div>
@@ -952,14 +927,14 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       >
         <div className="flex items-center justify-between gap-2 mb-0.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-red-300">
-            {isVoiceActive ? 'Hearing live' : isSpeakingAnswer ? 'Speaking answer' : 'Speak, don’t type'}
+            {isVoiceActive ? 'Hearing live' : 'Speak, don’t type'}
           </span>
           <span className="text-[10px] font-mono text-emerald-300">
             {lockedLang ? `Locked ${languageName(lockedLang)}` : `Auto • ${languageName(heardLanguage)}`}
           </span>
         </div>
         <p className="whitespace-pre-wrap break-words">
-          {liveCaption || 'Tap the microphone and speak in any supported language. The answer is spoken aloud. Type below only if you cannot speak.'}
+          {liveCaption || 'Tap the microphone and speak in any supported language. The answer appears on screen. Type below only if you cannot speak.'}
         </p>
       </div>
 
@@ -1003,18 +978,13 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           <div className="flex items-center gap-2 text-xs text-amber-300 font-semibold animate-pulse justify-center">
             <span className="w-2 h-2 rounded-full bg-amber-400" />
             {voicePhase === 'translating'
-              ? 'Translating, then speaking the answer...'
-              : 'Hearing your speech, then speaking the answer...'}
-          </div>
-        ) : isSpeakingAnswer ? (
-          <div className="flex items-center gap-2 text-xs text-amber-300 font-semibold justify-center">
-            <Volume2 className="w-3.5 h-3.5" />
-            Speaking the emergency answer aloud
+              ? 'Translating, then the answer appears on screen...'
+              : 'Hearing your speech, then the answer appears on screen...'}
           </div>
         ) : isVoiceActive ? (
           <div className="flex items-center gap-2 text-xs text-red-400 font-semibold animate-pulse justify-center">
             <span className="w-2 h-2 rounded-full bg-red-500" />
-            Listening live in {languageName(heardLanguage)}. Pause and the answer is spoken.
+            Listening live in {languageName(heardLanguage)}. Pause and the answer appears on screen.
           </div>
         ) : (
           <div className="text-xs text-neutral-400">
@@ -1023,7 +993,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
               : SHOW_TECH_DETAILS && voiceModeNotice
               ? voiceModeNotice
               : speechSupported
-              ? 'Tap to speak in any language. You do not have to type. The answer is spoken back.'
+              ? 'Tap to speak in any language. You do not have to type. The answer appears on screen.'
               : 'This browser cannot listen. Type your emergency below, then use Speak on the answer.'}
           </div>
         )}

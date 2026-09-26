@@ -166,6 +166,7 @@ export function installDomHarness(options?: {
   url?: string;
   micPermission?: 'granted' | 'denied' | 'prompt';
   micProbeErrorName?: string | null;
+  navigatorLanguages?: string[];
 }): Harness {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: options?.url || 'https://lifeline.test/',
@@ -188,6 +189,13 @@ export function installDomHarness(options?: {
   // public"): record any attempt so tests can assert it never happens.
   const alertSpy = (..._args: any[]) => { mic.alerts += 1; };
   win.alert = alertSpy;
+
+  if (options?.navigatorLanguages) {
+    Object.defineProperty(win.navigator, 'languages', {
+      value: [...options.navigatorLanguages],
+      configurable: true
+    });
+  }
 
   if (options?.micPermission !== undefined) {
     win.navigator.permissions = {
@@ -338,6 +346,32 @@ export function installDomHarness(options?: {
       }
     }
   };
+}
+
+/**
+ * React decides ONCE, at module init, whether the browser natively supports
+ * the 'input' event: it probes `document.createElement('input').oninput` on
+ * the GLOBAL document. jsdom only compiles inline handler strings into
+ * functions when the window is created with `runScripts: 'dangerously'`;
+ * without that probe, React falls back to an IE-era change polyfill that no
+ * test can drive (onChange would never fire from a dispatched input event).
+ *
+ * Call this once, BEFORE the first `await import('react-dom/client')`, so
+ * the module-init probe runs against a script-enabled jsdom document. Real
+ * test environments (installDomHarness) install their own window/document
+ * afterwards; this environment only needs to survive the probe.
+ */
+export function installReactInputProbeEnvironment(): void {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://lifeline.test/',
+    runScripts: 'dangerously',
+    pretendToBeVisual: true
+  });
+  Object.defineProperty(globalThis, 'window', { value: dom.window, configurable: true, writable: true });
+  Object.defineProperty(globalThis, 'document', { value: dom.window.document, configurable: true, writable: true });
+  // React's module init also reads the GLOBAL navigator (userAgent feature
+  // detection) — give it the jsdom one so it sees a consistent browser.
+  Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true, writable: true });
 }
 
 /** Wait `ms` milliseconds (real timers — the component uses real timers). */

@@ -27,7 +27,6 @@ import {
 } from './lib/emergencyPartnerQueue.ts';
 import { playPing } from './lib/audio.ts';
 import { getCountryEmergencyNumber, getSelectedCountry } from './lib/emergencyNumbers.ts';
-import { buildSpokenEmergencyBrief, speakText, stopSpeaking } from './lib/speech.ts';
 import { checkOfflineShellReady } from './lib/offlineShell.ts';
 import { attemptOnlineTriage } from './lib/onlineTriage.ts';
 import { SHOW_TECH_DETAILS } from './lib/uiVisibility.ts';
@@ -71,9 +70,10 @@ export default function App() {
   const [voiceCapture, setVoiceCapture] = useState<VoiceCaptureMetadata | null>(null);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [asrConfigured, setAsrConfigured] = useState<boolean | null>(null);
-  const [isSpeakingAnswer, setIsSpeakingAnswer] = useState(false);
+  // NOTE: no automatic spoken reply — the emergency answer is shown on screen
+  // and is never auto-spoken. The SOS card keeps its user-tapped "Read aloud"
+  // button for first responders/bystanders.
   const asrProbeRef = useRef<{ at: number; configured: boolean } | null>(null);
-  const voiceOriginRef = useRef(false);
   const voiceCaptureRef = useRef<VoiceCaptureMetadata | null>(null);
   const pendingVoiceTextRef = useRef<string | null>(null);
   const analyzeRef = useRef<(text?: string) => void>(() => undefined);
@@ -105,7 +105,7 @@ export default function App() {
   }, [offlineForce]);
 
   const voiceModeNotice = !offlineForce && asrConfigured === false
-    ? 'Live microphone speaks answers in any supported language. Browser voice follows what you speak, not a typed box.'
+    ? 'Live microphone in any supported language. The answer appears on screen — never spoken automatically.'
     : null;
 
   /**
@@ -144,10 +144,9 @@ export default function App() {
         timestamp: new Date().toISOString()
       };
 
-      // Original-language transcript is preserved, then spoken triage starts
+      // Original-language transcript is preserved, then triage starts
       // immediately — do not wait for an English aid translation, and do not
       // leave the person with only a typed box.
-      voiceOriginRef.current = true;
       voiceCaptureRef.current = capture;
       setTranscript(data.transcript);
       setVoiceCapture(capture);
@@ -362,32 +361,9 @@ export default function App() {
     const detectedLang = detectLanguage(textToAnalyze);
     const activeVoiceCapture = voiceCaptureRef.current;
 
-    const announceVoiceAnswer = (result: EmergencyAnalysisResult) => {
-      if (!voiceOriginRef.current || !soundEnabled) return;
-      const languageCode =
-        result.voice_capture?.detectedLanguage?.code ||
-        result.detected_language?.code ||
-        activeVoiceCapture?.detectedLanguage?.code ||
-        detectedLang.code;
-      const brief = buildSpokenEmergencyBrief({
-        languageCode,
-        category: result.emergency_category || result.emergency_type,
-        severity: result.severity,
-        emergencyNumber: getCountryEmergencyNumber(getSelectedCountry())
-      });
-      const spoken = speakText(brief, {
-        languageCode,
-        interrupt: true,
-        onEnd: () => setIsSpeakingAnswer(false)
-      });
-      setIsSpeakingAnswer(spoken.started);
-      if (!spoken.started) {
-        setVoiceNotice('This browser cannot speak answers aloud. The emergency guidance is on screen.');
-      } else if (spoken.voiceMatched === false) {
-        const name = result.detected_language?.name || languageCode.toUpperCase();
-        setVoiceNotice(`No ${name} speaking voice is installed on this device. The answer is on screen. Add a ${name} voice in system settings to hear it.`);
-      }
-    };
+    // NOTE: the emergency answer is deliberately NOT spoken back automatically.
+    // It is shown on screen (and can be read aloud on demand from the SOS card
+    // by a first responder or bystander).
 
     // Bilingual voice context (detected language + original transcript + optional
     // English translation) travels with the triage request when voice was used.
@@ -425,7 +401,6 @@ export default function App() {
       setCurrentResult(fallbackResult);
       saveReportToHistory(fallbackResult);
       if (soundEnabled) playPing('sos');
-      announceVoiceAnswer(fallbackResult);
       setIsAnalyzing(false);
       return;
     }
@@ -457,7 +432,6 @@ export default function App() {
       setCurrentResult(onDeviceResult);
       saveReportToHistory(onDeviceResult);
       if (soundEnabled) playPing(onDeviceResult.severity >= 4 ? 'alert' : 'sos');
-      announceVoiceAnswer(onDeviceResult);
       setIsAnalyzing(false);
     };
 
@@ -484,7 +458,6 @@ export default function App() {
       if (activeVoiceCapture && !result.voice_capture) result.voice_capture = activeVoiceCapture;
       setCurrentResult(result);
       saveReportToHistory(result);
-      announceVoiceAnswer(result);
       // A successful ONLINE analysis can carry an explicit ONLINE translation
       // error. Never replace that with a fabricated offline translation.
       if (result.translation_status === 'error' && result.translation_error) {
@@ -689,13 +662,7 @@ export default function App() {
         highContrast={highContrast}
         onToggleHighContrast={() => setHighContrast((prev) => !prev)}
         soundEnabled={soundEnabled}
-        onToggleSound={() => setSoundEnabled((prev) => {
-          if (prev) {
-            stopSpeaking();
-            setIsSpeakingAnswer(false);
-          }
-          return !prev;
-        })}
+        onToggleSound={() => setSoundEnabled((prev) => !prev)}
         onShowSplash={() => setShowSplash(true)}
         onOpenPrivacyModal={() => setShowPrivacyModal(true)}
         onOpenPartnersModal={() => setShowPartnersModal(true)}
@@ -809,7 +776,6 @@ export default function App() {
         <EmergencyVoiceButton
           onTranscriptChange={handleTranscriptVoiceChange}
           onSubmitEmergency={(text) => {
-            voiceOriginRef.current = true;
             void handleAnalyzeEmergency(text);
           }}
           isAnalyzing={isAnalyzing}
@@ -821,8 +787,6 @@ export default function App() {
           onVoiceRecordingStopped={handleVoiceRecordingStopped}
           voicePhase={asrPhase}
           voiceModeNotice={voiceNotice || voiceModeNotice}
-          isSpeakingAnswer={isSpeakingAnswer}
-          onCancelSpeech={() => setIsSpeakingAnswer(false)}
         />
 
         {/* Speech-to-Text Transcript Area & Presets */}
@@ -830,9 +794,6 @@ export default function App() {
           transcript={transcript}
           onTranscriptChange={(text) => {
             setTranscript(text);
-            // Typing is the fallback, not the microphone path — do not speak a
-            // typed edit as if it were a live voice answer.
-            voiceOriginRef.current = false;
             // ANY manual transcript change (typing, presets, clearing)
             // invalidates the previous bilingual voice capture so it can never
             // be attached to an analysis it did not produce. The server voice

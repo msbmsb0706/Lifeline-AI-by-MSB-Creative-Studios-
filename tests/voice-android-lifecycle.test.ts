@@ -12,7 +12,7 @@
  * No paid ASR service, no MediaRecorder, no fetch is involved: the browser
  * recognizer is the microphone path under test.
  */
-import { installDomHarness, wait, FakeSpeechRecognition } from './dom-harness.ts';
+import { installDomHarness, installReactInputProbeEnvironment, wait, FakeSpeechRecognition } from './dom-harness.ts';
 import { section, assert, assertEqual } from './helpers.ts';
 
 // jsdom is a dev-only test dependency. Without it the DOM suite cannot run, so
@@ -30,10 +30,17 @@ if (!jsdomReady) {
 } else {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+  // React probes the GLOBAL document once, at module init, to learn whether
+  // the 'input' event is natively supported. Install a script-enabled jsdom
+  // window BEFORE the first react-dom/client import so the modern change
+  // detection path is active for this whole suite (see dom-harness).
+  installReactInputProbeEnvironment();
+
   const React = (await import('react')).default;
   const { createRoot } = await import('react-dom/client');
-  const { act } = await import('react');
+  const { act, useState } = await import('react');
   const { EmergencyVoiceButton } = await import('../src/components/EmergencyVoiceButton.tsx');
+  const { TranscriptArea } = await import('../src/components/TranscriptArea.tsx');
 
   interface Harness {
     h: ReturnType<typeof installDomHarness>;
@@ -52,10 +59,12 @@ if (!jsdomReady) {
     onResolveVoiceMode?: () => Promise<'server' | 'browser'>;
     micPermission?: 'granted' | 'denied' | 'prompt';
     micProbeErrorName?: string | null;
+    navigatorLanguages?: string[];
   }): Promise<Harness> {
     const h = installDomHarness({
       micPermission: options?.micPermission,
-      micProbeErrorName: options?.micProbeErrorName
+      micProbeErrorName: options?.micProbeErrorName,
+      navigatorLanguages: options?.navigatorLanguages
     });
     const changes: Array<{ text: string; isFinal: boolean }> = [];
     const submissions: string[] = [];
@@ -427,5 +436,112 @@ if (!jsdomReady) {
     assertEqual(v.rec.startCalls, 1, 'the clean third tap starts exactly one session');
     assert(v.label().includes('Listening'), 'listening UI restored after the cancelled start');
     await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Recognition starts in the USER language immediately on tap');
+  {
+    // App language left at the default (auto): the device language must win
+    // for the VERY FIRST start — no English-first start that gets re-targeted.
+    const v = await mount({ navigatorLanguages: ['ta-IN', 'en-US'] });
+    await v.tap();
+    await flush(20);
+    assertEqual(v.rec.startCalls, 1, 'a tap starts recognition immediately');
+    assertEqual(v.rec.startLangs[0], 'ta-IN', 'the FIRST start is the user language, not English');
+    assertEqual(v.rec.lang, 'ta-IN', 'the recognizer stays in the user language');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Re-emitted identical finals never duplicate the transcript or the submission');
+  {
+    const v = await mount();
+    await v.tap();
+    await act(async () => {
+      v.rec.emit([{ transcript: 'help', isFinal: true }]);
+    });
+    await act(async () => {
+      v.rec.emit([{ transcript: 'help', isFinal: true }]); // device re-emits the exact same final
+    });
+    await flush(1900); // silence commit
+    assertEqual(v.submissions.length, 1, 'one submission despite the duplicated final');
+    assertEqual(v.submissions[0], 'help', 'the duplicated final is not appended twice');
+    assert(!v.caption().includes('help help'), 'no duplicated words in the transcript');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Interim words are not repeated when the final arrives');
+  {
+    const v = await mount();
+    await v.tap();
+    await act(async () => {
+      v.rec.emit([{ transcript: 'my father', isFinal: false }]);
+    });
+    assert(v.caption().includes('my father'), 'interim words shown live');
+    await act(async () => {
+      v.rec.emit([{ transcript: 'my father', isFinal: true }]);
+    });
+    await flush(1900); // silence commit
+    assertEqual(v.submissions.length, 1, 'one submission for interim-then-final speech');
+    assertEqual(v.submissions[0], 'my father', 'the final does not repeat the interim words');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Typing is instant while recognition is live — input is never blocked');
+  {
+    const h = installDomHarness();
+    const typed: string[] = [];
+    const Host = () => {
+      const [text, setText] = useState('');
+      return React.createElement(TranscriptArea, {
+        transcript: text,
+        onTranscriptChange: (t: string) => { typed.push(t); setText(t); },
+        onSubmitEmergency: () => {},
+        isAnalyzing: false,
+        offlineForce: false,
+        highContrast: false,
+        locationInfo: null,
+        onLocationUpdate: () => {},
+        selectedLanguage: 'en',
+        onLanguageChange: () => {}
+      });
+    };
+    const root = createRoot(h.root);
+    await act(async () => {
+      root.render(React.createElement(React.Fragment, null,
+        React.createElement(EmergencyVoiceButton, {
+          onTranscriptChange: () => {},
+          isAnalyzing: false,
+          soundEnabled: false,
+          highContrast: false,
+          selectedLanguage: 'en'
+        }),
+        React.createElement(Host)
+      ));
+    });
+    await flush(20);
+    await act(async () => {
+      h.document.getElementById('emergency-voice-record-btn')
+        .dispatchEvent(new h.window.MouseEvent('click', { bubbles: true }));
+    });
+    await flush(20);
+    const rec = FakeSpeechRecognition.instances[FakeSpeechRecognition.instances.length - 1];
+    assertEqual(rec.started, true, 'recognition is live while we type');
+    const textarea = h.document.getElementById('emergency-transcript-input') as any;
+    assert(Boolean(textarea), 'the typing box is present');
+    assertEqual(textarea.disabled, false, 'typing is NOT blocked while the microphone is live');
+    const setter = Object.getOwnPropertyDescriptor(h.window.HTMLTextAreaElement.prototype, 'value')?.set;
+    await act(async () => {
+      setter?.call(textarea, 'help me');
+      textarea.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    });
+    assertEqual(typed[typed.length - 1], 'help me', 'typed text is accepted instantly');
+    assertEqual(textarea.value, 'help me', 'the box shows the typed text instantly');
+    await act(async () => {
+      root.unmount();
+    });
+    h.cleanup();
   }
 }

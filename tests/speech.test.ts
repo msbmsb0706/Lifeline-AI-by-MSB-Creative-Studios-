@@ -1,17 +1,15 @@
 /**
- * Real-time multilingual speech: the microphone must speak answers in the
- * heard language, not leave a typed-only English box, and must never invent
- * an emergency number.
+ * Multilingual recognition + on-demand read-aloud locales: the microphone
+ * must start and retarget in the heard language. The emergency answer is
+ * shown on screen and is never auto-spoken (no spoken-brief tests remain).
  */
 import { getSpeechRecognitionLocale } from '../src/lib/languages.ts';
 import {
-  buildSpokenEmergencyBrief,
   pickStartLanguage,
   resolveSpeechLocale,
-  shouldSwitchRecognitionLanguage,
-  spokenPhrase
+  shouldSwitchRecognitionLanguage
 } from '../src/lib/speech.ts';
-import { section, assert, assertEqual } from './helpers.ts';
+import { section, assertEqual } from './helpers.ts';
 
 section('Speech locale follows the heard language, not a forced English tag');
 assertEqual(resolveSpeechLocale('ta'), 'ta-IN', 'Tamil code speaks as ta-IN');
@@ -48,43 +46,4 @@ assertEqual(
   shouldSwitchRecognitionLanguage('en', 'முதியவருக்கு நெஞ்சு வலி', 'fr'),
   null,
   'a locked language chip is not overridden'
-);
-
-section('Spoken answer is in the heard language, not a typed English card');
-const tamil = buildSpokenEmergencyBrief({ languageCode: 'ta', category: 'MEDICAL', severity: 5 });
-assert(/[\u0B80-\u0BFF]/.test(tamil), 'Tamil answer contains Tamil script');
-assert(!tamil.includes('Contact your local emergency services immediately'), 'English gloss is not spoken over Tamil');
-assert(tamil.includes('5'), 'severity is spoken');
-
-const spanish = buildSpokenEmergencyBrief({ languageCode: 'es', category: 'FIRE', severity: 4 });
-assert(spanish.includes('Ayuda de emergencia'), 'Spanish answer starts in Spanish');
-assert(!spanish.includes('911 / 112 / 108'), 'no invented universal emergency-number combination');
-
-const french = buildSpokenEmergencyBrief({ languageCode: 'French', category: 'RESCUE', severity: 4 });
-assert(french.includes("Aide d'urgence"), 'French name resolves and is spoken in French');
-
-section('Configured number only — never invented');
-const withNumber = buildSpokenEmergencyBrief({
-  languageCode: 'hi',
-  category: 'MEDICAL',
-  severity: 5,
-  emergencyNumber: '112'
-});
-assert(withNumber.includes('112'), 'a configured number is spoken');
-assert(/[\u0900-\u097F]/.test(withNumber), 'Hindi answer stays in Hindi around that number');
-
-const bare = buildSpokenEmergencyBrief({ languageCode: 'en', category: 'MEDICAL', severity: 3 });
-assert(!bare.includes('911'), 'English answer does not invent 911');
-assert(!bare.includes('108'), 'English answer does not invent 108');
-assertEqual(
-  buildSpokenEmergencyBrief({ languageCode: 'en', category: 'MEDICAL', severity: 3, emergencyNumber: 'call now' }).includes('call now'),
-  false,
-  'non-numeric text is not spoken as an emergency number'
-);
-
-section('Parenthetical English is stripped from spoken phrases');
-assertEqual(
-  spokenPhrase('உடனடியாக தொடர்பு கொள்ளுங்கள் (Contact your local emergency services immediately.)'),
-  'உடனடியாக தொடர்பு கொள்ளுங்கள்',
-  'spoken phrase drops the English parenthesis'
 );
