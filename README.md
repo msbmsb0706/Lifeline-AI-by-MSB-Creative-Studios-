@@ -2,7 +2,7 @@
 
 **BY MSB CREATIVE STUDIOS**
 
-LifeLine AI by MSB Creative Studios is an emergency triage application for voice and text distress reports. It classifies likely emergency types and severity, produces a structured visual SOS card and dispatch alert, and lets the user review and share an emergency package.
+LifeLine sos AI by MSB Creative Studios is an emergency triage application for voice and text distress reports. It classifies likely emergency types and severity, produces a structured visual SOS card and dispatch alert, and lets the user review and share an emergency package.
 
 **Operational Notice:** LifeLine AI currently has no automatic government or rescue dispatch. Sharing or transmitting an alert requires explicit user review and confirmation.
 
