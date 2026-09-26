@@ -37,7 +37,11 @@ import {
 import { playPing } from '../lib/audio.ts';
 import { SHOW_TECH_DETAILS, friendlyTranslationText } from '../lib/uiVisibility.ts';
 import { speakText, speechSynthesisAvailable, stopSpeaking } from '../lib/speech.ts';
-import { looksLikeGeneratedDispatch } from '../lib/translationSafety.ts';
+import {
+  looksLikeGeneratedDispatch,
+  selectTranslationSource,
+  validateTranslatedMessage
+} from '../lib/translationSafety.ts';
 import {
   GENERIC_EMERGENCY_GUIDANCE,
   getCountryEmergencyNumber,
@@ -50,6 +54,7 @@ import {
   getLanguageByCodeOrName
 } from '../lib/languages.ts';
 import { ShareAlertConfirmModal } from './ShareAlertConfirmModal.tsx';
+import { PublicEmergencyNumbers } from './PublicEmergencyNumbers.tsx';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
 import { SOSDeliveryStatusCard } from './SOSDeliveryStatus.tsx';
 import { LOCAL_ONLY_PROVIDER } from '../lib/emergencyPartnersData.ts';
@@ -68,6 +73,8 @@ interface SOSCardViewProps {
   isTranslating?: boolean;
   /** Manual OFFLINE mode never sends to a partner, even if the OS reports online. */
   offlineMode?: boolean;
+  /** Opens the Pending SOS Queue so a saved SOS can be shared or sent manually. */
+  onOpenQueue?: () => void;
 }
 
 export const SOSCardView: React.FC<SOSCardViewProps> = ({
@@ -76,7 +83,8 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   soundEnabled,
   onTranslateSOS,
   isTranslating = false,
-  offlineMode = false
+  offlineMode = false,
+  onOpenQueue
 }) => {
   const [copiedOriginal, setCopiedOriginal] = useState(false);
   const [copiedTranslated, setCopiedTranslated] = useState(false);
@@ -301,6 +309,25 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   const configuredEmergencyNumber = getCountryEmergencyNumber(selectedCountry);
   const showTranslated = hasTranslation && viewMode !== 'original';
 
+  /**
+   * The user's OWN words, resolved with the same priority the translator uses
+   * (raw_transcript -> original_message -> legacy transcript). This is what the
+   * "Original Transmission" box must ALWAYS show — never the generated
+   * "DISPATCH ALERT ..." text, and never empty. Only when no original text
+   * exists at all (a corrupt/legacy record) is the generated message used, and
+   * it is then labelled as generated.
+   */
+  const originalTransmission =
+    selectTranslationSource({
+      raw_transcript: result.raw_transcript,
+      transcript: result.transcript,
+      translation: result.translation
+        ? { original_message: result.translation.original_message }
+        : null
+    }) || null;
+  const originalOrGenerated = originalTransmission || result.message || '';
+  const originalIsGeneratedFallback = originalTransmission === null;
+
   const activeHeadline = showTranslated && result.translation?.translated_headline
     ? result.translation.translated_headline
     : visualCardObj.headline;
@@ -376,6 +403,17 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
       source: result.source === 'nebius_nemotron' ? 'online' : 'offline',
       originalTranscript: result.raw_transcript || result.transcript || undefined,
       detectedLanguage: result.detected_language || undefined,
+      // Carry the user's translated words into the saved record so a responder
+      // can read them from the queue. Only a safety-validated translation of the
+      // ORIGINAL transmission is stored — never generated dispatch text.
+      translation:
+        result.translation && validateTranslatedMessage(result.translation.translated_message).ok
+          ? {
+              targetLanguage: result.translation.target_language,
+              targetLanguageName: result.translation.target_language_name,
+              translatedMessage: result.translation.translated_message
+            }
+          : null,
       voiceCapture: result.voice_capture
         ? {
             detectedLanguage: result.voice_capture.detectedLanguage,
@@ -519,7 +557,11 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
 
       {/* Live SOS delivery lifecycle status — always visible after confirmation,
           expandable for delivery details. No extra button required. */}
-      <SOSDeliveryStatusCard sosId={dispatchedSosId} offlineMode={offlineMode} />
+      <SOSDeliveryStatusCard
+        sosId={dispatchedSosId}
+        offlineMode={offlineMode}
+        onOpenQueue={onOpenQueue}
+      />
 
       {/* Multilingual Emergency Translation Control Bar */}
       <div
@@ -853,6 +895,12 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           )}
         </div>
 
+        {/* Every verified government number, always readable: no country pick,
+            no GPS, no sign-in. */}
+        <div className="mb-2">
+          <PublicEmergencyNumbers highlightCountry={selectedCountry} compact />
+        </div>
+
         {/* Explicit translation-unavailable state (online translation failed) */}
         {translationError && (
           <div
@@ -927,7 +975,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <button
-                    onClick={() => handleSpeakAloud(result.raw_transcript || result.message, detectedSourceLangInfo.code)}
+                    onClick={() => handleSpeakAloud(originalOrGenerated, detectedSourceLangInfo.code)}
                     title="Read original message aloud"
                     className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-[11px]"
                   >
@@ -935,7 +983,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                   </button>
                   <button
                     id="copy-original-dispatch-btn"
-                    onClick={() => copyText(result.raw_transcript || result.message, false)}
+                    onClick={() => copyText(originalOrGenerated, false)}
                     className={`text-[11px] px-2 py-0.5 rounded font-semibold flex items-center gap-1 transition-all ${
                       copiedOriginal
                         ? 'bg-emerald-600 text-white'
@@ -948,41 +996,90 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 </div>
               </div>
               <pre className="text-xs sm:text-sm font-mono text-neutral-300/90 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/60 border border-neutral-900 select-all">
-                {result.raw_transcript || result.message}
+                {originalOrGenerated}
               </pre>
             </div>
           </div>
         ) : (
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="text-[11px] font-medium text-neutral-400">
-                Source Language: {detectedSourceLangInfo.name} ({detectedSourceLangInfo.code.toUpperCase()})
+          <div className="space-y-3">
+            {/* THE PERSON'S OWN WORDS — always visible, before any translation
+                exists. Previously this state showed ONLY the generated dispatch
+                text, so the original message disappeared from the card. */}
+            <div id="original-transmission-always" className="p-2.5 rounded-xl bg-neutral-900/60 border border-neutral-800">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="text-[11px] font-bold text-neutral-300 flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-neutral-400" />
+                  <span>
+                    {originalIsGeneratedFallback
+                      ? 'Original transmission not available — generated text shown:'
+                      : `Your original words (${detectedSourceLangInfo.name}):`}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => handleSpeakAloud(originalOrGenerated, detectedSourceLangInfo.code)}
+                    title="Read the original message aloud"
+                    className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-[11px]"
+                  >
+                    <Volume2 className="w-3 h-3" />
+                  </button>
+                  <button
+                    id="copy-original-always-btn"
+                    onClick={() => copyText(originalOrGenerated, false)}
+                    className={`text-[11px] px-2 py-0.5 rounded font-semibold flex items-center gap-1 transition-all ${
+                      copiedOriginal
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700'
+                    }`}
+                  >
+                    {copiedOriginal ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedOriginal ? 'Copied' : 'Copy Original'}</span>
+                  </button>
+                </div>
               </div>
-              <button
-                id="copy-dispatch-msg-btn"
-                onClick={() => copyText(result.message, false)}
-                className={`text-xs px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all ${
-                  copiedOriginal
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700'
-                }`}
-              >
-                {copiedOriginal ? (
-                  <>
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3.5 h-3.5" />
-                    <span>Copy Transmission</span>
-                  </>
-                )}
-              </button>
+              <pre className="text-xs sm:text-sm font-mono text-neutral-300/90 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/60 border border-neutral-900 select-all" dir="auto">
+                {originalOrGenerated}
+              </pre>
+              {!hasTranslation && (
+                <p className="mt-1.5 text-[11px] text-emerald-300/90">
+                  Not translated yet. Choose a language above and tap{' '}
+                  <span className="font-bold">Translate SOS</span> to add a translation of these exact words.
+                </p>
+              )}
             </div>
-            <pre className="text-xs sm:text-sm font-mono text-emerald-300/90 whitespace-pre-wrap leading-relaxed p-2.5 rounded-lg bg-black/60 border border-neutral-900 select-all">
-              {result.message}
-            </pre>
+
+            {/* Generated responder transmission — clearly labelled as generated. */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="text-[11px] font-medium text-neutral-400">
+                  Responder transmission (generated, English):
+                </div>
+                <button
+                  id="copy-dispatch-msg-btn"
+                  onClick={() => copyText(result.message, true)}
+                  className={`text-xs px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all ${
+                    copiedTranslated
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700'
+                  }`}
+                >
+                  {copiedTranslated ? (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copy Transmission</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="text-xs sm:text-sm font-mono text-emerald-300/90 whitespace-pre-wrap leading-relaxed p-2.5 rounded-lg bg-black/60 border border-neutral-900 select-all">
+                {result.message}
+              </pre>
+            </div>
           </div>
         )}
       </div>

@@ -1,6 +1,7 @@
 import { startAutomaticSOSRecovery } from './lib/automaticSOSRecovery.ts';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header.tsx';
+import { PublicEmergencyNumbers } from './components/PublicEmergencyNumbers.tsx';
 import { EmergencyVoiceButton } from './components/EmergencyVoiceButton.tsx';
 import { TranscriptArea } from './components/TranscriptArea.tsx';
 import { SOSCardView } from './components/SOSCardView.tsx';
@@ -731,6 +732,12 @@ export default function App() {
           </div>
         </div>
 
+        {/* Public government emergency numbers: always available, never behind a
+            country pick, a location request or a sign-in. */}
+        <div className="mb-3">
+          <PublicEmergencyNumbers compact highlightCountry={getSelectedCountry()} />
+        </div>
+
         {/* Explicit mode status (technical — debug builds only) */}
         {SHOW_TECH_DETAILS && <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${localOnlyMode ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
           {localOnlyMode
@@ -905,6 +912,7 @@ export default function App() {
             offlineMode={offlineForce}
             onTranslateSOS={handleTranslateSOS}
             isTranslating={isTranslating}
+            onOpenQueue={() => setShowPartnersModal(true)}
           />
         )}
 

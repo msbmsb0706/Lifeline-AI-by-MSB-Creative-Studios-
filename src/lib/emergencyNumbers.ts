@@ -70,3 +70,41 @@ export function setSelectedCountry(countryCode: string): void {
     // Persistence is best-effort; the directory still works in-memory.
   }
 }
+
+/** One verified public/government emergency number, as displayed publicly. */
+export interface PublicEmergencyNumberEntry {
+  country: string;
+  countryName: string;
+  serviceType: string;
+  providerName: string;
+  phone: string;
+  website?: string;
+}
+
+/**
+ * Every verified PUBLIC_CONTACT number in the directory.
+ *
+ * This list is public by design:
+ *  - it never depends on GPS, geolocation, an IP lookup or the device locale;
+ *  - it requires no sign-in, API key or partner authentication;
+ *  - every entry comes from the verified directory (never invented), and a
+ *    country without a verified number is simply absent rather than guessed.
+ *
+ * The country selector only decides which single number is promoted in the
+ * banner — it must never hide the rest of the directory.
+ */
+export function listPublicEmergencyNumbers(): PublicEmergencyNumberEntry[] {
+  return EMERGENCY_PARTNER_PROVIDERS.filter(
+    (p) =>
+      p.providerType === 'PUBLIC_CONTACT' &&
+      typeof p.phone === 'string' &&
+      p.phone.trim() !== ''
+  ).map((p) => ({
+    country: p.country,
+    countryName: p.countryName,
+    serviceType: p.serviceType,
+    providerName: p.providerName,
+    phone: String(p.phone).trim(),
+    website: p.website
+  }));
+}

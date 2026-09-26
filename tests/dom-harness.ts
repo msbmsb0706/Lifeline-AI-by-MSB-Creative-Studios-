@@ -132,6 +132,8 @@ export interface MicProbe {
   getUserMediaCalls: any[];
   /** Number of microphone tracks stopped by the page. */
   trackStops: number;
+  /** Number of MediaRecorder sessions the page started (server ASR path). */
+  recorderStarts: number;
   /** Number of browser alert() dialogs the page tried to show. */
   alerts: number;
   /** Change the probe rejection between taps (null = grant). */
@@ -167,6 +169,8 @@ export function installDomHarness(options?: {
   micPermission?: 'granted' | 'denied' | 'prompt';
   micProbeErrorName?: string | null;
   navigatorLanguages?: string[];
+  /** Install a fake MediaRecorder so the server-transcription path is testable. */
+  withMediaRecorder?: boolean;
 }): Harness {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: options?.url || 'https://lifeline.test/',
@@ -181,6 +185,7 @@ export function installDomHarness(options?: {
   const mic: MicProbe = {
     getUserMediaCalls: [],
     trackStops: 0,
+    recorderStarts: 0,
     alerts: 0,
     setProbeError: (name: string | null) => { micNextErrorName = name; }
   };
@@ -233,6 +238,29 @@ export function installDomHarness(options?: {
         });
       }
     };
+  }
+
+  if (options?.withMediaRecorder) {
+    class FakeMediaRecorder {
+      static isTypeSupported = (m: string) => m.startsWith('audio/webm');
+      state = 'inactive';
+      mimeType = 'audio/webm';
+      ondataavailable: ((e: any) => void) | null = null;
+      onstop: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public stream: any, public options?: any) {}
+      start() {
+        this.state = 'recording';
+        mic.recorderStarts += 1;
+        setTimeout(() => this.ondataavailable?.({ data: new win.Blob(['audio'], { type: 'audio/webm' }), size: 5 }), 0);
+      }
+      stop() {
+        this.state = 'inactive';
+        setTimeout(() => this.onstop?.(), 0);
+      }
+    }
+    win.MediaRecorder = FakeMediaRecorder;
+    (globalThis as any).MediaRecorder = FakeMediaRecorder;
   }
 
   // Minimal browser APIs the components touch.
@@ -339,6 +367,7 @@ export function installDomHarness(options?: {
       try { win.close(); } catch { /* already closed */ }
       installed -= 1;
       if (installed <= 0) {
+        try { delete (globalThis as any).MediaRecorder; } catch { /* non-configurable */ }
         for (const key of Object.keys(globals)) {
           try { delete (globalThis as any)[key]; } catch { /* non-configurable */ }
         }

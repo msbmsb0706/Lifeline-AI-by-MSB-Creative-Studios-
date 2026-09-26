@@ -234,6 +234,17 @@ export interface SOSPackage {
   originalTranscript?: string | null;
   /** English aid translation, when available. */
   englishTranslation?: string | null;
+  /**
+   * Faithful translation of `originalTranscript` into the selected target
+   * language, when the user produced one. This is the person's own words in
+   * another language — never the generated dispatch text — so a responder can
+   * read the original message even from the saved queue.
+   */
+  translation?: {
+    targetLanguage: string;
+    targetLanguageName: string;
+    translatedMessage: string;
+  } | null;
 }
 
 /**

@@ -36,6 +36,7 @@ import {
 } from '../lib/partnerConfig.ts';
 import { getSelectedCountry, setSelectedCountry } from '../lib/emergencyNumbers.ts';
 import { PartnerConsentModal } from './PartnerConsentModal.tsx';
+import { PublicEmergencyNumbers } from './PublicEmergencyNumbers.tsx';
 import { PartnerCaseTrackingPanel } from './PartnerCaseTrackingPanel.tsx';
 import {
   ShieldAlert,
@@ -473,6 +474,10 @@ export const EmergencyPartnersManagerModal: React.FC<
           {/* TAB 1: PROVIDERS DIRECTORY */}
           {activeTab === 'providers' && (
             <div className="space-y-4">
+              {/* Government numbers are public: shown before any country pick,
+                  with no sign-in and no location request. */}
+              <PublicEmergencyNumbers defaultOpen highlightCountry={selectedCountry === 'ALL' ? null : selectedCountry} />
+
               {/* Country Selection Pills */}
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">
@@ -844,6 +849,12 @@ export const EmergencyPartnersManagerModal: React.FC<
                             <div className="col-span-1 sm:col-span-2 whitespace-pre-wrap break-words" dir="auto">
                               <b>Original words ({item.sosPackage.detectedLanguage?.name || 'as entered'}):</b>{' '}
                               {item.sosPackage.originalTranscript}
+                            </div>
+                          )}
+                          {item.sosPackage.translation?.translatedMessage && (
+                            <div className="col-span-1 sm:col-span-2 whitespace-pre-wrap break-words text-emerald-200" dir="auto">
+                              <b>Translation of those words ({item.sosPackage.translation.targetLanguageName}):</b>{' '}
+                              {item.sosPackage.translation.translatedMessage}
                             </div>
                           )}
                           {item.sosPackage.gps && (

@@ -151,8 +151,20 @@ const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf
 const modalSource = readFileSync(new URL('../src/components/PartnerConsentModal.tsx', import.meta.url), 'utf8');
 assert(serverSource.includes("'Idempotency-Key': sosId") && serverSource.includes('automaticRecoverySupported !== true'),
   'authorized route forwards SOS ID and refuses auto delivery without partner idempotency contract');
-assert(modalSource.includes('checked={automaticRecovery}') && modalSource.includes('SAVE LOCALLY + AUTOMATIC RECOVERY'),
-  'final local confirmation has explicit unchecked opt-in and distinct save actions');
+// The offline choice is now two explicit, self-explaining options (default =
+// device only), and the automatic path states its real preconditions.
+assert(
+  modalSource.includes('checked={automaticRecovery}') &&
+    modalSource.includes('checked={!automaticRecovery}') &&
+    modalSource.includes('SAVE + AUTO-SEND WHEN ONLINE') &&
+    modalSource.includes('SAVE ON THIS DEVICE ONLY'),
+  'final local confirmation offers two explicit choices with distinct save actions'
+);
+assert(
+  modalSource.includes('Choose what happens when the connection comes back') &&
+    modalSource.includes('authorized partner destination is actually configured'),
+  'the automatic path states the exact conditions under which it will send'
+);
 
 section('PR25: interrupted in-flight request and online/foreground event triggers');
 // Recreate a reachable backend and hold the partner response until connectivity drops.
