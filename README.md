@@ -121,7 +121,7 @@ LifeLine AI supports multilingual distress communication across **10 languages**
 
 #### Speech in, answer on screen (real time)
 - **Speak, don’t type:** The microphone is the primary emergency input. It listens live and shows the emergency guidance on screen in the language that was heard. Typing is available at any time (it is never blocked while the microphone is live).
-- **Any supported language, live:** Recognition starts immediately in the selected answer language or the device language, then retargets itself as soon as another supported language is clearly heard — Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, Marathi, Spanish, French, or English. **There is no language picker to tap while speaking:** the row of microphone language chips was removed because it confused people mid-emergency and duplicated the Target Language control, which already decides the recognizer's start language. The live caption reports which language is being heard (`Auto • தமிழ்`). A short pause commits the answer on screen; the microphone is closed first.
+- **Any supported language, live:** Recognition starts immediately in the selected answer language or the device language, then retargets itself as soon as another supported language is clearly heard — Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, Marathi, Spanish, French, or English. While speaking, the language chips let the caller explicitly choose a recognition language; the confusing `Any language` chip is omitted. Without a selected chip, the recognizer continues to follow the language it hears, and the live caption reports it (`Auto • தமிழ்`). A short pause commits the answer on screen; the microphone is closed first.
 - **No automatic spoken reply:** The answer is never spoken back automatically. The SOS card offers a user-tapped **Read aloud** button (for first responders/bystanders) that uses the browser speech synthesizer in the correct language voice. No audio is uploaded. A phone number is spoken only when that country already has a configured public emergency number — numbers are never invented.
 - **Optional Multilingual ASR (NVIDIA Whisper NIM):**
   - When server-side ASR credentials are explicitly configured (`ASR_PROVIDER=nvidia_nim`, `ASR_BASE_URL`, `ASR_API_KEY`/`NVIDIA_API_KEY`, and `ASR_MODEL=openai/whisper-large-v3`), browser audio recordings are transmitted to the backend proxy (`POST /api/transcribe-speech`) for transcription with automatic multilingual detection (`language=multi`).
@@ -218,12 +218,10 @@ The microphone path was rebuilt around how Chrome for Android actually behaves:
   app offers **RECORD WITH LIFELINE VOICE** — a recorder path that does not depend on the
   browser's cloud speech service.
 - Typing always works and is never blocked by voice state.
-- **No language option while speaking.** The microphone language chip row (*Any language |
-  தமிழ் | हिन्दी | …*) is gone in every mode. It duplicated the **Target Language** control —
-  which already sets the recognizer's start language — and people read it as something they had
-  to choose before they were allowed to speak. Language handling is now automatic: start from
-  the target/device language, retarget to the language actually heard, and report it in the live
-  caption.
+- **Microphone language choices stay available while speaking.** The chip row offers each
+  supported language except the redundant **Any language** choice. Tapping a language locks the
+  recognizer to that language; without a selected chip, it starts from the target/device language,
+  retargets to what it hears, and reports the detected language in the live caption.
 
 ---
 
