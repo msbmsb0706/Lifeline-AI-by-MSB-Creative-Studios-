@@ -147,6 +147,14 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   // While a server recording is active the lock stays held by the recording
   // itself and is released only when it ends (stop / error / cleanup).
   const voiceStartLockRef = useRef(false);
+  // Set while startBrowserSession is awaiting the microphone permission probe,
+  // so the start-lock stays held across that async gap: a rapid second tap must
+  // never open a second getUserMedia()/SpeechRecognition pair.
+  const browserStartInFlightRef = useRef(false);
+  // Verified microphone permission for this mount. Only 'granted' is cached
+  // (it skips repeated probes); a denial is NOT cached, so the next tap re-checks
+  // — a permission granted later in browser settings takes effect on the next tap.
+  const micPermissionRef = useRef<'unknown' | 'granted'>('unknown');
   // Ref mirror of isServerRecording so the async start path can trust capture
   // state synchronously without waiting for a React re-render.
   const isServerRecordingRef = useRef(false);
@@ -180,7 +188,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   const runningRef = useRef(false);
   // A tap that arrived while Chrome was still closing the previous session.
   const pendingStartRef = useRef(false);
-  const startBrowserSessionRef = useRef<(() => void) | null>(null);
+  const startBrowserSessionRef = useRef<(() => void | Promise<void>) | null>(null);
 
   const isBusyAsr = voicePhase === 'transcribing' || voicePhase === 'translating';
   const isVoiceActive = isListening || isServerRecording;
@@ -369,17 +377,24 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       };
 
       recognition.onerror = (err: any) => {
-        console.warn('Speech recognition warning/error:', err.error);
-        if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
+        const code = err?.error;
+        if (code === 'no-speech' || code === 'aborted') {
+          // no-speech / aborted are normal (silence, our own restart/stop).
+          console.warn('Speech recognition warning/error:', code);
+        } else {
+          console.error('Speech recognition error:', code);
+        }
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          micPermissionRef.current = 'unknown'; // the next tap re-checks the permission
           sessionActiveRef.current = false;
           userStopRef.current = true;
-          setMicError('Microphone permission blocked. Please allow mic access, or type below.');
+          setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
           setIsListening(false);
         } else {
-          // no-speech / aborted are normal (silence, our own restart/stop).
-          const message = speechErrorMessage(err.error);
+          const message = speechErrorMessage(code);
           if (message) setMicError(message);
-          if (FATAL_RECOGNITION_ERRORS.includes(err.error)) {
+          if (code === 'audio-capture') micPermissionRef.current = 'unknown'; // the device may have gone away
+          if (FATAL_RECOGNITION_ERRORS.includes(code)) {
             // Chrome ends this session by itself after one of these errors, and
             // restarting would only repeat it (an endless, silent loop on
             // Android). Finish the session with whatever was already heard.
@@ -389,6 +404,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
           }
         }
       };
+      // Note: every recognition error is surfaced IN-APP (micError banner).
+      // This emergency UI never shows a browser alert dialog — errors must not
+      // pop up "in public" over someone else's shoulder or a shared screen.
 
       recognition.onend = () => {
         // Chrome/Android may end at its speech end-point with only interim
@@ -458,8 +476,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   useEffect(() => {
     return () => {
       // Unmount: release the start lock and ALWAYS stop every microphone track,
-      // even if a start was still in flight.
+      // even if a start (or its permission probe) was still in flight.
       voiceStartLockRef.current = false;
+      browserStartInFlightRef.current = false;
       isServerRecordingRef.current = false;
       clearMaxDurationTimer();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -581,10 +600,77 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     }
   };
 
-  const startBrowserSession = () => {
+  /**
+   * Verify the microphone is allowed BEFORE the Web Speech API opens it.
+   *
+   * The probe opens the microphone with getUserMedia only to obtain the
+   * browser permission (on Chrome/Android the permission prompt is reliably
+   * attached to this user-gesture call). It then IMMEDIATELY stops every
+   * track: we only needed the permission. Leaving the probe stream open would
+   * keep the microphone busy and the recognition engine would fail with
+   * 'audio-capture' ("mic is in use by another app").
+   *
+   * No network is involved, so the probe is equally valid offline. Errors are
+   * reported in-app (micError banner), never with a browser alert dialog.
+   * Returning true means "let the recognizer open the microphone itself".
+   */
+  const ensureMicrophonePermission = async (): Promise<boolean> => {
+    if (micPermissionRef.current === 'granted') return true;
+    let permissionState: string | undefined;
+    try {
+      const permissions = (navigator as any).permissions;
+      const query = permissions?.query;
+      if (typeof query === 'function') {
+        permissionState = (await query.call(permissions, { name: 'microphone' })).state;
+      }
+    } catch {
+      permissionState = undefined; // query unsupported — fall back to the probe
+    }
+    if (permissionState === 'granted') {
+      micPermissionRef.current = 'granted';
+      return true;
+    }
+    if (permissionState === 'denied') {
+      setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
+      return false;
+    }
+    if (typeof navigator.mediaDevices?.getUserMedia !== 'function') {
+      return true; // no probe possible — the recognizer reports its own errors
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Stop the stream immediately: only the permission was needed.
+      stream.getTracks().forEach((track) => track.stop());
+      micPermissionRef.current = 'granted';
+      return true;
+    } catch (err: any) {
+      if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError' || err?.name === 'PermissionDeniedError') {
+        setMicError('Microphone permission denied. Please allow mic access in browser settings, or type below.');
+        return false;
+      }
+      if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+        setMicError('No microphone found. You can type distress details directly.');
+        return false;
+      }
+      // Transient device hiccup: let the recognizer try its own mic access.
+      console.warn('Microphone permission probe failed; letting the recognizer open the mic:', err?.message || err);
+      return true;
+    }
+  };
+
+  const startBrowserSession = async () => {
     const recognition = recognitionRef.current;
+    // Hold the tap start-lock across the (possibly slow) permission probe: a
+    // rapid second tap must never open a second microphone/recognizer pair.
+    // (The lock was acquired by toggleRecording before this call.)
+    browserStartInFlightRef.current = true;
+    const releaseStartLock = () => {
+      browserStartInFlightRef.current = false;
+      voiceStartLockRef.current = false;
+    };
     if (!recognition) {
       setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
+      releaseStartLock();
       return;
     }
     stopSpeaking();
@@ -607,6 +693,18 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     activeModeRef.current = 'browser';
     // Unlock spoken answers in this tap, then listen. Do not speak while the mic is open.
     if (soundEnabledRef.current) primeSpeechEngine();
+
+    const allowed = await ensureMicrophonePermission();
+    if (!allowed || userStopRef.current || !sessionActiveRef.current) {
+      // Permission denied — or the person closed the session while the probe
+      // was open. Never open a microphone that will just fail again.
+      userStopRef.current = true;
+      sessionActiveRef.current = false;
+      setIsListening(false);
+      releaseStartLock();
+      return;
+    }
+    releaseStartLock();
     recognition.lang = getSpeechRecognitionLocale(startCode);
     if (soundEnabledRef.current) playPing('start');
     try {
@@ -705,7 +803,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       // server recorder is only the fallback when this browser cannot listen live.
       const browserReady = Boolean(recognitionRef.current) && speechSupported && !(offlineMode && !localSpeechSupported);
       if (browserReady) {
-        startBrowserSession();
+        // Async: the tap start-lock stays held across the microphone
+        // permission probe until the recognizer actually starts (or fails).
+        void startBrowserSession();
         return;
       }
 
@@ -739,8 +839,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
       setMicError('Speech recognition is not supported in this browser. Please type your emergency description.');
     } finally {
       // Release the lock for every start path that did not end up owning an
-      // active server recording (browser voice, permission denial, failures).
-      if (!isServerRecordingRef.current) {
+      // active server recording or an in-flight browser permission probe
+      // (browser voice, permission denial, failures).
+      if (!isServerRecordingRef.current && !browserStartInFlightRef.current) {
         voiceStartLockRef.current = false;
       }
     }

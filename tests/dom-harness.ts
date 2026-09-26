@@ -29,6 +29,12 @@ function makeResultList(results: FakeResult[]): any {
 
 export class FakeSpeechRecognition {
   static instances: FakeSpeechRecognition[] = [];
+  /**
+   * Global ordering log across mic events and recognition starts, so tests can
+   * assert e.g. "the probe stream was stopped BEFORE recognition.start()".
+   * Entries: 'mic-permission-granted', 'mic-track-stopped', 'recognition-start'.
+   */
+  static orderLog: string[] = [];
 
   continuous = false;
   interimResults = false;
@@ -69,6 +75,7 @@ export class FakeSpeechRecognition {
     this.started = true;
     this.startCalls += 1;
     this.startLangs.push(this.lang);
+    FakeSpeechRecognition.orderLog.push('recognition-start');
     // Chrome fires onstart in a later task, never synchronously.
     setTimeout(() => {
       if (this.started) this.onstart?.();
@@ -120,12 +127,25 @@ export class FakeSpeechRecognition {
   }
 }
 
+export interface MicProbe {
+  /** Every getUserMedia constraint set the page requested. */
+  getUserMediaCalls: any[];
+  /** Number of microphone tracks stopped by the page. */
+  trackStops: number;
+  /** Number of browser alert() dialogs the page tried to show. */
+  alerts: number;
+  /** Change the probe rejection between taps (null = grant). */
+  setProbeError: (errorName: string | null) => void;
+}
+
 export interface Harness {
   dom: JSDOM;
   window: any;
   document: any;
   root: HTMLElement;
   recognition: () => FakeSpeechRecognition;
+  /** Microphone permission probe instrumentation (present whenever the page can use it). */
+  mic: MicProbe;
   unmount: () => void;
   cleanup: () => void;
 }
@@ -135,8 +155,18 @@ let installed = 0;
 /**
  * Installs a fresh jsdom + fake SpeechRecognition on globalThis and returns a
  * mount point. Call `cleanup()` in a finally block.
+ *
+ * `micPermission` ('granted' | 'denied' | 'prompt') installs a
+ * navigator.permissions + navigator.mediaDevices probe environment so the
+ * microphone-permission-probe path can be exercised. Omit it to keep the
+ * bare environment (no permissions API, no mediaDevices) that earlier
+ * sections of the suite depend on.
  */
-export function installDomHarness(options?: { url?: string }): Harness {
+export function installDomHarness(options?: {
+  url?: string;
+  micPermission?: 'granted' | 'denied' | 'prompt';
+  micProbeErrorName?: string | null;
+}): Harness {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: options?.url || 'https://lifeline.test/',
     pretendToBeVisual: true
@@ -144,6 +174,58 @@ export function installDomHarness(options?: { url?: string }): Harness {
 
   const win: any = dom.window;
   const doc: any = win.document;
+
+  FakeSpeechRecognition.orderLog = [];
+  let micNextErrorName: string | null = options?.micProbeErrorName ?? null;
+  const mic: MicProbe = {
+    getUserMediaCalls: [],
+    trackStops: 0,
+    alerts: 0,
+    setProbeError: (name: string | null) => { micNextErrorName = name; }
+  };
+
+  // The emergency UI must never pop a browser alert dialog ("visible in
+  // public"): record any attempt so tests can assert it never happens.
+  const alertSpy = (..._args: any[]) => { mic.alerts += 1; };
+  win.alert = alertSpy;
+
+  if (options?.micPermission !== undefined) {
+    win.navigator.permissions = {
+      query: (descriptor: any) => Promise.resolve({
+        name: descriptor?.name,
+        state: options.micPermission,
+        addEventListener: () => {},
+        removeEventListener: () => {}
+      })
+    };
+    win.navigator.mediaDevices = {
+      getUserMedia: (constraints: any) => {
+        mic.getUserMediaCalls.push(constraints);
+        if (micNextErrorName) {
+          const err = new Error(micNextErrorName);
+          err.name = micNextErrorName;
+          return Promise.reject(err);
+        }
+        const track = {
+          kind: 'audio',
+          label: 'fake-microphone',
+          readyState: 'live',
+          stop: () => {
+            mic.trackStops += 1;
+            FakeSpeechRecognition.orderLog.push('mic-track-stopped');
+          }
+        };
+        FakeSpeechRecognition.orderLog.push('mic-permission-granted');
+        return Promise.resolve({
+          getTracks: () => [track],
+          getAudioTracks: () => [track],
+          active: true,
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        });
+      }
+    };
+  }
 
   // Minimal browser APIs the components touch.
   win.matchMedia = win.matchMedia || (() => ({
@@ -220,7 +302,8 @@ export function installDomHarness(options?: { url?: string }): Harness {
     location: win.location,
     DOMParser: win.DOMParser,
     SVGElement: win.SVGElement,
-    DocumentFragment: win.DocumentFragment
+    DocumentFragment: win.DocumentFragment,
+    alert: alertSpy
   };
   for (const [key, value] of Object.entries(globals)) {
     if (value === undefined) continue;
@@ -240,6 +323,7 @@ export function installDomHarness(options?: { url?: string }): Harness {
     document: doc,
     root,
     recognition: () => FakeSpeechRecognition.instances[FakeSpeechRecognition.instances.length - 1],
+    mic,
     unmount: () => {
       /* assigned by mountReact() */
     },

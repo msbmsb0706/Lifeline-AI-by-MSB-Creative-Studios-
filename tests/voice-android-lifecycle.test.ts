@@ -50,8 +50,13 @@ if (!jsdomReady) {
   async function mount(options?: {
     selectedLanguage?: string;
     onResolveVoiceMode?: () => Promise<'server' | 'browser'>;
+    micPermission?: 'granted' | 'denied' | 'prompt';
+    micProbeErrorName?: string | null;
   }): Promise<Harness> {
-    const h = installDomHarness();
+    const h = installDomHarness({
+      micPermission: options?.micPermission,
+      micProbeErrorName: options?.micProbeErrorName
+    });
     const changes: Array<{ text: string; isFinal: boolean }> = [];
     const submissions: string[] = [];
     const root = createRoot(h.root);
@@ -317,6 +322,110 @@ if (!jsdomReady) {
       v.h.window.navigator.mediaDevices === undefined,
       'no MediaRecorder / getUserMedia capture is used by the live browser path'
     );
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Microphone permission probe: stream is stopped BEFORE recognition starts');
+  {
+    const v = await mount({ micPermission: 'prompt' });
+    await v.tap();
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'one getUserMedia permission probe per user tap');
+    assertEqual(v.h.mic.trackStops, 1, 'probe stream track is stopped immediately — the permission was all that was needed');
+    const log = FakeSpeechRecognition.orderLog;
+    const granted = log.indexOf('mic-permission-granted');
+    const stopped = log.indexOf('mic-track-stopped');
+    const started = log.indexOf('recognition-start');
+    assert(granted !== -1 && stopped !== -1 && started !== -1 && granted < stopped && stopped < started,
+      'order is permission granted → tracks stopped → recognition.start()');
+    assertEqual(v.rec.startCalls, 1, 'SpeechRecognition starts only after the probe stream is closed');
+    assert(v.label().includes('Listening'), 'listening UI appears after the probe succeeds');
+    assertEqual(v.h.mic.alerts, 0, 'no browser alert dialog in the emergency voice UI');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Permission already granted: no probe, no extra microphone open/close');
+  {
+    const v = await mount({ micPermission: 'granted' });
+    await v.tap();
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 0, 'a granted permission skips the getUserMedia probe');
+    assertEqual(v.h.mic.trackStops, 0, 'no extra microphone open/close cycle for a granted permission');
+    assertEqual(v.rec.startCalls, 1, 'recognition still starts directly');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Permission denied: in-app message only, recognizer never starts');
+  {
+    const v = await mount({ micPermission: 'denied' });
+    await v.tap();
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 0, 'a known denial does not re-open the microphone');
+    assertEqual(v.rec.startCalls, 0, 'SpeechRecognition never starts without permission');
+    assert(v.status().includes('permission'), 'the denial is explained in plain language, in-app');
+    assertEqual(v.h.mic.alerts, 0, 'the denial is not a public browser alert');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Probe rejections are reported in-app; the next tap re-checks the permission');
+  {
+    const v = await mount({ micPermission: 'prompt', micProbeErrorName: 'NotAllowedError' });
+    await v.tap();
+    await flush(30);
+    assertEqual(v.rec.startCalls, 0, 'a rejected probe never starts recognition');
+    assert(v.status().includes('permission'), 'probe rejection is explained as a permission problem');
+    assertEqual(v.h.mic.alerts, 0, 'probe rejection is not a browser alert');
+    v.h.mic.setProbeError(null); // the person allowed the mic in browser settings
+    await v.tap();
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 2, 'the next tap re-runs the probe instead of staying locked out');
+    assertEqual(v.rec.startCalls, 1, 'after the probe succeeds, recognition starts');
+    await v.stop();
+
+    const missing = await mount({ micPermission: 'prompt', micProbeErrorName: 'NotFoundError' });
+    await missing.tap();
+    await flush(30);
+    assertEqual(missing.rec.startCalls, 0, 'a missing microphone never starts recognition');
+    assert(missing.status().includes('No microphone found'), 'missing hardware is explained in-app');
+    assertEqual(missing.h.mic.alerts, 0, 'hardware errors are not browser alerts either');
+    await missing.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Rapid second tap during the permission probe cannot double-open the microphone');
+  {
+    // A slow permission prompt: the probe Promise resolves only after 80 ms.
+    const v = await mount({ micPermission: 'prompt' });
+    v.h.window.navigator.mediaDevices.getUserMedia = (constraints: any) => {
+      v.h.mic.getUserMediaCalls.push(constraints);
+      return new Promise((resolve) => {
+        const track = {
+          kind: 'audio',
+          stop: () => {
+            v.h.mic.trackStops += 1;
+            FakeSpeechRecognition.orderLog.push('mic-track-stopped');
+          }
+        };
+        FakeSpeechRecognition.orderLog.push('mic-permission-granted');
+        setTimeout(() => resolve({ getTracks: () => [track], active: true }), 80);
+      });
+    };
+    await v.tap();
+    await flush(20); // first tap's probe is still in flight
+    await v.tap(); // toggle semantics: this tap closes the in-flight start
+    await flush(120);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'only ONE permission probe runs, even with a rapid double tap');
+    assertEqual(v.h.mic.trackStops, 1, 'the single probe stream is stopped exactly once');
+    assertEqual(v.rec.startCalls, 0, 'the second tap cancelled the in-flight start — no session, no phantom listening');
+    await v.tap(); // a clean third tap
+    await flush(30);
+    assertEqual(v.h.mic.getUserMediaCalls.length, 1, 'the cached permission skips a second probe');
+    assertEqual(v.rec.startCalls, 1, 'the clean third tap starts exactly one session');
+    assert(v.label().includes('Listening'), 'listening UI restored after the cancelled start');
     await v.stop();
   }
 }

@@ -14,9 +14,9 @@ export function speechErrorMessage(code: string | undefined): string | null {
       return null; // normal: silence timeout or our own stop/restart
     case 'not-allowed':
     case 'service-not-allowed':
-      return 'Microphone permission blocked. Please allow mic access.';
+      return 'Microphone permission denied. Please allow mic access in browser settings.';
     case 'audio-capture':
-      return 'No microphone found. You can type distress details directly.';
+      return 'No microphone found, or the microphone is in use by another app. You can type distress details directly.';
     case 'network':
       return 'Voice recognition needs a network connection in this browser. You can type distress details directly.';
     case 'language-not-supported':
