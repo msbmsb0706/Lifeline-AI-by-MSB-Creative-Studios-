@@ -734,7 +734,7 @@ export default function App() {
         {/* Explicit mode status (technical — debug builds only) */}
         {SHOW_TECH_DETAILS && <div className={`mb-2 px-3 py-1.5 rounded-lg border text-[11px] font-bold tracking-wide ${localOnlyMode ? 'bg-amber-950/60 border-amber-700 text-amber-300' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300'}`}>
           {localOnlyMode
-            ? 'LOCAL SOS TRIAGE — typed messages work without internet. Nothing is automatically sent; browser voice may need a network.'
+            ? 'LOCAL SOS TRIAGE — typed messages work without internet. A saved SOS sends only with your opt-in when the connection returns (authorized partner only); browser voice may need a network.'
             : 'ONLINE AI selected — on-device SOS takes over if unreachable. Dispatch requires separate consent and a real supported partner.'}
         </div>}
 

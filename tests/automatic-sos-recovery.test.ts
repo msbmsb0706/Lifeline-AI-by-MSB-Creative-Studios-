@@ -65,6 +65,8 @@ assertEqual(dispatches[0].gps, null, 'saved GPS is excluded without separate con
 assert(!JSON.stringify(dispatches[0]).includes('dataUrl'), 'no media bytes in partner queue');
 assertEqual(getPendingQueue().find(i => i.sosPackage.sosId === on.sosPackage.sosId)?.status, 'SENT',
   'receipt becomes SENT, never fabricated DELIVERED or ACKNOWLEDGED');
+assertEqual(getPendingQueue().find(i => i.sosPackage.sosId === on.sosPackage.sosId)?.automaticRecovery, true,
+  'the automatic-send opt-in survives the send so the card can state it was automatic');
 assertEqual(getPendingQueue().find(i => i.sosPackage.sosId === off.sosPackage.sosId)?.status, 'WAITING_FOR_CONNECTION',
   'opt-out stays waiting after backend recovery');
 assertEqual(getPendingQueue().find(i => i.sosPackage.sosId === legacy.sosPackage.sosId)?.status, 'WAITING_FOR_CONNECTION',

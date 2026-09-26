@@ -262,3 +262,12 @@ assert(statusCard.includes("'SAVED ON DEVICE — NOT SENT'") && statusCard.inclu
   'the delivery card renders an explicit NOT SENT state for local records');
 assert(!card.includes('processPendingQueue(') && !silent.includes('processPendingQueue('),
   'no SOS surface starts an automatic upload');
+assert(statusCard.includes('Saved locally. Automatic send when the connection returns (your opt-in — authorized partner only). Nothing has been sent yet.'),
+  'offline waiting card (opt-in) states: saved locally, automatic send on reconnect, nothing sent yet');
+assert(statusCard.includes('Saved locally. Waiting for the connection — use SEND NOW or SHARE VIA DEVICE when it returns. Nothing has been sent yet.'),
+  'offline waiting card (opt-out) states: saved locally, manual options, nothing sent yet');
+assert(statusCard.includes('Sent automatically when the connection returned (your opt-in). Awaiting delivery confirmation.'),
+  'after an automatic send succeeds the card shows the automatic-send notice — still not claiming delivery');
+assert(statusCard.includes('Saved locally — automatic send when the connection returns (your opt-in)') &&
+  statusCard.includes('Saved locally — manual send (SEND NOW / SHARE VIA DEVICE)'),
+  'the Transmission label always states saved locally with the user\'s chosen path');

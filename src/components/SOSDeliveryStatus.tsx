@@ -208,9 +208,15 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
   // Lifecycle detail lines (labels fixed for emergency readability).
   const transmissionLabel =
     effectiveStatus === 'PENDING_LOCAL'
-      ? item.targetPartner.providerType === 'LOCAL_ONLY' ? 'Not sent — stored here for manual sharing' : 'Pending'
+      ? item.targetPartner.providerType === 'LOCAL_ONLY'
+        ? 'Not sent — stored here for manual sharing'
+        : item.automaticRecovery === true
+          ? 'Saved locally — automatic send when the connection returns (your opt-in)'
+          : 'Saved locally — manual send (SEND NOW / SHARE VIA DEVICE)'
       : effectiveStatus === 'WAITING_FOR_CONNECTION'
-      ? 'Pending (waiting for connection)'
+      ? item.automaticRecovery === true
+        ? 'Saved locally — waiting for the connection, then automatic send'
+        : 'Saved locally — waiting for the connection, then manual send'
       : effectiveStatus === 'SENDING'
       ? 'In progress'
       : effectiveStatus === 'FAILED'
@@ -275,18 +281,24 @@ export const SOSDeliveryStatusCard: React.FC<SOSDeliveryStatusProps> = ({ sosId,
                 ? item.errorMessage === 'CONNECTION AVAILABLE — NO AUTHORIZED DESTINATION'
                   ? 'Your SOS remains saved locally. Use SEND NOW for an authorized destination, or SHARE VIA DEVICE.'
                   : item.automaticRecovery === true
-                  ? 'Automatic recovery requested. No partner API handoff is enabled without a verified authorized integration. Nothing has been sent yet.'
+                  ? 'Saved locally. Automatic recovery requested — but no partner API handoff is enabled without a verified authorized integration. Nothing has been sent yet.'
                   : 'Saved locally. Manual sharing only. Nothing has been sent yet.'
                 : effectiveStatus === 'WAITING_FOR_CONNECTION'
                 ? item.recoveryBlocked ? `${item.errorMessage || 'Configuration or authorization error.'} Automatic retry stopped. Use SEND NOW or SHARE VIA DEVICE.` :
                   item.errorMessage?.startsWith('CONNECTION RESTORED') ? 'Preparing to send your confirmed SOS...' :
-                  item.automaticRecovery === true ? 'Automatic recovery requested. Nothing has been sent yet.' : 'Saved locally. Manual sharing only.'
+                  item.automaticRecovery === true
+                    ? 'Saved locally. Automatic send when the connection returns (your opt-in — authorized partner only). Nothing has been sent yet.'
+                    : 'Saved locally. Waiting for the connection — use SEND NOW or SHARE VIA DEVICE when it returns. Nothing has been sent yet.'
                 : effectiveStatus === 'UNCONFIRMED'
                 ? 'The partner may have received this SOS. Nothing has been confirmed here. Your SOS remains saved locally. Do not retry the API; use SHARE VIA DEVICE or verify directly.'
                 : effectiveStatus === 'FAILED'
                 ? item.errorMessage || 'Retry available'
                 : effectiveStatus === 'SENT'
-                ? isTestProvider ? 'Sent to TEST / DEMO ONLY — no real emergency service received it.' : 'Awaiting delivery confirmation.'
+                ? isTestProvider
+                  ? 'Sent to TEST / DEMO ONLY — no real emergency service received it.'
+                  : item.automaticRecovery === true
+                    ? 'Sent automatically when the connection returned (your opt-in). Awaiting delivery confirmation.'
+                    : 'Awaiting delivery confirmation.'
                 : meta!.detail}
             </div>
           </div>
