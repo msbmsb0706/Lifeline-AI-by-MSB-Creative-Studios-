@@ -111,6 +111,12 @@ export async function createApp(dispatchLedger = createConfiguredDispatchLedger(
   const app = express();
 
   app.set('trust proxy', resolveTrustProxy());
+
+  // Express security & media policy headers — unhindered access for browser speech & media APIs
+  app.use((_req, res, next) => {
+    res.setHeader('Permissions-Policy', 'microphone=(self), geolocation=(self), camera=(self)');
+    next();
+  });
   // /api/transcribe-speech carries transient base64-encoded speech audio and
   // needs the larger JSON body limit; every other endpoint keeps the original
   // 1 MB limit. (express.json skips requests already parsed by a prior parser.)

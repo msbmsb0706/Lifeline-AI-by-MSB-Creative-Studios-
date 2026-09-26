@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Shield, ShieldCheck, Wifi, WifiOff, Info, Sun, Moon, Volume2, VolumeX, Sparkles, X, Lock } from 'lucide-react';
 import { SystemStatus } from '../types.ts';
 import { SHOW_TECH_DETAILS } from '../lib/uiVisibility.ts';
+import { PwaHeader } from './PwaHeader.tsx';
 
 interface HeaderProps {
   systemStatus: SystemStatus | null;
@@ -33,8 +34,10 @@ export const Header: React.FC<HeaderProps> = ({
   const [showInfoModal, setShowInfoModal] = useState(false);
 
   return (
-    <header
-      id="lifeline-header"
+    <>
+      <PwaHeader title="LifeLine AI — Emergency SOS" showBack={false} />
+      <header
+        id="lifeline-header"
       className={`w-full border-b transition-colors ${
         highContrast
           ? 'bg-black border-white text-white'
@@ -300,5 +303,6 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       )}
     </header>
+  </>
   );
 };
