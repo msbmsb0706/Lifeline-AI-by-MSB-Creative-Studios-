@@ -172,6 +172,17 @@ These are hard display and trust rules, not cosmetic choices:
   authentication**. The country picker only decides which single number is promoted in the
   banner — it never hides the others. Numbers come from verified official sources only and
   are never invented.
+- **Country numbers open in a sliding layer.** The banner's **"Select country to view its
+  emergency number"** trigger — and **Change**, once a country is chosen — slides up a
+  bottom-sheet layer (`src/components/EmergencyNumbersModal.tsx`) listing every verified
+  country row (🇨🇦 Canada, 🇪🇺 European Union, 🇬🇧 United Kingdom, 🇮🇳 India, 🇺🇸 United States,
+  🇦🇺 Australia) with a tappable `tel:` link per number plus its official source link. Tapping
+  **Use** on a row persists that country under the shared `lifeline_selected_country` key and
+  the banner immediately promotes its number (`Call 112`). **Escape**, the backdrop, the header
+  **✕** or **Done** closes the layer; the rest of the app stays mounted, so the person is back
+  on *Tap to Speak* in one tap. The layer hard-codes no digits — it renders the same verified
+  directory — and a country with no verified number shows *"Emergency number not configured."*
+  and cannot be selected. The Global / Test demo bucket is never offered as a country.
 - **Offline saving states exactly what happens next.** The confirmation dialog offers two
   explicit, self-explaining choices — **SAVE ON THIS DEVICE ONLY** (default) and **SAVE +
   AUTO-SEND WHEN THE CONNECTION RETURNS** — and the automatic option lists its real
