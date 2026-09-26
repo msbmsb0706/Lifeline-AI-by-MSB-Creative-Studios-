@@ -415,8 +415,17 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
 
     try {
       const recognition = new SpeechRecognitionClass();
-      recognition.continuous = true;
-      recognition.interimResults = true;
+      const isMobile = typeof navigator !== 'undefined' && /Android|iPhone|iPad/i.test(navigator.userAgent);
+
+      // Configure specifically to bypass the Android Chromium engine lock
+      if (isMobile) {
+        recognition.continuous = false; // CRITICAL: Must be false on Android to force onresult to fire
+        recognition.interimResults = true;
+      } else {
+        recognition.continuous = true;  // Keep true for stable desktop laptop streaming
+        recognition.interimResults = true;
+      }
+
       setLocalSpeechSupported((recognition as any).processLocally === true);
       recognition.lang = getSpeechRecognitionLocale(
         pickStartLanguage(selectedLanguageRef.current, navigator.languages ? Array.from(navigator.languages) : [])
@@ -533,6 +542,16 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         if (restartForLangRef.current) {
           restartForLangRef.current = false;
           startRecognizer(activeLangRef.current, 0);
+          return;
+        }
+        const isMobileDevice = typeof navigator !== 'undefined' && /Android|iPhone|iPad/i.test(navigator.userAgent);
+        if (isMobileDevice && sessionActiveRef.current && !userStopRef.current) {
+          // Mobile Auto-Restart Bridge: continuous=false causes onend to fire frequently on mobile
+          // browsers (like Samsung M31 / Android Chromium). Reboot seamlessly as long as active.
+          if (heardAnyResultRef.current) {
+            restartCountRef.current = 0;
+          }
+          startRecognizer(activeLangRef.current, AUTO_RESTART_DELAY_MS);
           return;
         }
         if (restartCountRef.current >= MAX_AUTO_RESTARTS) {

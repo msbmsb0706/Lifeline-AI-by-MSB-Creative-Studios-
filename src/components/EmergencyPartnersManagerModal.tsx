@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { PwaHeader } from './PwaHeader.tsx';
 import {
   EmergencyPartnerProvider,
   PendingSOSItem,
@@ -380,6 +381,7 @@ export const EmergencyPartnersManagerModal: React.FC<
       aria-modal="true"
       aria-labelledby="partner-manager-title"
     >
+      <PwaHeader title="Emergency Partners & SOS Queue" onBackClick={onClose} />
       <div className="w-full max-w-3xl rounded-2xl border-2 border-red-600 bg-neutral-950 text-white shadow-2xl overflow-hidden my-4">
         {/* Header */}
         <div className="p-4 sm:p-5 bg-neutral-900 border-b border-neutral-800 flex items-start justify-between gap-3">

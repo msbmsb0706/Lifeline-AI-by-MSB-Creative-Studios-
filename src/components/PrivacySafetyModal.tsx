@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { PwaHeader } from './PwaHeader.tsx';
 import {
   ShieldCheck,
   Lock,
@@ -100,6 +101,7 @@ export const PrivacySafetyModal: React.FC<PrivacySafetyModalProps> = ({
       aria-modal="true"
       aria-labelledby="privacy-modal-title"
     >
+      <PwaHeader title="Privacy & Safety" onBackClick={onClose} />
       <div className="w-full max-w-xl bg-neutral-900 border border-neutral-700 rounded-2xl shadow-2xl text-neutral-100 relative my-6 overflow-hidden flex flex-col max-h-[92vh]">
         {/* Header */}
         <div className="p-4 sm:p-5 border-b border-neutral-800 bg-neutral-950/80 flex items-center justify-between gap-2">
