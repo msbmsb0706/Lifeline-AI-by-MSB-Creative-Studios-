@@ -134,7 +134,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   const [micError, setMicError] = useState<string | null>(null);
   const [liveCaption, setLiveCaption] = useState('');
   const [heardLanguage, setHeardLanguage] = useState(selectedLanguage || 'en');
-  const [lockedLang, setLockedLang] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const onTranscriptChangeRef = useRef(onTranscriptChange);
@@ -173,7 +172,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   const committedRef = useRef('');
   const liveTextRef = useRef('');
   const activeLangRef = useRef(selectedLanguage || 'en');
-  const lockedLangRef = useRef<string | null>(null);
   const restartForLangRef = useRef(false);
   const autoSwitchedRef = useRef(false);
   /**
@@ -467,7 +465,9 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         }
 
         if (!autoSwitchedRef.current && live) {
-          const next = shouldSwitchRecognitionLanguage(activeLangRef.current, live, lockedLangRef.current);
+          // No manual language lock exists: the recognizer always follows the
+          // language it actually hears (null = never suppress the retarget).
+          const next = shouldSwitchRecognitionLanguage(activeLangRef.current, live, null);
           if (next && sessionActiveRef.current) {
             autoSwitchedRef.current = true;
             activeLangRef.current = next;
@@ -788,9 +788,12 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
     committedRef.current = '';
     liveTextRef.current = '';
     setLiveCaption('');
-    const startCode =
-      lockedLangRef.current ||
-      pickStartLanguage(selectedLanguageRef.current, navigator.languages ? Array.from(navigator.languages) : []);
+    // The recognizer starts in the language the person chose for the ANSWER (or
+    // their device language) and then follows whatever language it hears.
+    const startCode = pickStartLanguage(
+      selectedLanguageRef.current,
+      navigator.languages ? Array.from(navigator.languages) : []
+    );
     activeLangRef.current = startCode;
     setHeardLanguage(startCode);
     activeModeRef.current = 'browser';
@@ -827,22 +830,6 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
   };
 
   startBrowserSessionRef.current = startBrowserSession;
-
-  const lockLanguage = (code: string | null) => {
-    lockedLangRef.current = code;
-    setLockedLang(code);
-    if (!code) return;
-    activeLangRef.current = code;
-    setHeardLanguage(code);
-    if (sessionActiveRef.current && recognitionRef.current) {
-      restartForLangRef.current = true;
-      try {
-        recognitionRef.current.stop();
-      } catch {
-        restartForLangRef.current = false;
-      }
-    }
-  };
 
   const toggleRecording = async () => {
     if (isAnalyzing || isBusyAsr) return;
@@ -1030,7 +1017,7 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
             {isVoiceActive ? 'Hearing live' : 'Speak, don’t type'}
           </span>
           <span className="text-[10px] font-mono text-emerald-300">
-            {lockedLang ? `Locked ${languageName(lockedLang)}` : `Auto • ${languageName(heardLanguage)}`}
+            Auto • {languageName(heardLanguage)}
           </span>
         </div>
         <p className="whitespace-pre-wrap break-words">
@@ -1038,39 +1025,14 @@ export const EmergencyVoiceButton: React.FC<EmergencyVoiceButtonProps> = ({
         </p>
       </div>
 
-      <div
-        id="voice-language-chips"
-        role="group"
-        aria-label="Microphone language. Auto detects any supported language."
-        className="mt-2 flex gap-1.5 overflow-x-auto max-w-full px-1 pb-1"
-      >
-        <button
-          type="button"
-          onClick={() => lockLanguage(null)}
-          className={`shrink-0 text-[11px] font-bold px-2.5 py-1 rounded-full border ${
-            lockedLang === null
-              ? 'bg-red-600 border-red-400 text-white'
-              : 'bg-neutral-900 border-neutral-700 text-neutral-300'
-          }`}
-        >
-          Any language
-        </button>
-        {SUPPORTED_LANGUAGES.map((language) => (
-          <button
-            key={language.code}
-            type="button"
-            onClick={() => lockLanguage(language.code)}
-            lang={getSpeechRecognitionLocale(language.code)}
-            className={`shrink-0 text-[11px] font-bold px-2.5 py-1 rounded-full border ${
-              lockedLang === language.code
-                ? 'bg-red-600 border-red-400 text-white'
-                : 'bg-neutral-900 border-neutral-700 text-neutral-300'
-            }`}
-          >
-            {language.nativeName}
-          </button>
-        ))}
-      </div>
+      {/*
+        No language option is rendered here while the person is speaking: the
+        row of language chips ("Any language | தமிழ் | हिन्दी | …") was confusing
+        mid-emergency and duplicated the Target Language control, which already
+        decides the recognizer's start language. The microphone follows the
+        language it hears (see shouldSwitchRecognitionLanguage above) and the
+        caption still reports which language is being heard.
+      */}
 
       {/* Status indicator line */}
       <div className="mt-2 text-center">

@@ -294,20 +294,42 @@ if (!jsdomReady) {
   }
 
   // -------------------------------------------------------------------------
-  section('Locking a language chip retargets the live recognizer');
+  section('No language option while speaking — the recognizer follows what it hears');
   {
     const v = await mount();
     await v.tap();
     assertEqual(v.rec.lang, 'en-US', 'auto mode starts from the app/device language');
-    const chips = Array.from(v.h.document.querySelectorAll('#voice-language-chips button')) as any[];
-    const tamilChip = chips.find((c) => c.textContent === 'தமிழ்');
-    assert(Boolean(tamilChip), 'Tamil language chip is offered');
+    assertEqual(
+      v.h.document.getElementById('voice-language-chips'),
+      null,
+      'no row of language chips is rendered under the microphone'
+    );
+    assertEqual(
+      v.h.document.querySelectorAll('#voice-language-chips button').length,
+      0,
+      'there is no language option to choose mid-speech (it confused people while speaking)'
+    );
+    assert(
+      v.caption().includes('Auto'),
+      'the live caption still reports the language being heard automatically'
+    );
+    assert(
+      v.label().includes('Any language'),
+      'the button still says any language can be spoken'
+    );
+
+    // What the chips used to do by hand now happens by itself: hearing another
+    // language retargets the live recognizer.
     await act(async () => {
-      tamilChip.dispatchEvent(new v.h.window.MouseEvent('click', { bubbles: true }));
+      v.rec.emit([{ transcript: 'முதியவருக்கு கடுமையான நெஞ்சு வலி காப்பாத்துங்க', isFinal: false }]);
     });
-    await flush(60);
-    assertEqual(v.rec.lang, 'ta-IN', 'locking Tamil retargets the recognizer language');
-    assert(v.rec.started, 'listening continues in the newly selected language');
+    await flush(120);
+    assertEqual(v.rec.lang, 'ta-IN', 'hearing Tamil retargets the recognizer with no manual choice');
+    assert(v.rec.started, 'listening continues in the detected language');
+    assert(
+      v.caption().includes('தமிழ்') || v.caption().includes('Tamil'),
+      'the caption names the language now being heard'
+    );
     await v.stop();
   }
 

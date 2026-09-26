@@ -120,74 +120,106 @@ export const PartnerConsentModal: React.FC<PartnerConsentModalProps> = ({
             </p>
           </div>
 
-          {/* Local records never receive transmission approval or a partner destination. */}
+          {/*
+            The offline choice is the FIRST thing after the destination: on a
+            phone the old layout pushed "SAVE ON THIS DEVICE ONLY" below the
+            fold, so only the auto-send option was visible without scrolling.
+            Both choices are now compact and side by side, with the full
+            consequences of each rendered underneath them.
+          */}
           {isLocalOnly && (
-            <div className="p-3 rounded-xl bg-amber-950/80 border-2 border-amber-600 text-amber-100 text-xs font-bold">
-              LOCAL SAVE ONLY — Nothing is being sent now to any partner, TEST/DEMO endpoint, or emergency service.
-              Without the optional consent below, reconnecting and reopening will not upload this SOS. You can share the saved text manually from the queue.
-              Save a video to your device separately before closing this page.
-            </div>
-          )}
-
-          {isLocalOnly && (
-            <div className="p-3 rounded-xl border border-amber-700 bg-neutral-900/70 text-xs space-y-2">
+            <div
+              id="offline-save-choice"
+              className="p-3 rounded-xl border-2 border-amber-600 bg-neutral-900/70 text-xs space-y-2"
+            >
               <div className="font-black text-amber-200 uppercase tracking-wider text-[11px]">
                 Choose what happens when the connection comes back
               </div>
 
-              <label
-                className={`block p-2.5 rounded-lg border cursor-pointer transition-colors ${
-                  automaticRecovery ? 'border-emerald-600 bg-emerald-950/40' : 'border-neutral-700'
-                }`}
-              >
-                <span className="flex items-start gap-2 font-bold text-white">
-                  <input
-                    type="radio"
-                    name="lifeline-offline-choice"
-                    checked={automaticRecovery}
-                    onChange={() => setAutomaticRecovery(true)}
-                  />
-                  SAVE + AUTO-SEND WHEN THE CONNECTION RETURNS
-                </span>
-                <span className="block mt-1.5 text-neutral-300">
-                  LifeLine will try to send this exact SOS on its own as soon as ALL of these are true:
-                </span>
-                <ol className="mt-1.5 ml-4 list-decimal space-y-1 text-neutral-300">
-                  <li>This page is still open on this device and in the foreground (a tab that is closed or backgrounded cannot run).</li>
-                  <li>A real Internet connection is verified — not just a Wi-Fi icon. LifeLine pings this server and continues only on a genuine reply.</li>
-                  <li>An authorized partner destination is actually configured on the server. If none is, nothing is sent and the SOS stays here.</li>
-                  <li>You have not deleted the record or already sent it from the Pending SOS Queue.</li>
-                </ol>
-                <span className="block mt-1.5 text-neutral-400">
-                  Never sent automatically: GPS coordinates, photos, video. When it does send, the status card on
-                  your SOS turns 🟢 SOS SENT — until then it says <b>NOT SENT</b>.
-                </span>
-              </label>
-
-              <label
-                className={`block p-2.5 rounded-lg border cursor-pointer transition-colors ${
-                  !automaticRecovery ? 'border-amber-500 bg-amber-950/40' : 'border-neutral-700'
-                }`}
-              >
-                <span className="flex items-start gap-2 font-bold text-white">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors font-bold text-white ${
+                    !automaticRecovery ? 'border-amber-500 bg-amber-950/40' : 'border-neutral-700 bg-neutral-950/40'
+                  }`}
+                >
                   <input
                     type="radio"
                     name="lifeline-offline-choice"
                     checked={!automaticRecovery}
                     onChange={() => setAutomaticRecovery(false)}
+                    className="mt-0.5 shrink-0"
                   />
-                  SAVE ON THIS DEVICE ONLY
-                </span>
-                <span className="block mt-1.5 text-neutral-300">
-                  Nothing is ever sent automatically, now or later. Open the Pending SOS Queue and use
-                  <b> SHARE VIA DEVICE</b> (WhatsApp / SMS / call) or <b>SEND NOW</b> yourself.
-                </span>
-              </label>
+                  <span className="min-w-0">
+                    SAVE ON THIS DEVICE ONLY
+                    <span className="block mt-1 text-[11px] font-semibold text-neutral-300">
+                      Default — nothing is ever sent automatically. You share it yourself.
+                    </span>
+                  </span>
+                </label>
+
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors font-bold text-white ${
+                    automaticRecovery ? 'border-emerald-600 bg-emerald-950/40' : 'border-neutral-700 bg-neutral-950/40'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="lifeline-offline-choice"
+                    checked={automaticRecovery}
+                    onChange={() => setAutomaticRecovery(true)}
+                    className="mt-0.5 shrink-0"
+                  />
+                  <span className="min-w-0">
+                    SAVE + AUTO-SEND WHEN THE CONNECTION RETURNS
+                    <span className="block mt-1 text-[11px] font-semibold text-neutral-300">
+                      Sends by itself only if every condition listed below is true.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-neutral-950/70 border border-neutral-800 space-y-2">
+                <div>
+                  <div className="font-black text-white">SAVE ON THIS DEVICE ONLY — what it does</div>
+                  <p className="mt-1 text-neutral-300">
+                    Nothing is ever sent automatically, now or later. Open the Pending SOS Queue and use
+                    <b> SHARE VIA DEVICE</b> (WhatsApp / SMS / call) or <b>SEND NOW</b> yourself.
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-neutral-800">
+                  <div className="font-black text-white">
+                    SAVE + AUTO-SEND WHEN THE CONNECTION RETURNS — what it does
+                  </div>
+                  <p className="mt-1 text-neutral-300">
+                    LifeLine will try to send this exact SOS on its own as soon as ALL of these are true:
+                  </p>
+                  <ol className="mt-1.5 ml-4 list-decimal space-y-1 text-neutral-300">
+                    <li>This page is still open on this device and in the foreground (a tab that is closed or backgrounded cannot run).</li>
+                    <li>A real Internet connection is verified — not just a Wi-Fi icon. LifeLine pings this server and continues only on a genuine reply.</li>
+                    <li>An authorized partner destination is actually configured on the server. If none is, nothing is sent and the SOS stays here.</li>
+                    <li>You have not deleted the record or already sent it from the Pending SOS Queue.</li>
+                  </ol>
+                  <p className="mt-1.5 text-neutral-400">
+                    Never sent automatically: GPS coordinates, photos, video. When it does send, the status card on
+                    your SOS turns 🟢 SOS SENT — until then it says <b>NOT SENT</b>.
+                  </p>
+                </div>
+              </div>
 
               <p className="text-[11px] text-neutral-400">
                 Either way the record is stored on this device first, so it survives the connection dropping.
                 Browser storage can still be cleared by the operating system, so share it yourself if you can.
               </p>
+            </div>
+          )}
+
+          {/* Local records never receive transmission approval or a partner destination. */}
+          {isLocalOnly && (
+            <div className="p-3 rounded-xl bg-amber-950/80 border-2 border-amber-600 text-amber-100 text-xs font-bold">
+              LOCAL SAVE ONLY — Nothing is being sent now to any partner, TEST/DEMO endpoint, or emergency service.
+              Without the optional consent chosen above, reconnecting and reopening will not upload this SOS. You can share the saved text manually from the queue.
+              Save a video to your device separately before closing this page.
             </div>
           )}
 
