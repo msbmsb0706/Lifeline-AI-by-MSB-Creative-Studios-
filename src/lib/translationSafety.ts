@@ -107,6 +107,54 @@ export function looksLikeGeneratedDispatch(text: unknown): boolean {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Translation-failure display helpers (translation follow-up).
+//
+// Failure text must be shown ONCE: the specific reason once, and the
+// "original transmission is preserved" guarantee once. Server failures already
+// end with that guarantee sentence, so composing UI text by concatenation used
+// to repeat it ("... is preserved. The original transmission is preserved.").
+// These helpers make the composition idempotent, so the same failure can be
+// passed through any number of layers without the message multiplying.
+// ---------------------------------------------------------------------------
+
+/** Canonical guarantee sentence (exactly as authored in server/translation.ts). */
+export const ORIGINAL_PRESERVED_SENTENCE = 'The original transmission is preserved.';
+
+/**
+ * Removes every trailing guarantee sentence from `message`.
+ * Returns '' for non-strings, and the trimmed remainder otherwise.
+ */
+export function stripOriginalPreservedNotice(message: unknown): string {
+  if (typeof message !== 'string') return '';
+  let body = message.trim();
+  const trailing = /\s*The original transmission is preserved\.\s*$/i;
+  while (trailing.test(body)) body = body.replace(trailing, '').trim();
+  return body;
+}
+
+/** Appends the guarantee sentence exactly once (idempotent). */
+export function ensureOriginalPreservedNotice(message: unknown): string {
+  const body = stripOriginalPreservedNotice(message);
+  return body ? `${body} ${ORIGINAL_PRESERVED_SENTENCE}` : ORIGINAL_PRESERVED_SENTENCE;
+}
+
+/**
+ * The single user-facing translation-unavailable message:
+ *   "Translation unavailable — <reason>. The original transmission is preserved."
+ *
+ * The reason prefix ("Translation unavailable —") and the guarantee sentence
+ * are each present exactly once, no matter how the caller's failure text was
+ * already worded. Never empty: a missing reason falls back to a generic one.
+ */
+export function formatTranslationUnavailableMessage(message: unknown): string {
+  const body =
+    stripOriginalPreservedNotice(message)
+      .replace(/^(?:translation unavailable\s*[—:-]\s*)+/i, '')
+      .trim() || 'the online translation service did not return a usable translation.';
+  return `Translation unavailable — ${ensureOriginalPreservedNotice(body)}`;
+}
+
 export interface TranslatedMessageValidation {
   ok: boolean;
   reason?: string;
