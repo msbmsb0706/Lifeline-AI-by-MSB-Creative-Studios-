@@ -516,15 +516,17 @@ export default function App() {
     setIsTranslating(true);
     setError(null);
 
-    // Translation source contract (PR #16): what gets translated is the USER'S
-    // ORIGINAL TRANSMISSION selected as raw_transcript -> original_message ->
-    // legacy transcript — NEVER the generated responder/dispatch message, a
+    // Translation source contract: translate only the USER'S ORIGINAL
+    // TRANSMISSION (raw transcript -> preserved original -> voice capture ->
+    // legacy transcript) — NEVER the generated responder/dispatch message, a
     // responder instruction, action steps, required units, an AI summary, or a
     // structured emergency directive. When no legitimate original transmission
     // exists, translation is unavailable: the original record is preserved and
     // an explicit error is shown (never a silent dispatch-text substitution).
     const sourceTranscript = selectTranslationSource({
       raw_transcript: currentResult.raw_transcript,
+      original_message: currentResult.original_message,
+      voice_capture_original: currentResult.voice_capture?.originalTranscript,
       transcript: currentResult.transcript,
       translation: currentResult.translation
         ? { original_message: currentResult.translation.original_message }
@@ -545,10 +547,11 @@ export default function App() {
       return validateTranslatedMessage(candidate.translated_message).ok;
     };
 
-    // Any locally classified result (including automatic fallback) uses the
-    // honest, bundled phrasebook. An ONLINE-classified result never silently
-    // substitutes offline text for a failed online translation.
-    if (offlineForce || currentResult.source === 'offline_fallback') {
+    // Use the bundled phrasebook only when the person explicitly chose Offline
+    // Mode or the device currently has no network. An automatically local
+    // fallback can still use the online translator after connectivity returns;
+    // pressing Translate SOS is the explicit request to translate these words.
+    if (offlineForce || !networkAvailable || !navigator.onLine) {
       const localTrans = translateEmergencyOffline(
         sourceTranscript,
         targetLangCode,

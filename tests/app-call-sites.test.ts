@@ -47,8 +47,8 @@ function isDispatchText(text: string): boolean {
 
 // ---------------------------------------------------------------------------
 // FIX 1 — App.handleTranslateSOS translates the USER'S ORIGINAL TRANSMISSION
-// (PR #16 contract: raw_transcript -> original_message -> legacy transcript;
-// NEVER the generated dispatch message; deterministic output validation).
+// (contract: raw_transcript -> preserved original -> voice capture -> legacy
+// transcript; NEVER the generated dispatch message; deterministic validation).
 // ---------------------------------------------------------------------------
 section("FIX 1 — handleTranslateSOS call-site contract (source = user's original transmission)");
 
@@ -57,7 +57,7 @@ const translateFn = extractFunction(appSource, 'handleTranslateSOS', '\n  return
 
 assert(
   translateFn.includes('selectTranslationSource'),
-  "handleTranslateSOS derives its translation source via selectTranslationSource (raw_transcript -> original_message -> legacy transcript)"
+  "handleTranslateSOS derives its translation source via selectTranslationSource (raw_transcript -> preserved original -> voice capture -> legacy transcript)"
 );
 assert(
   !translateFn.includes('currentResult.raw_transcript || currentResult.message'),

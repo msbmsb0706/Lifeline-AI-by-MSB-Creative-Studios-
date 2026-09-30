@@ -83,7 +83,10 @@ assert(handler.includes("if ('reason' in attempt)") && handler.includes('complet
   'App uses the tested online failure result to visibly classify on-device');
 assert(handler.includes("source: 'offline_fallback'") && handler.includes('NOT sent to a responder'),
   'App labels its local fallback and never claims the SOS was delivered');
-assert(app.includes("offlineForce || currentResult.source === 'offline_fallback'"),
-  'automatically offline-classified SOS uses the bundled offline phrasebook without another API call');
+const translateHandler = app.slice(app.indexOf('const handleTranslateSOS ='), app.indexOf('\n  return (', app.indexOf('const handleTranslateSOS =')));
+assert(translateHandler.includes('offlineForce || !networkAvailable || !navigator.onLine'),
+  'the bundled phrasebook is used only in explicit Offline Mode or while the device is offline');
+assert(!translateHandler.includes("currentResult.source === 'offline_fallback'"),
+  'an automatic local triage fallback can use online translation after connectivity returns');
 assert(app.includes('latency_ms: Math.max(0, Date.now() - startedAt)'),
   'local fallback reports measured latency, not a fabricated 1 ms');
