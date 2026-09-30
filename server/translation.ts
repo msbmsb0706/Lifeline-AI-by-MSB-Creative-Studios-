@@ -47,8 +47,15 @@ import type {
 
 /** Online translation request timeout (milliseconds). */
 export const TRANSLATION_TIMEOUT_MS = 20000;
-/** Enough headroom for the translation + the separate structured fields. */
-export const TRANSLATION_MAX_TOKENS = 2400;
+/**
+ * Enough headroom for the translation + the separate structured fields.
+ *
+ * Raised 2400 -> 4096 (translation follow-up): long free-form transmissions
+ * plus the structured translated fields could hit the cap and come back with
+ * `finish_reason === 'length'`, which is reported as TRANSLATION_TRUNCATED
+ * instead of a translation. The higher budget covers those long inputs.
+ */
+export const TRANSLATION_MAX_TOKENS = 4096;
 export const TRANSLATION_TEMPERATURE = 0.1;
 
 export const OFFLINE_TRANSLATION_MODEL = 'LifeLine AI Deterministic Multilingual Translation Engine';

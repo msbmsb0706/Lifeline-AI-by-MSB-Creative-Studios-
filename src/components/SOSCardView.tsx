@@ -43,6 +43,7 @@ import {
 import { speakText, speechSynthesisAvailable, stopSpeaking } from '../lib/speech.ts';
 import {
   selectTranslationSource,
+  stripOriginalPreservedNotice,
   validateTranslatedMessage
 } from '../lib/translationSafety.ts';
 import {
@@ -307,6 +308,13 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   // replaced by a silently generated offline one.
   const translationError =
     result.translation_status === 'error' && result.translation_error ? result.translation_error : null;
+
+  // The state heading above already states that the original transmission is
+  // preserved, so the detail line carries ONLY the specific reason: the
+  // failure is shown once, never repeated inside the same state block.
+  const translationErrorDetail = translationError
+    ? stripOriginalPreservedNotice(translationError.error)
+    : '';
 
   // Country-aware emergency number (PR #16): the configured number for the
   // country selected in the partner directory, or an explicit notice when
@@ -917,7 +925,9 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
               <Languages className="w-3.5 h-3.5 text-red-400" />
               <span>Translation unavailable — original transmission preserved.</span>
             </div>
-            <p className="mt-1 text-xs text-red-200/90">{translationError.error}</p>
+            {translationErrorDetail && (
+              <p className="mt-1 text-xs text-red-200/90">{translationErrorDetail}</p>
+            )}
           </div>
         )}
 

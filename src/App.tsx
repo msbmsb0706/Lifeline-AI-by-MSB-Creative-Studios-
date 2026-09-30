@@ -21,7 +21,11 @@ import {
 import { classifyEmergencyOffline } from './lib/offlineClassifier.ts';
 
 import { translateEmergencyOffline, detectLanguage } from './lib/languages.ts';
-import { selectTranslationSource, validateTranslatedMessage } from './lib/translationSafety.ts';
+import {
+  formatTranslationUnavailableMessage,
+  selectTranslationSource,
+  validateTranslatedMessage
+} from './lib/translationSafety.ts';
 import {
   getPendingQueue,
   subscribeToQueue,
@@ -486,7 +490,9 @@ export default function App() {
       // A successful ONLINE analysis can carry an explicit ONLINE translation
       // error. Never replace that with a fabricated offline translation.
       if (result.translation_status === 'error' && result.translation_error) {
-        setError(`Translation unavailable — ${result.translation_error.error} The original transmission is preserved.`);
+        // The failure text is composed once: server messages already end with
+        // the guarantee sentence, so it must not be appended a second time.
+        setError(formatTranslationUnavailableMessage(result.translation_error.error));
       } else {
         setError(null);
       }
@@ -562,7 +568,7 @@ export default function App() {
         locationInfo || undefined
       );
       if (!acceptTranslation(localTrans as TranslatedSOS)) {
-        setError('Translation unavailable — the translation failed safety validation. The original transmission is preserved.');
+        setError(formatTranslationUnavailableMessage('the translation failed safety validation.'));
         setIsTranslating(false);
         return;
       }
@@ -632,11 +638,12 @@ export default function App() {
       }
     } catch (err: any) {
       const message = typeof err?.message === 'string' ? err.message : '';
-      const unavailableMessage = message.startsWith('TRANSLATION_VALIDATION_FAILED:')
+      // The internal validation marker is stripped, and the failure text is
+      // composed once (reason once, "original transmission is preserved" once).
+      const failureDetail = message.startsWith('TRANSLATION_VALIDATION_FAILED:')
         ? message.slice('TRANSLATION_VALIDATION_FAILED:'.length).trim()
-        : `Translation unavailable — ${
-            message || 'the online translation service did not return a usable translation.'
-          } The original transmission is preserved.`;
+        : message;
+      const unavailableMessage = formatTranslationUnavailableMessage(failureDetail);
 
       // ONLINE translation failure == explicit unavailable/error state.
       // The original transmission is preserved and NO offline translation is
