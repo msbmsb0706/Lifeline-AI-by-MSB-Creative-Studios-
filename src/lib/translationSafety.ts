@@ -7,7 +7,8 @@
  * 2. Translation source priority:
  *      1. raw_transcript
  *      2. original_message (top-level, or the stored translation.original_message)
- *      3. transcript (the genuinely legacy original-transcript field)
+ *      3. voice-capture original transcript (older ASR records)
+ *      4. transcript (the genuinely legacy original-transcript field)
  *    The generated dispatch message (`message`), responder instructions,
  *    action steps, required units, AI summaries and structured directives are
  *    NEVER accepted as a translation source.
@@ -23,6 +24,8 @@ export interface TranslationSourceCandidate {
   raw_transcript?: unknown;
   original_message?: unknown;
   transcript?: unknown;
+  /** Original transcript retained in voice-capture metadata on older records. */
+  voice_capture_original?: unknown;
   /** Accepted on the input shape for convenience — NEVER used as a source. */
   message?: unknown;
   translation?: { original_message?: unknown } | null;
@@ -48,6 +51,7 @@ export function selectTranslationSource(input: TranslationSourceCandidate | null
     input.raw_transcript,
     input.original_message,
     input.translation?.original_message,
+    input.voice_capture_original,
     // Legacy original-transcript field (Nemotron `transcript` schema field).
     // Used ONLY when no newer original field exists. `message` (the generated
     // dispatch report) is deliberately absent from this list.

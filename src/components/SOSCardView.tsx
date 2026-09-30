@@ -35,10 +35,13 @@ import {
   Shield
 } from 'lucide-react';
 import { playPing } from '../lib/audio.ts';
-import { SHOW_TECH_DETAILS, friendlyTranslationText } from '../lib/uiVisibility.ts';
+import {
+  SHOW_TECH_DETAILS,
+  friendlyTranslationText,
+  isOfflineTranslationUnavailable
+} from '../lib/uiVisibility.ts';
 import { speakText, speechSynthesisAvailable, stopSpeaking } from '../lib/speech.ts';
 import {
-  looksLikeGeneratedDispatch,
   selectTranslationSource,
   validateTranslatedMessage
 } from '../lib/translationSafety.ts';
@@ -288,13 +291,16 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   // Active displayed content based on translation state & viewMode
   const hasTranslation = Boolean(result.translation);
 
-  // Translation display guard (PR #16): a translated_message that looks like
-  // generated dispatch/triage boilerplate is NEVER displayed as the user's
-  // translated transmission — an explicit error state is shown instead and
-  // the original transmission below is preserved.
+  // Never present empty, generated, or offline-placeholder text as a genuine
+  // translation. Each unavailable state is shown explicitly while the original
+  // transmission remains visible below it.
+  const translatedMessage = result.translation?.translated_message || '';
   const translationFailedValidation =
-    Boolean(result.translation) && looksLikeGeneratedDispatch(result.translation?.translated_message || '');
-  const safeTranslatedMessage = translationFailedValidation ? '' : result.translation?.translated_message || '';
+    Boolean(result.translation) && !validateTranslatedMessage(translatedMessage).ok;
+  const translationUnavailableOffline =
+    Boolean(result.translation) && isOfflineTranslationUnavailable(translatedMessage);
+  const safeTranslatedMessage =
+    translationFailedValidation || translationUnavailableOffline ? '' : translatedMessage;
 
   // Explicit ONLINE translation failure state. The original transmission stays
   // exactly as the user sent it — an unavailable online translation is never
@@ -311,19 +317,18 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
 
   /**
    * The user's OWN words, resolved with the same priority the translator uses
-   * (raw_transcript -> original_message -> legacy transcript). This is what the
-   * "Original Transmission" box must ALWAYS show — never the generated
-   * "DISPATCH ALERT ..." text, and never empty. Only when no original text
-   * exists at all (a corrupt/legacy record) is the generated message used, and
-   * it is then labelled as generated.
+   * (raw_transcript -> preserved original -> voice capture -> legacy transcript).
+   * The generated dispatch report is never treated as the user's transmission.
    */
   const originalTransmission =
     selectTranslationSource({
       raw_transcript: result.raw_transcript,
-      transcript: result.transcript,
+      original_message: result.original_message,
       translation: result.translation
         ? { original_message: result.translation.original_message }
-        : null
+        : null,
+      voice_capture_original: result.voice_capture?.originalTranscript,
+      transcript: result.transcript
     }) || null;
   const originalOrGenerated = originalTransmission || result.message || '';
   const originalIsGeneratedFallback = originalTransmission === null;
@@ -921,14 +926,26 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           <div className="space-y-3">
             {/* Translated Message Box (or an explicit error state when the
                 stored translation failed safety validation) */}
-            {translationFailedValidation ? (
-              <div className="p-2.5 rounded-xl bg-red-950/40 border border-red-700" role="alert">
-                <div className="text-[11px] font-bold text-red-300 flex items-center gap-1.5">
-                  <Languages className="w-3.5 h-3.5 text-red-400" />
-                  <span>Translation unavailable — safety validation failed.</span>
+            {translationFailedValidation || translationUnavailableOffline ? (
+              <div
+                className={`p-2.5 rounded-xl border ${translationUnavailableOffline && !translationFailedValidation
+                  ? 'bg-amber-950/40 border-amber-700'
+                  : 'bg-red-950/40 border-red-700'
+                }`}
+                role="alert"
+              >
+                <div className={`text-[11px] font-bold flex items-center gap-1.5 ${translationUnavailableOffline && !translationFailedValidation ? 'text-amber-200' : 'text-red-300'}`}>
+                  <Languages className={`w-3.5 h-3.5 ${translationUnavailableOffline && !translationFailedValidation ? 'text-amber-400' : 'text-red-400'}`} />
+                  <span>
+                    {translationUnavailableOffline && !translationFailedValidation
+                      ? 'Translation unavailable offline — original transmission preserved.'
+                      : 'Translation unavailable — safety validation failed.'}
+                  </span>
                 </div>
-                <p className="mt-1 text-xs text-red-200/90">
-                  The received content was rejected because it resembled generated dispatch text. The original transmission below is preserved.
+                <p className={`mt-1 text-xs ${translationUnavailableOffline && !translationFailedValidation ? 'text-amber-100/90' : 'text-red-200/90'}`}>
+                  {translationUnavailableOffline && !translationFailedValidation
+                    ? 'A faithful translation of these free-form words is not in the offline phrasebook. Reconnect, leave Offline Mode, then tap Translate SOS to try online translation. The original is preserved below.'
+                    : 'The received content was empty or resembled generated dispatch text. The original transmission below is preserved.'}
                 </p>
               </div>
             ) : (
@@ -960,7 +977,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                   </button>
                 </div>
               </div>
-              <pre className="text-xs sm:text-sm font-mono text-emerald-300/95 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/70 border border-emerald-900/60 select-all">
+              <pre dir="auto" className="text-xs sm:text-sm font-mono text-emerald-300/95 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/70 border border-emerald-900/60 select-all">
                 {friendlyTranslationText(safeTranslatedMessage)}
               </pre>
             </div>
@@ -995,7 +1012,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                   </button>
                 </div>
               </div>
-              <pre className="text-xs sm:text-sm font-mono text-neutral-300/90 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/60 border border-neutral-900 select-all">
+              <pre dir="auto" className="text-xs sm:text-sm font-mono text-neutral-300/90 whitespace-pre-wrap leading-relaxed p-2 rounded-lg bg-black/60 border border-neutral-900 select-all">
                 {originalOrGenerated}
               </pre>
             </div>

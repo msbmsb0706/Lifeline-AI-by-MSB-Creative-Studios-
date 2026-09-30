@@ -255,6 +255,51 @@ if (!jsdomReady) {
     assert(body.includes('There is a fire in my house'), 'the translation is visible');
     assert(body.includes(TAMIL), 'the original Tamil words remain visible next to it');
     assert(body.includes('Original Transmission (Tamil)'), 'the original box is labelled with its language');
+    assertEqual(v.h.document.querySelectorAll('#translate-sos-btn').length, 1,
+      'the existing translate control is rendered once (no duplicate option)');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('An offline fallback is never presented as a completed translation');
+  {
+    const fallback = makeResult(true);
+    fallback.translation.translated_message =
+      `[TA faithful translation not available offline for English free text — original message preserved] ${TAMIL}`;
+    const v = await render(
+      React.createElement(SOSCardView, {
+        result: fallback,
+        highContrast: false,
+        soundEnabled: false,
+        offlineMode: true
+      })
+    );
+    const body = v.text();
+    assert(body.includes('Translation unavailable offline'),
+      'the offline phrasebook limitation is explicit instead of looking like a translation');
+    assert(!body.includes('Translated Transmission (Tamil)'),
+      'untranslated source words are not labelled as a translated message');
+    assert(body.includes(TAMIL), 'the original text stays visible when translation is unavailable');
+    await v.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  section('Voice-capture originals are recovered for the existing translation/original display');
+  {
+    const voiceOnly = makeResult(true);
+    delete voiceOnly.raw_transcript;
+    delete voiceOnly.transcript;
+    voiceOnly.translation.original_message = '';
+    voiceOnly.voice_capture = { originalTranscript: TAMIL };
+    const v = await render(
+      React.createElement(SOSCardView, {
+        result: voiceOnly,
+        highContrast: false,
+        soundEnabled: false,
+        offlineMode: true
+      })
+    );
+    assert(v.text().includes(TAMIL), 'the ASR original survives when legacy transcript fields are missing');
     await v.stop();
   }
 

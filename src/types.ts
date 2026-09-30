@@ -108,6 +108,8 @@ export interface TranslationErrorInfo {
 export interface NemotronEmergencyResponse {
   language: string;
   transcript: string;
+  /** Exact user-provided source text when returned or retained by an older record. */
+  original_message?: string;
   emergency_type: StandardEmergencyCategory | string;
   severity: SeverityLevel;
   needs: string[];

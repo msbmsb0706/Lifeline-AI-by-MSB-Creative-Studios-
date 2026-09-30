@@ -65,7 +65,7 @@ function readRepoSource(relativePath: string): string {
 
 // ---------------------------------------------------------------------------
 // 1a. Translation source selection — raw_transcript -> original_message ->
-//     legacy transcript; NEVER generated dispatch content.
+//     voice capture -> legacy transcript; NEVER generated dispatch content.
 // ---------------------------------------------------------------------------
 section('PR16 1a — translation source priority (never generated dispatch text)');
 
@@ -98,6 +98,16 @@ assertEqual(
   }),
   'top-level original',
   'priority 2: top-level original_message used when raw_transcript is absent'
+);
+
+assertEqual(
+  selectTranslationSource({
+    voice_capture_original: 'original spoken words',
+    transcript: 'legacy transcript',
+    message: 'DISPATCH ALERT: Priority 5/5'
+  }),
+  'original spoken words',
+  'voice-capture transcript is retained ahead of the legacy model transcript'
 );
 
 assertEqual(
