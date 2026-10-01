@@ -29,6 +29,7 @@ await import('./pr16-country-selection.test.ts');
 await import('./online-translation.test.ts');
 await import('./translation-truncation-display.test.ts');
 await import('./online-translation-routes.test.ts');
+await import('./online-translation-followup.test.ts');
 await import('./partner-tracking.test.ts');
 await import('./speech-capture-android.test.ts');
 await import('./voice-android-lifecycle.test.ts');

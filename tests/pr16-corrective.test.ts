@@ -245,7 +245,10 @@ const appSource = readRepoSource('../src/App.tsx');
     'legacy generated-message fallback removed from the translation source'
   );
   assert(!fn.includes('text: currentResult.message'), 'online request never sends the generated dispatch message');
-  assert(fn.includes('currentSOS: currentResult'), 'currentSOS context still forwarded (locked triage fields)');
+  assert(
+    fn.includes('currentSOS: currentResult') || fn.includes('currentSOS: resultToTranslate'),
+    'current SOS context still forwarded (locked triage fields)'
+  );
   assert(
     fn.includes('validateTranslatedMessage') || fn.includes('acceptTranslation'),
     'incoming translated_message is deterministically validated before display'

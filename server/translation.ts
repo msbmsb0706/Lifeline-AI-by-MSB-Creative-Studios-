@@ -1,10 +1,9 @@
 /**
  * LifeLine AI — shared emergency translation implementation (server-side).
  *
- * ONE implementation is used by BOTH call sites:
- *   - POST /api/analyze-emergency   (successful ONLINE analysis + requested
- *                                    target language → ONLINE translation)
- *   - POST /api/translate-emergency (explicit "Translate SOS" action)
+ * The dedicated POST /api/translate-emergency endpoint is the follow-up path
+ * for both automatic and manual online translations. The /api/analyze-emergency
+ * route intentionally returns triage before any translation is attempted.
  *
  * PR #16 remains the authoritative translation-safety contract:
  *   - The translation SOURCE is the user's original transmission only
@@ -619,13 +618,10 @@ export async function resolveEmergencyTranslation(
 }
 
 /**
- * Translation performed as part of a SUCCESSFUL ONLINE analysis
- * (/api/analyze-emergency).
- *
- * The shared ONLINE implementation is used — never the offline engine — because
- * online analysis already succeeded. A translation failure never fails the
- * analysis: the successful result keeps its original transmission and carries
- * an explicit translation error state instead.
+ * Legacy adapter retained for callers that need to resolve translation as a
+ * standalone outcome. The /api/analyze-emergency route does not call this helper:
+ * it returns the Nemotron result immediately, and the browser uses
+ * /api/translate-emergency for any follow-up translation.
  */
 export async function translateForOnlineAnalysis(
   input: {

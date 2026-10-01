@@ -39,7 +39,7 @@ export async function attemptOnlineTriage(
   const isOnline = options.isOnline ?? (typeof navigator !== 'undefined' ? navigator.onLine : true);
   if (!isOnline) return { ok: false, reason: 'Device is offline (airplane mode or no signal).' };
   const controller = new AbortController();
-  const timeoutMs = options.timeoutMs ?? 4000;
+  const timeoutMs = options.timeoutMs ?? 12000;
   let timedOut = false;
   let timeout: ReturnType<typeof setTimeout> | undefined;
 

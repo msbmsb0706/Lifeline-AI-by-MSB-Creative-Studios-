@@ -2,10 +2,10 @@
  * Online translation / error-handling — REAL route regression tests.
  *
  * Boots the actual Express application (server.ts) against an isolated
- * in-process upstream fixture and exercises both translation call sites over
- * real HTTP:
- *   - POST /api/analyze-emergency   (initial online analysis + target language)
- *   - POST /api/translate-emergency (explicit "Translate SOS" action)
+ * in-process upstream fixture and exercises the decoupled triage/follow-up
+ * translation routes over real HTTP:
+ *   - POST /api/analyze-emergency   (triage returns without translation)
+ *   - POST /api/translate-emergency (automatic follow-up and manual action)
  *
  * The fixture replaces the Nebius Token Factory upstream only. No credentials
  * are used or read: NEBIUS_API_KEY is injected as a dummy value for the child
@@ -40,6 +40,7 @@ const GENERATED_DISPATCH =
 
 type FixtureMode =
   | 'ok'
+  | 'translation_slow'
   | 'translation_http_500'
   | 'translation_bad_json'
   | 'translation_missing_message'
@@ -53,13 +54,15 @@ let analysisRequests = 0;
 let translationRequests = 0;
 /** Last translation request body received by the fixture (parsed). */
 let lastTranslationBody: any = null;
+let slowTranslationGate: Promise<void> = Promise.resolve();
+let releaseSlowTranslation: (() => void) | null = null;
 
 const upstream: Server = createServer((req, res) => {
   let raw = '';
   req.on('data', (chunk) => {
     raw += chunk;
   });
-  req.on('end', () => {
+  req.on('end', async () => {
     let body: any = {};
     try {
       body = JSON.parse(raw || '{}');
@@ -115,6 +118,7 @@ const upstream: Server = createServer((req, res) => {
       );
     };
 
+    if (mode === 'translation_slow') await slowTranslationGate;
     if (mode === 'translation_http_500') {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'fixture upstream failure' }));
@@ -304,44 +308,80 @@ assert(ready, 'the real application server started against the isolated upstream
 assertEqual(analysisRequests, 0, 'no upstream call before any request');
 
 // ---------------------------------------------------------------------------
-// A. Successful online analysis + target language → ONLINE translation
+// A. Online analysis returns immediately; translation is a separate request
 // ---------------------------------------------------------------------------
+let successfulOnlineTriage: any = null;
+
 if (ready) {
-  mode = 'ok';
+  mode = 'translation_slow';
   translationRequests = 0;
   analysisRequests = 0;
+  let release!: () => void;
+  slowTranslationGate = new Promise<void>((resolve) => {
+    release = resolve;
+    releaseSlowTranslation = resolve;
+  });
 
-  const analyze = await postJson(`${base}/api/analyze-emergency`, {
+  let analysisSettled = false;
+  const pendingAnalysis = postJson(`${base}/api/analyze-emergency`, {
     text: EN_TEXT,
     targetLanguage: 'ta',
     offlineModeForce: false,
     language: 'English'
+  }).then((response) => {
+    analysisSettled = true;
+    return response;
   });
+
+  const returnedBeforeTranslationRelease = await Promise.race([
+    pendingAnalysis.then(() => true),
+    sleep(1500).then(() => false)
+  ]);
+  assert(returnedBeforeTranslationRelease && analysisSettled,
+    'online triage returns while a deliberately stalled translation provider is unreleased');
+  assertEqual(translationRequests, 0, 'POST /api/analyze-emergency does not start an upstream translation');
+  release();
+  releaseSlowTranslation = null;
+  const analyze = await pendingAnalysis;
 
   assertEqual(analyze.status, 200, 'POST /api/analyze-emergency succeeds');
   assertEqual(analyze.json?.success, true, 'analysis response is successful');
-  assertEqual(analysisRequests, 1, 'analysis used the online upstream');
-  assertEqual(translationRequests, 1, 'initial analysis used the ONLINE translation path (one upstream translation call)');
+  assertEqual(analysisRequests, 1, 'analysis used the online Nemotron upstream');
 
   const data = analyze.json?.data || {};
+  successfulOnlineTriage = data;
+  assertEqual(data.source, 'nebius_nemotron', 'analysis returns the online Nemotron result');
   assertEqual(data.raw_transcript, EN_TEXT, 'the original transmission is preserved exactly (raw_transcript)');
-  assertEqual(data.translation?.source, 'nebius_nemotron', 'initial translation is the ONLINE translation');
-  assertEqual(data.translation?.translated_message, TA_TEXT, 'translated_message is the online translation');
-  assertEqual(data.translation?.original_message, EN_TEXT, 'translation original_message is the user transmission');
-  assertEqual(data.translation_status, 'ok', 'translation_status is ok');
-  assert(data.message && data.message !== TA_TEXT, 'the generated dispatch message remains separate from the translation');
-  assertEqual(
-    lastOriginalFromPrompt(lastTranslationBody),
-    EN_TEXT,
-    'the upstream translation request received ONLY the original transmission as its source'
-  );
-  assert(
-    !lastOriginalFromPrompt(lastTranslationBody).includes('DISPATCH ALERT'),
-    'the generated dispatch report was never sent as the translation source'
-  );
+  assertEqual(data.translation, undefined, 'triage response does not include a translation');
+  assertEqual(data.translation_status, 'none', 'triage response marks translation_status none');
+  assertEqual(data.translation_error, null, 'triage response has no translation error before follow-up');
+  assert(data.message && data.message !== TA_TEXT, 'generated dispatch text stays separate from the user transmission');
 }
 
-// Tamil original → English online translation (initial analysis).
+// The client follows the successful result with a separate request to the
+// existing translation endpoint, using the original transmission as source.
+if (ready && successfulOnlineTriage) {
+  mode = 'ok';
+  translationRequests = 0;
+  const followup = await postJson(`${base}/api/translate-emergency`, {
+    text: successfulOnlineTriage.raw_transcript,
+    targetLanguage: 'ta',
+    sourceLanguage: successfulOnlineTriage.detected_language?.code || 'en',
+    currentSOS: successfulOnlineTriage,
+    offlineModeForce: false
+  });
+  assertEqual(followup.status, 200, 'automatic follow-up succeeds through POST /api/translate-emergency');
+  assertEqual(followup.json?.success, true, 'follow-up translation response is successful');
+  assertEqual(followup.json?.data?.source, 'nebius_nemotron', 'follow-up translation uses the online engine');
+  assertEqual(followup.json?.data?.translated_message, TA_TEXT, 'follow-up translation returns the target-language text');
+  assertEqual(followup.json?.data?.original_message, EN_TEXT, "follow-up preserves association to the user's original text");
+  assertEqual(translationRequests, 1, 'the follow-up endpoint makes one translation request');
+  assertEqual(lastOriginalFromPrompt(lastTranslationBody), EN_TEXT, 'the provider receives only the original transmission as translation source');
+  assert(!lastOriginalFromPrompt(lastTranslationBody).includes('DISPATCH ALERT'), 'generated dispatch text is never sent as translation source');
+}
+
+// Tamil original → English: triage remains independent; the follow-up route
+// still accepts either supported direction.
 if (ready) {
   mode = 'ok';
   translationRequests = 0;
@@ -351,18 +391,22 @@ if (ready) {
     offlineModeForce: false,
     language: 'Tamil'
   });
-  assertEqual(analyzeTa.status, 200, 'Tamil analysis succeeds');
-  assertEqual(translationRequests, 1, 'Tamil→English initial analysis used the ONLINE translation path');
-  assertEqual(analyzeTa.json?.data?.translation?.target_language, 'en', 'Tamil→English target language is English');
-  assertEqual(
-    analyzeTa.json?.data?.translation?.translated_message,
-    EN_TEXT,
-    'Tamil→English translated_message is the online English translation'
-  );
-  assertEqual(analyzeTa.json?.data?.raw_transcript, TA_TEXT, 'Tamil original transmission preserved exactly');
+  assertEqual(analyzeTa.status, 200, 'Tamil analysis succeeds independently');
+  assertEqual(analyzeTa.json?.data?.translation_status, 'none', 'Tamil triage also returns before translation');
+  assertEqual(translationRequests, 0, 'Tamil triage made no translation request');
+  const taFollowup = await postJson(`${base}/api/translate-emergency`, {
+    text: analyzeTa.json?.data?.raw_transcript,
+    targetLanguage: 'en',
+    sourceLanguage: 'ta',
+    currentSOS: analyzeTa.json?.data,
+    offlineModeForce: false
+  });
+  assertEqual(taFollowup.status, 200, 'Tamil→English follow-up succeeds');
+  assertEqual(taFollowup.json?.data?.translated_message, EN_TEXT, 'Tamil→English follow-up returns English');
+  assertEqual(taFollowup.json?.data?.original_message, TA_TEXT, 'Tamil original is preserved');
 }
 
-// Same source/target language → no translation request at all.
+// Same source/target language needs no automatic follow-up.
 if (ready) {
   mode = 'ok';
   translationRequests = 0;
@@ -373,34 +417,29 @@ if (ready) {
     language: 'English'
   });
   assertEqual(sameLang.status, 200, 'same-language analysis succeeds');
-  assertEqual(translationRequests, 0, 'no translation request when the target language equals the source language');
-  assertEqual(sameLang.json?.data?.translation, undefined, 'no translation payload for an unnecessary translation');
+  assertEqual(translationRequests, 0, 'same-language analysis does not call the translation provider');
+  assertEqual(sameLang.json?.data?.translation_status, 'none', 'same-language triage leaves translation_status none');
 }
 
-// ---------------------------------------------------------------------------
-// B/C. Initial-analysis translation failure preserves the successful analysis
-// ---------------------------------------------------------------------------
-if (ready) {
+// Translation failure is now independent: follow-up returns an explicit error
+// while the already successful online triage record remains unchanged.
+if (ready && successfulOnlineTriage) {
   mode = 'translation_http_500';
-  const failed = await postJson(`${base}/api/analyze-emergency`, {
-    text: EN_TEXT,
+  translationRequests = 0;
+  const failedFollowup = await postJson(`${base}/api/translate-emergency`, {
+    text: successfulOnlineTriage.raw_transcript,
     targetLanguage: 'ta',
-    offlineModeForce: false,
-    language: 'English'
+    sourceLanguage: successfulOnlineTriage.detected_language?.code || 'en',
+    currentSOS: successfulOnlineTriage,
+    offlineModeForce: false
   });
-
-  assertEqual(failed.status, 200, 'a translation failure does NOT fail the successful online analysis');
-  assertEqual(failed.json?.success, true, 'analysis stays successful');
-  assertEqual(failed.json?.data?.translation_status, 'error', 'translation_status is an explicit error');
-  assertEqual(failed.json?.data?.translation_error?.code, 'TRANSLATION_UPSTREAM_HTTP', 'error code identifies the upstream failure');
-  assertEqual(failed.json?.data?.translation_error?.upstream_status, 500, 'upstream status is surfaced');
-  assertEqual(failed.json?.data?.translation, undefined, 'no translation is fabricated after an online failure');
-  assertEqual(failed.json?.data?.source, 'nebius_nemotron', 'the analysis itself remains the online result');
-  assertEqual(failed.json?.data?.raw_transcript, EN_TEXT, 'the original transmission is preserved');
-  assert(
-    String(failed.json?.data?.translation_error?.error || '').includes('original transmission is preserved'),
-    'the error state states that the original transmission is preserved'
-  );
+  assert(failedFollowup.status >= 400, 'a follow-up translation failure uses an error HTTP status');
+  assertEqual(failedFollowup.json?.success, false, 'follow-up failure is explicit');
+  assertEqual(failedFollowup.json?.code, 'TRANSLATION_UPSTREAM_HTTP', 'failure code identifies the upstream failure');
+  assertEqual(failedFollowup.json?.data, undefined, 'no offline translation is substituted');
+  assertEqual(successfulOnlineTriage.source, 'nebius_nemotron', 'the original Nemotron triage result remains online');
+  assertEqual(successfulOnlineTriage.raw_transcript, EN_TEXT, 'the original transmission remains preserved');
+  assertEqual(translationRequests, 1, 'failed follow-up made one online translation request');
 }
 
 // ---------------------------------------------------------------------------
