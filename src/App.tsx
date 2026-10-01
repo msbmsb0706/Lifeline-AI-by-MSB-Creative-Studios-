@@ -20,7 +20,7 @@ import {
 } from './types.ts';
 import { classifyEmergencyOffline } from './lib/offlineClassifier.ts';
 
-import { translateEmergencyOffline, detectLanguage } from './lib/languages.ts';
+import { translateEmergencyOffline, detectLanguage, getLanguageByCodeOrName } from './lib/languages.ts';
 import {
   formatTranslationUnavailableMessage,
   selectTranslationSource,
@@ -38,8 +38,8 @@ import { attemptOnlineTriage } from './lib/onlineTriage.ts';
 import { SHOW_TECH_DETAILS } from './lib/uiVisibility.ts';
 import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send, Mail } from 'lucide-react';
 
-/** Keep a weak/failed online AI connection from blocking an on-device SOS. */
-const ONLINE_ANALYZE_TIMEOUT_MS = 4000;
+/** Matches the server-side Nemotron triage deadline; translation is separate. */
+const ONLINE_ANALYZE_TIMEOUT_MS = 12000;
 
 export default function App() {
   const [showSplash, setShowSplash] = useState<boolean>(true);
@@ -68,7 +68,15 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [currentResult, setCurrentResult] = useState<EmergencyAnalysisResult | null>(null);
+  const [currentResult, setCurrentResultState] = useState<EmergencyAnalysisResult | null>(null);
+  const currentResultRef = useRef<EmergencyAnalysisResult | null>(null);
+  const inFlightTranslationKeysRef = useRef<Set<string>>(new Set());
+  // Keep the ref synchronized immediately so an in-flight translation can
+  // safely determine whether its SOS is still the one currently displayed.
+  const setCurrentResult = useCallback((result: EmergencyAnalysisResult | null) => {
+    currentResultRef.current = result;
+    setCurrentResultState(result);
+  }, []);
   const [recentReports, setRecentReports] = useState<EmergencyAnalysisResult[]>([]);
   const [highContrast, setHighContrast] = useState<boolean>(false);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
@@ -388,6 +396,7 @@ export default function App() {
     const textToAnalyze = inputText.trim();
     const startedAt = Date.now();
     const detectedLang = detectLanguage(textToAnalyze);
+    const targetLanguageCode = getLanguageByCodeOrName(selectedLanguage).code;
     const activeVoiceCapture = voiceCaptureRef.current;
 
     // NOTE: the emergency answer is deliberately NOT spoken back automatically.
@@ -473,7 +482,7 @@ export default function App() {
         location: locationInfo,
         coordinates: locationCoords,
         language: voiceCapture?.detectedLanguage?.name || detectedLang.name,
-        targetLanguage: selectedLanguage,
+        targetLanguage: targetLanguageCode,
         voiceCapture: voiceCapturePayload
       }, { isOnline: navigator.onLine, timeoutMs: ONLINE_ANALYZE_TIMEOUT_MS });
 
@@ -485,10 +494,10 @@ export default function App() {
       const result = attempt.data;
       setNebiusConnected(result.source === 'nebius_nemotron' || Boolean(result.nebius_connected));
       if (activeVoiceCapture && !result.voice_capture) result.voice_capture = activeVoiceCapture;
+      // Render and record the successful Nemotron result before starting any
+      // independent translation request; a slow translator cannot hold the SOS.
       setCurrentResult(result);
       saveReportToHistory(result);
-      // A successful ONLINE analysis can carry an explicit ONLINE translation
-      // error. Never replace that with a fabricated offline translation.
       if (result.translation_status === 'error' && result.translation_error) {
         // The failure text is composed once: server messages already end with
         // the guarantee sentence, so it must not be appended a second time.
@@ -497,6 +506,19 @@ export default function App() {
         setError(null);
       }
       if (soundEnabled) playPing(result.severity >= 4 ? 'alert' : 'sos');
+
+      const detectedSourceCode = getLanguageByCodeOrName(
+        result.detected_language?.code || activeVoiceCapture?.detectedLanguage?.code || detectedLang.code
+      ).code;
+      if (
+        result.source === 'nebius_nemotron' &&
+        targetLanguageCode !== detectedSourceCode &&
+        result.translation_status !== 'ok'
+      ) {
+        // Deliberately do not await: online triage and its SOS card are already
+        // available while /api/translate-emergency runs in the background.
+        void handleTranslateSOS(targetLanguageCode, result, { onlineOnly: true });
+      }
     } catch (error) {
       // Unexpected client failure is still not a reason to hide the local SOS.
       console.error('Online emergency analysis failed:', error);
@@ -515,153 +537,173 @@ export default function App() {
     if (text) analyzeRef.current(text);
   }, [voiceSubmitTick]);
 
-  // Dedicated "Translate SOS" Handler
-  const handleTranslateSOS = async (targetLangCode: string) => {
-    if (!currentResult) return;
+  // Dedicated "Translate SOS" Handler. Automatic online follow-ups pass the
+  // just-received result explicitly and opt out of the offline phrasebook.
+  const handleTranslateSOS = async (
+    targetLangCode: string,
+    resultToTranslate: EmergencyAnalysisResult | null = currentResult,
+    options: { onlineOnly?: boolean } = {}
+  ) => {
+    if (!resultToTranslate) return;
 
+    const targetCode = getLanguageByCodeOrName(targetLangCode).code;
+    const requestKey = `${resultToTranslate.timestamp}:${targetCode}`;
+    const inFlight = inFlightTranslationKeysRef.current;
+    // The same result/target pair is never translated twice concurrently.
+    if (inFlight.has(requestKey)) return;
+    inFlight.add(requestKey);
     setIsTranslating(true);
-    setError(null);
 
-    // Translation source contract: translate only the USER'S ORIGINAL
-    // TRANSMISSION (raw transcript -> preserved original -> voice capture ->
-    // legacy transcript) — NEVER the generated responder/dispatch message, a
-    // responder instruction, action steps, required units, an AI summary, or a
-    // structured emergency directive. When no legitimate original transmission
-    // exists, translation is unavailable: the original record is preserved and
-    // an explicit error is shown (never a silent dispatch-text substitution).
-    const sourceTranscript = selectTranslationSource({
-      raw_transcript: currentResult.raw_transcript,
-      original_message: currentResult.original_message,
-      voice_capture_original: currentResult.voice_capture?.originalTranscript,
-      transcript: currentResult.transcript,
-      translation: currentResult.translation
-        ? { original_message: currentResult.translation.original_message }
-        : null
-    });
-
-    if (!sourceTranscript) {
-      setError('Translation unavailable — the original transmission is not available for this record. The original emergency record is preserved.');
-      setIsTranslating(false);
-      return;
-    }
-
-    // Deterministic guard: a translated_message that looks like generated
-    // dispatch/triage boilerplate is rejected — it is never displayed as the
-    // user's translated transmission.
-    const acceptTranslation = (candidate: TranslatedSOS | null | undefined): candidate is TranslatedSOS => {
-      if (!candidate) return false;
-      return validateTranslatedMessage(candidate.translated_message).ok;
+    const isResultDisplayed = () => currentResultRef.current?.timestamp === resultToTranslate.timestamp;
+    const updateTranslationResult = (patch: Partial<EmergencyAnalysisResult>) => {
+      const displayed = currentResultRef.current;
+      const isCurrent = displayed?.timestamp === resultToTranslate.timestamp;
+      const updated: EmergencyAnalysisResult = {
+        ...(isCurrent && displayed ? displayed : resultToTranslate),
+        ...patch
+      };
+      saveReportToHistory(updated);
+      if (isCurrent) setCurrentResult(updated);
+      return isCurrent;
     };
 
-    // Use the bundled phrasebook only when the person explicitly chose Offline
-    // Mode or the device currently has no network. An automatically local
-    // fallback can still use the online translator after connectivity returns;
-    // pressing Translate SOS is the explicit request to translate these words.
-    if (offlineForce || !networkAvailable || !navigator.onLine) {
-      const localTrans = translateEmergencyOffline(
-        sourceTranscript,
-        targetLangCode,
-        currentResult.emergency_category || 'MEDICAL',
-        currentResult.severity,
-        currentResult.emergency_type,
-        currentResult.detected_language?.code,
-        locationInfo || undefined
-      );
-      if (!acceptTranslation(localTrans as TranslatedSOS)) {
-        setError(formatTranslationUnavailableMessage('the translation failed safety validation.'));
-        setIsTranslating(false);
-        return;
-      }
-      const updatedResult: EmergencyAnalysisResult = {
-        ...currentResult,
-        translation: { ...localTrans, source: 'offline_fallback', model_used: 'Bundled emergency phrasebook' },
-        // This is an OFFLINE-classified SOS, never a substitute for a failed
-        // online translation of an ONLINE-classified result.
-        translation_status: 'ok',
-        translation_error: null
-      };
-      setCurrentResult(updatedResult);
-      saveReportToHistory(updatedResult);
-      setIsTranslating(false);
-      return;
-    }
-
-    // Failure/error code returned by the online translation endpoint, when any.
-    let failureCode = 'TRANSLATION_FAILED';
+    if (isResultDisplayed()) setError(null);
 
     try {
-      const response = await fetch('/api/translate-emergency', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: sourceTranscript,
-          targetLanguage: targetLangCode,
-          sourceLanguage: currentResult.detected_language?.code || currentResult.language,
-          currentSOS: currentResult,
-          offlineModeForce: offlineForce,
-          location: locationInfo
-        })
+      // Translation source contract: translate only the USER'S ORIGINAL
+      // TRANSMISSION (raw transcript -> preserved original -> voice capture ->
+      // legacy transcript) — NEVER generated responder/dispatch content.
+      const sourceTranscript = selectTranslationSource({
+        raw_transcript: resultToTranslate.raw_transcript,
+        original_message: resultToTranslate.original_message,
+        voice_capture_original: resultToTranslate.voice_capture?.originalTranscript,
+        transcript: resultToTranslate.transcript,
+        translation: resultToTranslate.translation
+          ? { original_message: resultToTranslate.translation.original_message }
+          : null
       });
 
-      const json: any = await response.json().catch(() => ({}));
-      if (typeof json?.code === 'string' && json.code) failureCode = json.code;
-
-      // Safety-validation failures are explicit and terminal: the original is
-      // preserved and NO silent offline substitution is performed for them.
-      if (json?.code === 'TRANSLATION_INVALID_SOURCE' || json?.code === 'TRANSLATION_VALIDATION_FAILED') {
-        throw new Error(
-          `TRANSLATION_VALIDATION_FAILED: ${json.error || 'Translation unavailable — safety validation failed. The original transmission is preserved.'}`
+      if (!sourceTranscript) {
+        const unavailableMessage = formatTranslationUnavailableMessage(
+          'the original transmission is not available for this record.'
         );
-      }
-
-      if (!response.ok) {
-        throw new Error(json?.error || `Translation API returned HTTP ${response.status}`);
-      }
-
-      if (json.success && json.data) {
-        const transData: TranslatedSOS = json.data;
-        if (!acceptTranslation(transData)) {
-          throw new Error('TRANSLATION_VALIDATION_FAILED: Translation unavailable — the translation failed safety validation. The original transmission is preserved.');
+        if (options.onlineOnly) {
+          updateTranslationResult({
+            translation: undefined,
+            translation_status: 'error',
+            translation_error: { code: 'TRANSLATION_INVALID_INPUT', error: unavailableMessage }
+          });
         }
-        const updatedResult: EmergencyAnalysisResult = {
-          ...currentResult,
-          translation: transData,
+        if (isResultDisplayed()) setError(unavailableMessage);
+        return;
+      }
+
+      // Deterministic guard: generated dispatch/triage boilerplate is never
+      // accepted as a translation of the user's original transmission.
+      const acceptTranslation = (candidate: TranslatedSOS | null | undefined): candidate is TranslatedSOS => {
+        if (!candidate) return false;
+        return validateTranslatedMessage(candidate.translated_message).ok;
+      };
+
+      // Manual translation retains its offline/resilience behavior. Automatic
+      // follow-up for a Nemotron result is always online, even if connectivity
+      // changes while the independent request is running.
+      if (!options.onlineOnly && (offlineForce || !networkAvailable || !navigator.onLine)) {
+        const localTrans = translateEmergencyOffline(
+          sourceTranscript,
+          targetCode,
+          resultToTranslate.emergency_category || 'MEDICAL',
+          resultToTranslate.severity,
+          resultToTranslate.emergency_type,
+          resultToTranslate.detected_language?.code,
+          locationInfo || undefined
+        );
+        if (!acceptTranslation(localTrans as TranslatedSOS)) {
+          if (isResultDisplayed()) {
+            setError(formatTranslationUnavailableMessage('the translation failed safety validation.'));
+          }
+          return;
+        }
+        updateTranslationResult({
+          translation: { ...localTrans, source: 'offline_fallback', model_used: 'Bundled emergency phrasebook' },
           translation_status: 'ok',
           translation_error: null
-        };
-        setCurrentResult(updatedResult);
-        saveReportToHistory(updatedResult);
-        setError(null);
-        if (soundEnabled) playPing('sos');
-      } else {
-        throw new Error(json.error || 'Failed to translate emergency message');
+        });
+        if (isResultDisplayed()) setError(null);
+        return;
       }
-    } catch (err: any) {
-      const message = typeof err?.message === 'string' ? err.message : '';
-      // The internal validation marker is stripped, and the failure text is
-      // composed once (reason once, "original transmission is preserved" once).
-      const failureDetail = message.startsWith('TRANSLATION_VALIDATION_FAILED:')
-        ? message.slice('TRANSLATION_VALIDATION_FAILED:'.length).trim()
-        : message;
-      const unavailableMessage = formatTranslationUnavailableMessage(failureDetail);
 
-      // ONLINE translation failure == explicit unavailable/error state.
-      // The original transmission is preserved and NO offline translation is
-      // silently substituted: offline translation belongs to OFFLINE MODE only
-      // (never to a failed online request).
-      console.warn('Online translation unavailable:', failureCode, message || err);
-      const updatedResult: EmergencyAnalysisResult = {
-        ...currentResult,
-        // Never present a stale or unrelated translation as if it succeeded.
-        translation: undefined,
-        translation_status: 'error',
-        translation_error: { code: failureCode, error: unavailableMessage }
-      };
-      setCurrentResult(updatedResult);
-      saveReportToHistory(updatedResult);
-      setError(unavailableMessage);
+      // Online translation failures are explicit; they never fall back to the
+      // offline engine. `onlineOnly` also sends false if the mode changed after
+      // this result's successful online triage.
+      let failureCode = 'TRANSLATION_FAILED';
+      try {
+        const response = await fetch('/api/translate-emergency', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: sourceTranscript,
+            targetLanguage: targetCode,
+            sourceLanguage: resultToTranslate.detected_language?.code || resultToTranslate.language,
+            currentSOS: resultToTranslate,
+            offlineModeForce: options.onlineOnly ? false : offlineForce,
+            location: locationInfo
+          })
+        });
+
+        const json: any = await response.json().catch(() => ({}));
+        if (typeof json?.code === 'string' && json.code) failureCode = json.code;
+
+        // Safety-validation failures are explicit and terminal: preserve the
+        // original transmission and never substitute an offline translation.
+        if (json?.code === 'TRANSLATION_INVALID_SOURCE' || json?.code === 'TRANSLATION_VALIDATION_FAILED') {
+          throw new Error(
+            `TRANSLATION_VALIDATION_FAILED: ${json.error || 'Translation unavailable — safety validation failed. The original transmission is preserved.'}`
+          );
+        }
+
+        if (!response.ok) {
+          throw new Error(json?.error || `Translation API returned HTTP ${response.status}`);
+        }
+
+        if (json.success && json.data) {
+          const transData: TranslatedSOS = json.data;
+          if (!acceptTranslation(transData)) {
+            throw new Error('TRANSLATION_VALIDATION_FAILED: Translation unavailable — the translation failed safety validation. The original transmission is preserved.');
+          }
+          const isCurrent = updateTranslationResult({
+            translation: transData,
+            translation_status: 'ok',
+            translation_error: null
+          });
+          if (isCurrent) {
+            setError(null);
+            if (soundEnabled) playPing('sos');
+          }
+        } else {
+          throw new Error(json.error || 'Failed to translate emergency message');
+        }
+      } catch (err: any) {
+        const message = typeof err?.message === 'string' ? err.message : '';
+        // The internal validation marker is stripped, and the failure text is
+        // composed once (reason once, preservation guarantee once).
+        const failureDetail = message.startsWith('TRANSLATION_VALIDATION_FAILED:')
+          ? message.slice('TRANSLATION_VALIDATION_FAILED:'.length).trim()
+          : message;
+        const unavailableMessage = formatTranslationUnavailableMessage(failureDetail);
+
+        console.warn('Online translation unavailable:', failureCode, message || err);
+        const isCurrent = updateTranslationResult({
+          // Never present a stale or unrelated translation as if it succeeded.
+          translation: undefined,
+          translation_status: 'error',
+          translation_error: { code: failureCode, error: unavailableMessage }
+        });
+        if (isCurrent) setError(unavailableMessage);
+      }
     } finally {
-      setIsTranslating(false);
+      inFlight.delete(requestKey);
+      setIsTranslating(inFlight.size > 0);
     }
   };
   // The country is explicitly selected by the person (sliding numbers layer or

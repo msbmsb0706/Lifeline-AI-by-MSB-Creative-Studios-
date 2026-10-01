@@ -6,7 +6,6 @@ import { classifyEmergencyOffline } from './src/lib/offlineClassifier.ts';
 import {
   detectLanguage,
   standardizeCategory,
-  getLanguageByCodeOrName,
   SUPPORTED_LANGUAGES,
   STANDARDIZED_CATEGORIES
 } from './src/lib/languages.ts';
@@ -16,10 +15,7 @@ import { getEmergencyPartnerConfig } from './server/partnerConfig.ts';
 import { createConfiguredDispatchLedger } from './server/dispatchIdempotency.ts';
 import { createPartnerTrackingRouter, getPartnerTrackingCapabilities, issueCaseAccessToken } from './server/partnerTracking.ts';
 import { looksLikeGeneratedDispatch } from './src/lib/translationSafety.ts';
-import {
-  resolveEmergencyTranslation,
-  translateForOnlineAnalysis
-} from './server/translation.ts';
+import { resolveEmergencyTranslation } from './server/translation.ts';
 
 dotenv.config();
 
@@ -764,58 +760,12 @@ CONSTRAINTS:
         location_coordinates: req.body.coordinates || null,
         detected_language: detectedSourceLang,
         voice_capture: sanitizedVoiceCapture || undefined,
-        nebius_connected: true
+        nebius_connected: true,
+        // Translation is a separate follow-up request so a slow translator can
+        // never delay or block delivery of the successful online triage result.
+        translation_status: 'none',
+        translation_error: null
       };
-
-      // If a target language is passed during initial analysis and differs from source, provide translation.
-      // Per the multilingual data contract, `translated_message` must be a
-      // faithful translation of the USER'S ORIGINAL TEXT (the transcript), never
-      // the generated dispatch message.
-      //
-      // Online analysis succeeded → the SHARED ONLINE translation implementation
-      // is used. The offline engine is NOT used merely because analysis already
-      // succeeded online, and an online translation failure is reported as an
-      // explicit translation error state (never a silent offline substitution).
-      if (targetLanguage) {
-        const targetLangObj = getLanguageByCodeOrName(targetLanguage);
-        if (targetLangObj.code !== detectedSourceLang.code) {
-          const initialTranslation = await translateForOnlineAnalysis(
-            {
-              // ONLY the user's original transmission is the translation source.
-              sourceText: trimmedText,
-              targetLanguage: targetLangObj.code,
-              sourceLanguage: detectedSourceLang.code,
-              // Structured emergency fields travel separately (locked triage +
-              // separate responder/dispatch content) — they are NEVER the source.
-              currentSOS: {
-                emergency_category: emergencyType as StandardEmergencyCategory,
-                emergency_type: emergencyType,
-                severity: validatedSeverity,
-                needs: validatedNeeds,
-                visual_card: resultData.visual_card
-              },
-              location: locationString
-            },
-            { apiKey, baseUri: NEBIUS_BASE_URI, model: NEBIUS_MODEL }
-          );
-
-          if (initialTranslation.status === 'ok') {
-            resultData.translation = initialTranslation.translation;
-            resultData.translation_status = 'ok';
-            resultData.translation_error = null;
-          } else {
-            // Successful analysis is preserved; only translation is unavailable.
-            resultData.translation = undefined;
-            resultData.translation_status = 'error';
-            resultData.translation_error = initialTranslation.error;
-            console.warn(
-              '[Translation] Initial online translation unavailable:',
-              initialTranslation.error.code,
-              initialTranslation.error.error
-            );
-          }
-        }
-      }
 
       res.json({
         success: true,

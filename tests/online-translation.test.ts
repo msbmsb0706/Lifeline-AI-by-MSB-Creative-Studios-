@@ -123,9 +123,9 @@ function isOutcomeError(outcome: any): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// A. Successful ONLINE analysis + target language → ONLINE translation path
+// A. Legacy analysis translation adapter remains explicitly ONLINE-only
 // ---------------------------------------------------------------------------
-section('A — successful online analysis uses the ONLINE translation path');
+section('A — standalone online-analysis adapter uses the ONLINE translator');
 
 {
   resetCalls();
@@ -147,7 +147,7 @@ section('A — successful online analysis uses the ONLINE translation path');
     CONFIG
   );
 
-  assertEqual(result.status, 'ok', 'online analysis translation succeeds');
+  assertEqual(result.status, 'ok', 'standalone online-analysis adapter succeeds');
   assertEqual(calls.length, 1, 'exactly one upstream translation request was made');
   assert(
     String(calls[0].url).endsWith('/chat/completions'),
@@ -158,7 +158,7 @@ section('A — successful online analysis uses the ONLINE translation path');
     const t = result.translation;
     assertEqual(t.source, 'nebius_nemotron', 'translation came from the ONLINE engine');
     assertEqual(t.model_used, ONLINE_MODEL, 'online model recorded as the translation engine');
-    assert(t.model_used !== OFFLINE_TRANSLATION_MODEL, 'the offline engine was NOT used for a successful online analysis');
+    assert(t.model_used !== OFFLINE_TRANSLATION_MODEL, 'the online adapter never substitutes the offline engine');
     assertEqual(t.translated_message, TA_TEXT, 'translated_message is the online translation');
     assertEqual(t.original_message, EN_TEXT, 'original_message is the user transmission');
     assertEqual(t.target_language, 'ta', 'target language is the requested one');
@@ -252,14 +252,15 @@ section('C — online HTTP failure is an explicit error (no offline substitution
     assert(!outcome.error.includes(OFFLINE_TRANSLATION_MODEL), 'the failure is not disguised as an offline translation');
   }
 
-  // Initial-analysis integration: analysis stays successful, translation errors.
+  // The legacy adapter returns an explicit translation error. The real route
+  // decoupling behavior is covered by online-translation-routes.test.ts.
   const analysis = await translateForOnlineAnalysis(
     { sourceText: EN_TEXT, targetLanguage: 'ta', sourceLanguage: 'en', currentSOS: CURRENT_SOS },
     CONFIG
   );
-  assertEqual(analysis.status, 'error', 'initial-analysis translation reports an explicit error');
+  assertEqual(analysis.status, 'error', 'standalone adapter reports an explicit translation error');
   if (analysis.status === 'error') {
-    assertEqual(analysis.error.code, 'TRANSLATION_UPSTREAM_HTTP', 'initial-analysis error code');
+    assertEqual(analysis.error.code, 'TRANSLATION_UPSTREAM_HTTP', 'adapter failure code identifies the upstream error');
     assert(!('translation' in analysis), 'no translation object is produced for a failed online translation');
   }
 }
@@ -472,13 +473,13 @@ section('H — generated dispatch translation is rejected (PR #16 helper)');
   assert(thrown instanceof TranslationError, 'payload validator throws a typed TranslationError');
   assertEqual(thrown?.code, 'TRANSLATION_VALIDATION_FAILED', 'payload validator uses the PR #16 safety result');
 
-  // Initial analysis must reject it too (and keep no translation).
+  // The standalone analysis adapter rejects it too (and keeps no translation).
   const analysis = await translateForOnlineAnalysis(
     { sourceText: EN_TEXT, targetLanguage: 'ta', currentSOS: CURRENT_SOS },
     CONFIG
   );
-  assertEqual(analysis.status, 'error', 'initial-analysis translation rejects dispatch-style output');
-  if (analysis.status === 'error') assertEqual(analysis.error.code, 'TRANSLATION_VALIDATION_FAILED', 'initial-analysis error code');
+  assertEqual(analysis.status, 'error', 'standalone adapter rejects dispatch-style output');
+  if (analysis.status === 'error') assertEqual(analysis.error.code, 'TRANSLATION_VALIDATION_FAILED', 'adapter error code identifies validation failure');
 }
 
 // ---------------------------------------------------------------------------
@@ -575,7 +576,7 @@ section('J — the original transmission is preserved exactly');
     { sourceText: GENERATED_DISPATCH, targetLanguage: 'ta', currentSOS: CURRENT_SOS },
     CONFIG
   );
-  assertEqual(analysisDispatchSource.status, 'error', 'initial analysis never translates dispatch text');
+  assertEqual(analysisDispatchSource.status, 'error', 'standalone analysis adapter never translates dispatch text');
 
   // Original-message association helper.
   assertEqual(isSameTransmission(EN_TEXT, EN_TEXT), true, 'identical text is the same transmission');

@@ -77,16 +77,30 @@ assertEqual(sentPayload.offlineModeForce, false, 'online request marks online mo
 assert(!('reason' in online), 'successful online result has no offline failure reason');
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const onlineTriageSource = readFileSync(new URL('../src/lib/onlineTriage.ts', import.meta.url), 'utf8');
+assert(onlineTriageSource.includes('options.timeoutMs ?? 12000') && !onlineTriageSource.includes('options.timeoutMs ?? 4000'),
+  'default online triage timeout is 12000 ms (translation is not part of this deadline)');
+assert(app.includes('const ONLINE_ANALYZE_TIMEOUT_MS = 12000'),
+  'App passes the matching 12000 ms triage timeout rather than overriding it with 4000 ms');
 const handler = app.slice(app.indexOf('const handleAnalyzeEmergency ='), app.indexOf('// Dedicated "Translate SOS" Handler'));
 assert(handler.indexOf('if (offlineForce)') < handler.indexOf('attemptOnlineTriage('), 'user-selected OFFLINE mode never enters online attempt');
 assert(handler.includes("if ('reason' in attempt)") && handler.includes('completeOnDevice(attempt.reason)'),
   'App uses the tested online failure result to visibly classify on-device');
 assert(handler.includes("source: 'offline_fallback'") && handler.includes('NOT sent to a responder'),
   'App labels its local fallback and never claims the SOS was delivered');
+const displayedOnlineResult = handler.indexOf('setCurrentResult(result)');
+const savedOnlineResult = handler.indexOf('saveReportToHistory(result)', displayedOnlineResult);
+const automaticFollowup = handler.indexOf('void handleTranslateSOS(targetLanguageCode, result, { onlineOnly: true })');
+assert(displayedOnlineResult !== -1 && savedOnlineResult > displayedOnlineResult && automaticFollowup > savedOnlineResult,
+  'online SOS is displayed and saved before the separate automatic follow-up starts');
+assert(automaticFollowup !== -1 && !/await\s+handleTranslateSOS\(/.test(handler),
+  'automatic translation is fired without awaiting it, so a slow translator cannot block the SOS card');
 const translateHandler = app.slice(app.indexOf('const handleTranslateSOS ='), app.indexOf('\n  return (', app.indexOf('const handleTranslateSOS =')));
 assert(translateHandler.includes('offlineForce || !networkAvailable || !navigator.onLine'),
   'the bundled phrasebook is used only in explicit Offline Mode or while the device is offline');
 assert(!translateHandler.includes("currentResult.source === 'offline_fallback'"),
   'an automatic local triage fallback can use online translation after connectivity returns');
+assert(translateHandler.includes('inFlight.has(requestKey)') && translateHandler.includes('inFlight.add(requestKey)'),
+  'duplicate translation requests for the same result and target are deduplicated while in flight');
 assert(app.includes('latency_ms: Math.max(0, Date.now() - startedAt)'),
   'local fallback reports measured latency, not a fabricated 1 ms');

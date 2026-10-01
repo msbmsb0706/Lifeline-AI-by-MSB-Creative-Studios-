@@ -68,8 +68,8 @@ assert(
   'the online /api/translate-emergency request never sends the generated dispatch message as text'
 );
 assert(
-  translateFn.includes('currentSOS: currentResult'),
-  'currentSOS context is still forwarded (locked triage fields + server fallback preserved)'
+  translateFn.includes('currentSOS: currentResult') || translateFn.includes('currentSOS: resultToTranslate'),
+  'current SOS context is still forwarded (locked triage fields + server fallback preserved)'
 );
 assert(
   translateFn.includes('validateTranslatedMessage') || translateFn.includes('acceptTranslation'),
