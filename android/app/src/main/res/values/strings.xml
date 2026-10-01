@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LifeLine AI </string>
+    <string name="title_activity_main">LifeLine AI </string>
+    <string name="package_name">com.msbcreativestudios.lifelineai</string>
+    <string name="custom_url_scheme">com.msbcreativestudios.lifelineai</string>
+</resources>
