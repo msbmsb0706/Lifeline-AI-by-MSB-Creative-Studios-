@@ -46,7 +46,7 @@ LifeLine AI enforces a strict architectural separation between **Online AI** mod
                    • Multilingual Translation Dictionary
 ```
 
-- **Browser to Backend:** The browser communicates exclusively via relative API routes (`/api/*`).
+- **Browser to Backend:** The browser communicates exclusively via relative API routes (`/api/*`). In the packaged Capacitor Android app (whose WebView runs from a local origin), the same routes are resolved centrally to the production backend origin — see [Android App (Capacitor APK)](#android-app-capacitor-apk).
 - **Online AI Mode:** The backend routes structured prompts to the configured NVIDIA Nemotron model via Nebius Token Factory.
 - **Offline / Resilience Mode:** Executes entirely within the local client via deterministic classification rules—zero internet access or cloud API dependencies required.
 - **Credential Protection:** Secrets and API keys remain strictly on the backend and are never sent to or bundled into client code.
@@ -285,7 +285,7 @@ The server (`server/privacyContact.ts`):
 - Returns only a generic success/failure JSON response (`{ success, message | error, reference }`) and never exposes the destination address.
 - Responds `503` when `PRIVACY_CONTACT_EMAIL` or SMTP settings are missing, `429` when rate-limited, and `400` for invalid input.
 
-The destination mailbox is **never hard-coded**. It is read only from the server-side environment variable `PRIVACY_CONTACT_EMAIL`, which must be configured in hosting environment secrets. The frontend communicates exclusively via the relative URL `/api/privacy-contact`.
+The destination mailbox is **never hard-coded**. It is read only from the server-side environment variable `PRIVACY_CONTACT_EMAIL`, which must be configured in hosting environment secrets. The frontend communicates exclusively via `/api/privacy-contact` (relative on the web; the packaged Android app resolves the same path against the configured API origin via `src/lib/apiBase.ts`).
 
 ---
 
@@ -324,6 +324,23 @@ Server-side settings are configured via environment variables (copy from `.env.e
 | `SMTP_USER` / `SMTP_PASS` | Optional | SMTP authentication credentials. |
 | `PRIVACY_CONTACT_FROM` | Optional | Outgoing sender address for relayed privacy messages. |
 | `TRUST_PROXY` | Optional | Express proxy trust setting (`1` in production for correct client IP rate-limiting). |
+| `CAPACITOR_ALLOWED_ORIGINS` | Optional | Server CORS allow-list for the Capacitor Android WebView origin(s), comma-separated (default: `https://localhost,capacitor://localhost`). Only these exact origins receive cross-origin `Access-Control-Allow-Origin` grants for `/api/*`; `*` is never honored. |
+| `VITE_API_BASE_URL` | Optional (build-time) | Frontend API origin override baked into a **native** build of the React app (e.g. a staging backend for a test APK). Ignored by web builds, which always keep relative same-origin `/api/*` URLs. Never place secrets here. |
+
+---
+
+## Android App (Capacitor APK)
+
+The Android app packages the **same local frontend build** inside a Capacitor WebView. It does **not** load the remote website (`server.url` is intentionally unused), so the app shell keeps working from its local bundle — including Offline / Resilience mode with zero network calls.
+
+Because the WebView's origin is `https://localhost` rather than the website origin, relative `/api/*` URLs would stay local and never reach the backend. The frontend therefore resolves every backend request through a single helper, `src/lib/apiBase.ts`:
+
+- **Web (production site, dev server):** unchanged — requests keep relative same-origin `/api/*` URLs.
+- **Inside the packaged Capacitor app:** requests are prefixed with the production backend `https://lifeline-ai-by-msb-creative-studios.onrender.com` (optionally overridden at frontend build time with `VITE_API_BASE_URL`, native builds only).
+
+On the server, `server/capacitorCors.ts` grants cross-origin `/api/*` access **only** to the allow-listed Capacitor WebView origin(s) (`CAPACITOR_ALLOWED_ORIGINS`, default `https://localhost,capacitor://localhost`; wildcards are never honored). Same-origin web traffic receives no CORS grant and behaves exactly as before.
+
+Online behaviors stay online-only: a failed network request still surfaces an explicit error state (online translation never silently substitutes the offline phrasebook).
 
 ---
 

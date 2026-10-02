@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle2, Loader2, Mail, MessageSquareText, Send, ShieldCheck, WifiOff, X, AlertTriangle } from 'lucide-react';
+import { apiUrl } from '../lib/apiBase.ts';
 
 /**
  * Privacy Contact Form
  *
  * Lets a user contact the MSB Creative Studios privacy team without any email
- * address being published in the app. The form posts to the same-origin
- * endpoint POST /api/privacy-contact; the server relays the message to a
- * destination mailbox that exists only as a server-side environment variable.
+ * address being published in the app. The form posts to POST /api/privacy-contact
+ * via the centralized API base helper (relative on the web, pointing at the
+ * production backend inside the packaged Android app); the server relays the
+ * message to a destination mailbox that exists only as a server-side
+ * environment variable.
  *
- * Works identically in the production website and in an Android WebView that
- * loads the same production origin (relative URL, standard inputs, no
- * mailto:, no window.open, no alert()).
+ * Standard inputs, no mailto:, no window.open, no alert().
  */
 
 interface PrivacyContactFormModalProps {
@@ -112,9 +113,9 @@ export const PrivacyContactFormModal: React.FC<PrivacyContactFormModalProps> = (
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     try {
-      // Relative URL: resolves against whichever origin served the app
-      // (production website or the Android WebView loading that same origin).
-      const response = await fetch('/api/privacy-contact', {
+      // Centralized API URL: relative on the website; the packaged Android
+      // app resolves it against the remote backend origin.
+      const response = await fetch(apiUrl('/api/privacy-contact'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({

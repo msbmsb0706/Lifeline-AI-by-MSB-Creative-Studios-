@@ -1,6 +1,8 @@
 import type { PartnerCaseStatus, PendingSOSItem } from '../types.ts';
+import { apiUrl } from './apiBase.ts';
 
-const CASE_API = '/api/emergency-partner';
+// Centralized API base — relative on the web, absolute in the Capacitor app.
+const CASE_API = apiUrl('/api/emergency-partner');
 const API_TIMEOUT_MS = 10_000;
 
 /** Only a previously handoff-verified AUTHORIZED_API record has case access. */

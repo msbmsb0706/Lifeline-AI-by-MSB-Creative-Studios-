@@ -10,6 +10,7 @@ import {
   SOSStatusTransition
 } from '../types.ts';
 import { getTestProvider } from './emergencyPartnersData.ts';
+import { apiUrl } from './apiBase.ts';
 
 const PENDING_QUEUE_KEY = 'lifeline_pending_sos_queue';
 // Bound only completed history. Never silently discard an unsent/failed SOS
@@ -508,8 +509,9 @@ export async function sendSOSToPartner(
 
   // Every partner handoff goes through the server. Real authorized requests
   // require its durable ledger; TEST remains synthetic. Never trust a URL
-  // supplied in browser-persisted provider metadata.
-  const endpoint = '/api/emergency-partner/dispatch';
+  // supplied in browser-persisted provider metadata. The route is fixed and
+  // resolved centrally: relative on the web, absolute in the Capacitor app.
+  const endpoint = apiUrl('/api/emergency-partner/dispatch');
 
   const payload = {
     sosId: sosPackage.sosId,

@@ -20,6 +20,7 @@ await import('./translation.test.ts');
 await import('./offline-fire-denial.test.ts');
 await import('./offline-qa-500.test.ts');
 await import('./offline-shell.test.ts');
+await import('./api-base-url.test.ts');
 await import('./online-triage-fallback.test.ts');
 await import('./sos-lifecycle.test.ts');
 await import('./offline-resilience.test.ts');
@@ -44,6 +45,7 @@ await import('./offline-save-choice.test.ts');
 // must initialize in a genuine Node environment, not a partial browser stub.
 delete (globalThis as any).window;
 delete (globalThis as any).document;
+await import('./capacitor-cors.test.ts');
 await import('./durable-dispatch-ledger.test.ts');
 await import('./automatic-sos-dispatch-route.test.ts');
 

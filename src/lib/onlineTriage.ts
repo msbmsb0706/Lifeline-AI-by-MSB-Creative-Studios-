@@ -1,4 +1,5 @@
 import type { EmergencyAnalysisResult } from '../types.ts';
+import { apiUrl } from './apiBase.ts';
 
 /** Only the explicitly selected ONLINE AI path may call this function. */
 export interface OnlineTriagePayload {
@@ -53,7 +54,7 @@ export async function attemptOnlineTriage(
     });
     const request = (async (): Promise<OnlineTriageAttempt> => {
       const fetcher = options.fetcher || fetch;
-      const response = await fetcher('/api/analyze-emergency', {
+      const response = await fetcher(apiUrl('/api/analyze-emergency'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, offlineModeForce: false }),

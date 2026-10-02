@@ -35,6 +35,7 @@ import { playPing } from './lib/audio.ts';
 import { getCountryEmergencyNumber, getSelectedCountry, setSelectedCountry } from './lib/emergencyNumbers.ts';
 import { checkOfflineShellReady } from './lib/offlineShell.ts';
 import { attemptOnlineTriage } from './lib/onlineTriage.ts';
+import { apiUrl } from './lib/apiBase.ts';
 import { SHOW_TECH_DETAILS } from './lib/uiVisibility.ts';
 import { AlertOctagon, PhoneCall, History, Trash2, ShieldCheck, Lock, Shield, Clock, Send, Mail } from 'lucide-react';
 
@@ -110,7 +111,7 @@ export default function App() {
       return asrProbeRef.current.configured ? 'server' : 'browser';
     }
     try {
-      const res = await fetch('/api/status');
+      const res = await fetch(apiUrl('/api/status'));
       const json = await res.json().catch(() => ({}));
       const configured = Boolean(json?.asr?.configured);
       asrProbeRef.current = { at: now, configured };
@@ -142,7 +143,7 @@ export default function App() {
     setVoiceNotice(null);
     setAsrPhase('transcribing');
     try {
-      const res = await fetch('/api/transcribe-speech', {
+      const res = await fetch(apiUrl('/api/transcribe-speech'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ audioBase64, mimeType, durationMs })
@@ -180,7 +181,7 @@ export default function App() {
 
       setAsrPhase('translating');
       try {
-        const tRes = await fetch('/api/translate-to-english', {
+        const tRes = await fetch(apiUrl('/api/translate-to-english'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: data.transcript, sourceLanguage: detected.name })
@@ -638,7 +639,7 @@ export default function App() {
       // this result's successful online triage.
       let failureCode = 'TRANSLATION_FAILED';
       try {
-        const response = await fetch('/api/translate-emergency', {
+        const response = await fetch(apiUrl('/api/translate-emergency'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
