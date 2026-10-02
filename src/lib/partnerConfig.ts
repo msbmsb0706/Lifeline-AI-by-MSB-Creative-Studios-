@@ -13,6 +13,8 @@
  * No endpoint credentials or secrets are ever requested, logged, or stored here.
  */
 
+import { apiUrl } from './apiBase.ts';
+
 /** Distinct configuration states for the authorized emergency-partner API. */
 export type PartnerConfigState = 'CONFIGURED' | 'NOT_CONFIGURED' | 'CONFIGURATION_UNAVAILABLE';
 
@@ -62,7 +64,7 @@ export async function fetchPartnerConfigState(
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`/api/emergency-partner/config?country=${encodeURIComponent(country)}`, {
+    const response = await fetch(apiUrl(`/api/emergency-partner/config?country=${encodeURIComponent(country)}`), {
       method: 'GET',
       signal: controller.signal
     });

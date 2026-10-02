@@ -11,6 +11,7 @@ import {
 } from './src/lib/languages.ts';
 import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, DetectedLanguage } from './src/types.ts';
 import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
+import { capacitorCors } from './server/capacitorCors.ts';
 import { getEmergencyPartnerConfig } from './server/partnerConfig.ts';
 import { createConfiguredDispatchLedger } from './server/dispatchIdempotency.ts';
 import { createPartnerTrackingRouter, getPartnerTrackingCapabilities, issueCaseAccessToken } from './server/partnerTracking.ts';
@@ -113,6 +114,11 @@ export async function createApp(dispatchLedger = createConfiguredDispatchLedger(
     res.setHeader('Permissions-Policy', 'microphone=(self), geolocation=(self), camera=(self)');
     next();
   });
+  // Packaged Capacitor apps call the API cross-origin from the WebView's local
+  // origin (https://localhost on Android). Grant ONLY those allow-listed
+  // origins before any body parsing; same-origin web requests pass through
+  // untouched and no wildcard origin is ever honored.
+  app.use('/api', capacitorCors());
   // /api/transcribe-speech carries transient base64-encoded speech audio and
   // needs the larger JSON body limit; every other endpoint keeps the original
   // 1 MB limit. (express.json skips requests already parsed by a prior parser.)

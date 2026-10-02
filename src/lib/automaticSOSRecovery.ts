@@ -1,5 +1,6 @@
 import { getPendingQueue, savePendingSOS, transmitSingleSOSItem } from './emergencyPartnerQueue.ts';
 import { EMERGENCY_PARTNER_PROVIDERS } from './emergencyPartnersData.ts';
+import { apiUrl } from './apiBase.ts';
 
 // No transport inspection: Wi-Fi, cellular and satellite are identical here.
 // A browser online signal is only an opportunity to probe the actual backend.
@@ -22,7 +23,7 @@ export async function recoverAutomaticSOS(canProceed: () => boolean = () => true
     (!i.nextRecoveryAt || i.nextRecoveryAt <= Date.now()) &&
     (i.targetPartner.providerType === 'LOCAL_ONLY' || i.targetPartner.providerType === 'AUTHORIZED_API'));
   if (!eligible.length) return;
-  const status = await checkedGet('/api/status');
+  const status = await checkedGet(apiUrl('/api/status'));
   if (!canProceed() || !navigator.onLine ||
       typeof status?.server_time !== 'string' || typeof status?.status !== 'string') return;
 
@@ -32,7 +33,7 @@ export async function recoverAutomaticSOS(canProceed: () => boolean = () => true
     if (!current || current.automaticRecovery !== true || current.recoveryBlocked ||
       !['WAITING_FOR_CONNECTION', 'PENDING_LOCAL'].includes(current.status) ||
       !navigator.onLine || !canProceed() || current.sosPackage.demoOnly === true) continue;
-    const config = await checkedGet('/api/emergency-partner/config?country=GLOBAL');
+    const config = await checkedGet(apiUrl('/api/emergency-partner/config?country=GLOBAL'));
     const configured = config?.success === true && config.data?.status === 'CONFIGURED' &&
       config.data?.automaticRecoverySupported === true;
     if (!configured) {
