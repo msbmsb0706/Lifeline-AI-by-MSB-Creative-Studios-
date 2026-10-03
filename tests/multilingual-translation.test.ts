@@ -15,7 +15,8 @@
  *   - short emergency messages are covered by a conciseness contract;
  *   - the PR #16 safety validator, original-message association and
  *     target-language validation remain active for every language;
- *   - the 4096 token budget and strict JSON output remain unchanged.
+ *   - the 4096-token compatibility ceiling, dedicated phase budgets, and
+ *     strict JSON output remain enforced.
  *
  * Only the upstream `fetch` is stubbed with deterministic per-language fixture
  * payloads — no live Nebius/Nemotron response is required.
@@ -25,6 +26,8 @@ import { section, assert, assertEqual } from './helpers.ts';
 import {
   resolveEmergencyTranslation,
   TRANSLATION_MAX_TOKENS,
+  TRANSLATION_PRIMARY_MAX_TOKENS,
+  TRANSLATION_STRUCTURED_MAX_TOKENS,
   TRANSLATION_TEMPERATURE
 } from '../server/translation.ts';
 import { SUPPORTED_LANGUAGES } from '../src/lib/languages.ts';
@@ -118,8 +121,12 @@ function stubPayload(payload: any, finishReason = 'stop'): void {
   };
 }
 
+function requestBody(index: number): any {
+  return JSON.parse(calls[index].init.body);
+}
+
 function lastRequestBody(): any {
-  return JSON.parse(calls[calls.length - 1].init.body);
+  return requestBody(calls.length - 1);
 }
 
 /** A well-formed fixture payload for the given target language. */
@@ -134,7 +141,7 @@ function fixturePayload(code: string, name: string, translatedMessage: string, o
     translated_action_steps: ['FIXTURE STEP'],
     translated_instructions_for_responders: 'FIXTURE DIRECTIVE',
     translated_first_aid_actions: ['FIXTURE FIRST AID'],
-    translated_needs: ['FIXTURE UNIT'],
+    translated_needs: ['FIXTURE UNIT', 'FIXTURE UNIT 2'],
     ...overrides
   };
 }
@@ -171,15 +178,17 @@ for (const lang of SUPPORTED_LANGUAGES) {
   );
 
   assertEqual(outcome.kind, 'ok', `[${lang.code}] online translation succeeds for ${lang.name}`);
-  assertEqual(calls.length, 1, `[${lang.code}] exactly one upstream request was made`);
+  assertEqual(calls.length, 2, `[${lang.code}] primary and structured requests are separate`);
 
   if (outcome.kind === 'error') continue;
   const data = outcome.data;
 
-  // Target language passed correctly — request and result.
-  const body = lastRequestBody();
+  // Target language passed correctly — the primary request is independently small.
+  const body = requestBody(0);
+  const structuredBody = requestBody(1);
   const systemPrompt: string = body.messages[0].content;
   const userPrompt: string = body.messages[1].content;
+  const structuredPrompt: string = `${structuredBody.messages[0].content}\n${structuredBody.messages[1].content}`;
   assertEqual(body.model, CONFIG.model, `[${lang.code}] the configured model is used`);
   assert(systemPrompt.includes(`target language: ${lang.name} (${lang.nativeName})`),
     `[${lang.code}] the requested target language is named in the system prompt`);
@@ -226,34 +235,40 @@ for (const lang of SUPPORTED_LANGUAGES) {
     assert(lower(systemPrompt).includes(keyword), `[${lang.code}] the prompt carries the prohibition "${keyword}"`);
   }
 
-  // Locked triage values stay in the prompt.
-  assert(systemPrompt.includes(CURRENT_SOS.emergency_type), `[${lang.code}] the locked emergency type is in the prompt`);
-  assert(systemPrompt.includes(CURRENT_SOS.emergency_category), `[${lang.code}] the locked category is in the prompt`);
-  assert(systemPrompt.includes(String(CURRENT_SOS.severity)), `[${lang.code}] the locked severity is in the prompt`);
+  // The primary prompt is intentionally small and contains no structured fields.
+  assert(!systemPrompt.includes('emergency_type') && !systemPrompt.includes('emergency_category'),
+    `[${lang.code}] the primary prompt omits locked triage context`);
+  assert(systemPrompt.includes('STRICT JSON'), `[${lang.code}] the primary prompt requires strict JSON output`);
+  assertEqual(body.max_tokens, 1000, `[${lang.code}] the primary request uses the dedicated 1000-token budget`);
+  assertEqual(body.max_tokens, TRANSLATION_PRIMARY_MAX_TOKENS, `[${lang.code}] the primary request uses its exported budget`);
+  assertEqual(body.temperature, TRANSLATION_TEMPERATURE, `[${lang.code}] the primary request keeps the low temperature`);
+  assertEqual(body.response_format?.type, 'json_object', `[${lang.code}] primary JSON response format stays enforced`);
+  assertEqual(structuredBody.max_tokens, TRANSLATION_STRUCTURED_MAX_TOKENS,
+    `[${lang.code}] structured fields use their separate smaller budget`);
+  assertEqual(structuredBody.max_tokens, 2400, `[${lang.code}] structured budget is 2400 tokens`);
 
-  // Strict JSON output + unchanged budget + temperature.
-  assert(systemPrompt.includes('STRICT JSON'), `[${lang.code}] the prompt requires strict JSON output`);
-  assertEqual(body.max_tokens, 4096, `[${lang.code}] the request asks for the 4096 token budget`);
-  assertEqual(body.max_tokens, TRANSLATION_MAX_TOKENS, `[${lang.code}] the request uses the exported budget constant`);
-  assertEqual(body.temperature, TRANSLATION_TEMPERATURE, `[${lang.code}] the request keeps the low temperature`);
-  assertEqual(body.response_format?.type, 'json_object', `[${lang.code}] JSON response format stays enforced`);
-
-  // Original-message-only translation source in the user prompt.
+  // Primary request includes only the user's original transmission plus language/safety context.
   assert(userPrompt.includes(`ORIGINAL TRANSMISSION (the only text to translate):\n${JSON.stringify(EN_TEXT)}`),
-    `[${lang.code}] the original transmission is the only translation source in the request`);
-  assert(!userPrompt.includes(GENERATED_DISPATCH),
-    `[${lang.code}] the generated dispatch report is never sent as the translation source`);
-  assert(
-    userPrompt.indexOf('ORIGINAL TRANSMISSION (the only text to translate)') < userPrompt.indexOf('RESPONDER INSTRUCTION:'),
-    `[${lang.code}] structured responder fields are sent separately, after the original transmission`
-  );
-  for (const marker of ['ORIGINAL HEADLINE:', 'RESPONDER INSTRUCTION:', 'ACTION STEPS:', 'FIRST AID:', 'REQUIRED UNITS:']) {
-    assert(userPrompt.includes(marker), `[${lang.code}] structured field ${marker} is sent for its own key`);
+    `[${lang.code}] the primary request contains the original as its only translation source`);
+  assert(!`${systemPrompt}\n${userPrompt}`.includes(GENERATED_DISPATCH),
+    `[${lang.code}] the generated dispatch report is never sent as the primary translation source`);
+  for (const field of [
+    'translated_headline', 'translated_action_steps', 'translated_instructions_for_responders',
+    'translated_first_aid_actions', 'translated_needs'
+  ]) {
+    assert(!`${systemPrompt}\n${userPrompt}`.includes(field), `[${lang.code}] primary phase does not request ${field}`);
   }
+  for (const marker of ['headline', 'action_steps', 'instructions_for_responders', 'first_aid_actions', 'needs']) {
+    assert(structuredPrompt.includes(marker), `[${lang.code}] structured phase handles ${marker} separately`);
+  }
+  assert(!structuredPrompt.includes(EN_TEXT), `[${lang.code}] structured phase does not receive the original transmission`);
+  assert(!structuredPrompt.includes(GENERATED_DISPATCH), `[${lang.code}] structured phase does not receive the generated dispatch message`);
 
   // Result: original preserved, translation intact, structured fields separate.
   assertEqual(data.original_message, EN_TEXT, `[${lang.code}] original_message is the user transmission`);
   assertEqual(data.translated_message, sample, `[${lang.code}] translated_message is returned intact`);
+  assertEqual(data.translation_status, 'ok', `[${lang.code}] successful structured output marks overall translation ok`);
+  assertEqual(data.structured_translation_status, 'ok', `[${lang.code}] structured translation status is ok`);
   assert(validateTranslatedMessage(data.translated_message).ok === true,
     `[${lang.code}] translated_message passes the PR #16 safety validator`);
   assertEqual(data.source, 'nebius_nemotron', `[${lang.code}] the result is labelled as the online engine`);
@@ -412,8 +427,8 @@ section('F — generated dispatch can never become the translation source');
   assertEqual(fromRaw.kind, 'ok', 'a record with raw_transcript + generated message still translates');
   if (fromRaw.kind === 'ok') {
     assertEqual(fromRaw.data.original_message, EN_TEXT, 'raw_transcript is used, not the generated message');
-    const userPrompt: string = lastRequestBody().messages[1].content;
-    assert(userPrompt.includes(JSON.stringify(EN_TEXT)), 'the original transcript is the source in the request');
+    const userPrompt: string = requestBody(0).messages[1].content;
+    assert(userPrompt.includes(JSON.stringify(EN_TEXT)), 'the original transcript is the source in the primary request');
     assert(!userPrompt.includes(GENERATED_DISPATCH), 'the generated message is not sent as the source');
   }
 
@@ -442,21 +457,25 @@ section('F — generated dispatch can never become the translation source');
 // G. Budget and strict-JSON contract (PR #34 invariants)
 // ---------------------------------------------------------------------------
 
-section('G — the 4096 token budget and strict JSON contract are unchanged');
+section('G — the 4096 ceiling, smaller phase budgets, and strict JSON contract are enforced');
 
 assertEqual(TRANSLATION_MAX_TOKENS, 4096, 'TRANSLATION_MAX_TOKENS is still 4096');
 
 {
   stubPayload(fixturePayload('ta', 'Tamil', SAMPLE_TRANSLATION.ta));
   await resolveEmergencyTranslation({ text: EN_TEXT, targetLanguage: 'ta', sourceLanguage: 'en', currentSOS: CURRENT_SOS }, CONFIG);
-  const body = lastRequestBody();
-  assertEqual(body.max_tokens, 4096, 'the upstream request asks for 4096 max_tokens');
-  assertEqual(
-    JSON.stringify(body.response_format),
-    JSON.stringify({ type: 'json_object' }),
-    'response_format JSON enforcement is intact'
-  );
-  assert(Array.isArray(body.messages) && body.messages.length === 2, 'the request sends system + user messages');
+  const primaryBody = requestBody(0);
+  const structuredBody = requestBody(1);
+  assertEqual(primaryBody.max_tokens, TRANSLATION_PRIMARY_MAX_TOKENS, 'the primary call has a dedicated small budget');
+  assertEqual(structuredBody.max_tokens, TRANSLATION_STRUCTURED_MAX_TOKENS, 'the structured call has its own bounded budget');
+  for (const [label, body] of [['primary', primaryBody], ['structured', structuredBody]] as const) {
+    assertEqual(
+      JSON.stringify(body.response_format),
+      JSON.stringify({ type: 'json_object' }),
+      `${label} phase keeps JSON response-format enforcement`
+    );
+    assert(Array.isArray(body.messages) && body.messages.length === 2, `${label} phase sends system + user messages`);
+  }
 }
 
 // Restore the real fetch so later test files can talk to real servers.

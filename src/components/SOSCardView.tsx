@@ -993,6 +993,16 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             </div>
             )}
 
+            {result.translation?.structured_translation_status === 'error' && (
+              <div
+                id="structured-translation-unavailable"
+                role="status"
+                className="p-2 rounded-xl bg-amber-950/30 border border-amber-800/60 text-[11px] text-amber-100/90"
+              >
+                The original transmission is translated. Structured responder details remain in their original language because their separate translation is unavailable.
+              </div>
+            )}
+
             {/* Original Message Box */}
             <div className="p-2.5 rounded-xl bg-neutral-900/60 border border-neutral-800">
               <div className="flex items-center justify-between mb-1.5">

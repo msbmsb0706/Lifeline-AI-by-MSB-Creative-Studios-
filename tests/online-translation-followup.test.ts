@@ -68,6 +68,18 @@ function onlineTranslation() {
   };
 }
 
+function partialOnlineTranslation() {
+  return {
+    ...onlineTranslation(),
+    translation_status: 'partial',
+    structured_translation_status: 'error',
+    structured_translation_error: {
+      code: 'TRANSLATION_TRUNCATED',
+      error: 'Structured responder translation unavailable: the response was truncated. The original transmission and primary translated_message are preserved.'
+    }
+  };
+}
+
 async function mountApp(fetcher: (url: string, init?: any) => Promise<any>) {
   const previousFetch = (globalThis as any).fetch;
   const h = installDomHarness();
@@ -147,13 +159,17 @@ section('Online SOS displays immediately while the follow-up translation is stal
       'an unrelated React re-render does not start another automatic translation');
 
     await act(async () => {
-      releaseTranslation(mockResponse(200, { success: true, data: onlineTranslation() }));
+      releaseTranslation(mockResponse(200, { success: true, data: partialOnlineTranslation() }));
       await waitFor(() => (app.h.document.body.textContent || '').includes(TRANSLATED_TEXT), 1500);
     });
     assert((app.h.document.body.textContent || '').includes(TRANSLATED_TEXT),
-      'successful follow-up updates the displayed result with its translation');
+      'successful primary follow-up updates the displayed result with translated_message');
     assertEqual(app.h.document.getElementById('translation-unavailable-state'), null,
-      'successful follow-up clears any translation-unavailable state');
+      'partial primary success does not show the total-translation error state');
+    assertEqual(app.h.document.getElementById('structured-translation-unavailable') !== null, true,
+      'the card explicitly marks structured responder translation as unavailable');
+    assert((app.h.document.body.textContent || '').includes(ORIGINAL_TEXT),
+      'the original transmission remains visible with a partial translation');
   } finally {
     // If an assertion fails before the promise is resolved, release it so the
     // React tree can unmount cleanly without leaving a pending async handler.

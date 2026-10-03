@@ -674,7 +674,9 @@ export default function App() {
           }
           const isCurrent = updateTranslationResult({
             translation: transData,
-            translation_status: 'ok',
+            // A failed optional structured phase is partial success: never
+            // discard the safety-validated primary translated_message.
+            translation_status: transData.translation_status === 'partial' ? 'partial' : 'ok',
             translation_error: null
           });
           if (isCurrent) {

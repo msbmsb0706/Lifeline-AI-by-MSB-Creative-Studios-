@@ -47,6 +47,7 @@ type FixtureMode =
   | 'translation_dispatch'
   | 'translation_wrong_target'
   | 'translation_truncated'
+  | 'translation_structured_truncated'
   | 'translation_missing_original';
 
 let mode: FixtureMode = 'ok';
@@ -54,6 +55,7 @@ let analysisRequests = 0;
 let translationRequests = 0;
 /** Last translation request body received by the fixture (parsed). */
 let lastTranslationBody: any = null;
+let lastPrimaryTranslationBody: any = null;
 let slowTranslationGate: Promise<void> = Promise.resolve();
 let releaseSlowTranslation: (() => void) | null = null;
 
@@ -70,7 +72,7 @@ const upstream: Server = createServer((req, res) => {
       body = {};
     }
     const systemPrompt: string = body?.messages?.[0]?.content || '';
-    const isTranslation = systemPrompt.includes('multilingual translation engine');
+    const isTranslation = systemPrompt.toLowerCase().includes('translation engine');
 
     if (!isTranslation) {
       analysisRequests += 1;
@@ -102,6 +104,7 @@ const upstream: Server = createServer((req, res) => {
 
     translationRequests += 1;
     lastTranslationBody = body;
+    if (systemPrompt.includes('emergency-message translation engine')) lastPrimaryTranslationBody = body;
 
     const respond = (payload: any, finishReason = 'stop') => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -130,6 +133,10 @@ const upstream: Server = createServer((req, res) => {
     }
     if (mode === 'translation_truncated') {
       respond({ target_language: 'ta', translated_message: TA_TEXT }, 'length');
+      return;
+    }
+    if (mode === 'translation_structured_truncated' && systemPrompt.includes('structured emergency-responder')) {
+      respond({ translated_headline: 'தீ விபத்து' }, 'length');
       return;
     }
 
@@ -169,16 +176,32 @@ const upstream: Server = createServer((req, res) => {
       return;
     }
 
+    if (systemPrompt.includes('structured emergency-responder')) {
+      const structured = structuredFieldsFromPrompt(body);
+      respond({
+        ...(typeof structured.headline === 'string' ? { translated_headline: 'தீ விபத்து' } : {}),
+        ...(Array.isArray(structured.action_steps)
+          ? { translated_action_steps: structured.action_steps.map(() => 'வெளியேறு') }
+          : {}),
+        ...(typeof structured.instructions_for_responders === 'string'
+          ? { translated_instructions_for_responders: 'காட்சியை மதிப்பிடு' }
+          : {}),
+        ...(Array.isArray(structured.first_aid_actions)
+          ? { translated_first_aid_actions: structured.first_aid_actions.map(() => 'தண்ணீர் ஊற்று') }
+          : {}),
+        ...(Array.isArray(structured.needs)
+          ? { translated_needs: structured.needs.map(() => 'தீயணைப்பு வாகனம்') }
+          : {})
+      });
+      return;
+    }
+
     respond({
+      detected_source_language: { code: requestedCode === 'ta' ? 'en' : 'ta', name: requestedCode === 'ta' ? 'English' : 'Tamil' },
       target_language: requestedCode,
       target_language_name: requestedCode === 'ta' ? 'Tamil' : 'English',
       original_message: lastOriginalFromPrompt(body),
-      translated_message: expectedTranslation,
-      translated_headline: 'தீ விபத்து',
-      translated_action_steps: ['வெளியேறு'],
-      translated_instructions_for_responders: 'காட்சியை மதிப்பிடு',
-      translated_first_aid_actions: ['தண்ணீர் ஊற்று'],
-      translated_needs: ['தீயணைப்பு வாகனம்']
+      translated_message: expectedTranslation
     });
   });
 });
@@ -193,6 +216,19 @@ function lastOriginalFromPrompt(body: any): string {
     return JSON.parse(match[1]);
   } catch {
     return '';
+  }
+}
+
+
+function structuredFieldsFromPrompt(body: any): Record<string, any> {
+  const userPrompt: string = body?.messages?.[1]?.content || '';
+  const marker = 'STRUCTURED RESPONDER FIELDS:\n';
+  const markerIndex = userPrompt.indexOf(marker);
+  if (markerIndex < 0) return {};
+  try {
+    return JSON.parse(userPrompt.slice(markerIndex + marker.length));
+  } catch {
+    return {};
   }
 }
 
@@ -381,9 +417,10 @@ if (ready && successfulOnlineTriage) {
   assertEqual(followup.json?.data?.source, 'nebius_nemotron', 'follow-up translation uses the online engine');
   assertEqual(followup.json?.data?.translated_message, TA_TEXT, 'follow-up translation returns the target-language text');
   assertEqual(followup.json?.data?.original_message, EN_TEXT, "follow-up preserves association to the user's original text");
-  assertEqual(translationRequests, 1, 'the follow-up endpoint makes one translation request');
-  assertEqual(lastOriginalFromPrompt(lastTranslationBody), EN_TEXT, 'the provider receives only the original transmission as translation source');
-  assert(!lastOriginalFromPrompt(lastTranslationBody).includes('DISPATCH ALERT'), 'generated dispatch text is never sent as translation source');
+  assertEqual(translationRequests, 2, 'the follow-up endpoint makes separate primary and structured requests');
+  assertEqual(lastOriginalFromPrompt(lastPrimaryTranslationBody), EN_TEXT, 'the primary provider receives the original transmission as source');
+  assert(!lastOriginalFromPrompt(lastPrimaryTranslationBody).includes('DISPATCH ALERT'), 'generated dispatch text is never sent as primary translation source');
+  assertEqual(lastOriginalFromPrompt(lastTranslationBody), '', 'the structured request contains no original transmission');
 }
 
 // Tamil original → English: triage remains independent; the follow-up route
@@ -492,6 +529,31 @@ if (ready) {
   assertEqual(taToEn.status, 200, 'POST /api/translate-emergency succeeds (ta→en)');
   assertEqual(taToEn.json?.data?.translated_message, EN_TEXT, 'ta→en translated_message is the online English translation');
   assertEqual(taToEn.json?.data?.original_message, TA_TEXT, 'ta→en original_message is the Tamil transmission');
+}
+
+// ---------------------------------------------------------------------------
+// Structured truncation is a partial success, not a failed translation.
+// ---------------------------------------------------------------------------
+if (ready) {
+  mode = 'translation_structured_truncated';
+  translationRequests = 0;
+  const partial = await postJson(`${base}/api/translate-emergency`, {
+    text: EN_TEXT,
+    targetLanguage: 'ta',
+    sourceLanguage: 'en',
+    currentSOS: CURRENT_SOS,
+    offlineModeForce: false
+  });
+  assertEqual(partial.status, 200, 'structured finish_reason=length leaves the endpoint successful');
+  assertEqual(partial.json?.success, true, 'primary translation remains an API success');
+  assertEqual(partial.json?.data?.translated_message, TA_TEXT, 'primary translated_message survives structured truncation');
+  assertEqual(partial.json?.data?.original_message, EN_TEXT, 'original_message stays preserved on partial success');
+  assertEqual(partial.json?.data?.translation_status, 'partial', 'response marks primary success as partial overall');
+  assertEqual(partial.json?.data?.structured_translation_status, 'error', 'structured fields are explicitly unavailable');
+  assertEqual(partial.json?.data?.structured_translation_error?.code, 'TRANSLATION_TRUNCATED',
+    'structured truncation code is available without failing the primary translation');
+  assertEqual(partial.json?.data?.source, 'nebius_nemotron', 'partial result remains online, with no offline substitution');
+  assertEqual(translationRequests, 2, 'primary succeeds before the separate structured request truncates');
 }
 
 // ---------------------------------------------------------------------------

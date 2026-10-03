@@ -79,22 +79,30 @@ export interface TranslatedSOS {
   detected_source_language?: DetectedLanguage;
   model_used?: string;
   source?: 'nebius_nemotron' | 'offline_fallback';
+  /** Status of the primary original-message translation. */
+  translation_status?: 'ok' | 'partial';
+  /** Availability of the separately generated responder/dispatch translations. */
+  structured_translation_status?: 'ok' | 'error' | 'none';
+  /** Explicit non-fatal error when only the optional structured phase failed. */
+  structured_translation_error?: TranslationErrorInfo | null;
 }
 
 /**
  * Explicit ONLINE translation outcome for an emergency record.
  *
- * - 'none'  : no translation was requested/produced.
- * - 'ok'    : a translation was produced (online, or in Offline Mode bundled).
- * - 'error' : ONLINE translation was attempted and FAILED. The original
- *             transmission is preserved and NO offline translation was
- *             silently substituted.
+ * - 'none'    : no translation was requested/produced.
+ * - 'ok'      : the primary user-message translation succeeded.
+ * - 'partial' : the primary translation succeeded but optional structured
+ *               responder translations are unavailable.
+ * - 'error'   : the primary ONLINE translation failed. The original
+ *               transmission is preserved and NO offline translation was
+ *               silently substituted.
  *
  * 'error' is deliberately distinct from Offline Mode: an unavailable online
  * translation service is not the same thing as the user choosing
  * offline / resilience mode.
  */
-export type TranslationStatus = 'none' | 'ok' | 'error';
+export type TranslationStatus = 'none' | 'ok' | 'partial' | 'error';
 
 export interface TranslationErrorInfo {
   /** Stable machine-readable failure code, e.g. TRANSLATION_UPSTREAM_HTTP. */
