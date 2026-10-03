@@ -44,17 +44,18 @@ import type {
   TranslationErrorInfo
 } from '../src/types.ts';
 
-/** Online translation request timeout (milliseconds). */
+/** Overall online translation safety timeout across both phases (milliseconds). */
 export const TRANSLATION_TIMEOUT_MS = 20000;
-/**
- * Enough headroom for the translation + the separate structured fields.
- *
- * Raised 2400 -> 4096 (translation follow-up): long free-form transmissions
- * plus the structured translated fields could hit the cap and come back with
- * `finish_reason === 'length'`, which is reported as TRANSLATION_TRUNCATED
- * instead of a translation. The higher budget covers those long inputs.
- */
+/** PR #34 compatibility ceiling; phase-specific requests intentionally use less. */
 export const TRANSLATION_MAX_TOKENS = 4096;
+/** Compact primary output: one user-message translation plus its small metadata object. */
+export const TRANSLATION_PRIMARY_MAX_TOKENS = 1000;
+/** Separate optional structured fields; sufficient for the existing responder schema. */
+export const TRANSLATION_STRUCTURED_MAX_TOKENS = 2400;
+/** Bound the primary request and reserve time inside the overall timeout for structured work. */
+export const TRANSLATION_PRIMARY_TIMEOUT_MS = 12000;
+/** Structured translations are optional and may not consume the whole translation deadline. */
+export const TRANSLATION_STRUCTURED_TIMEOUT_MS = 8000;
 export const TRANSLATION_TEMPERATURE = 0.1;
 
 export const OFFLINE_TRANSLATION_MODEL = 'LifeLine AI Deterministic Multilingual Translation Engine';
@@ -355,108 +356,135 @@ export function validateOnlineTranslationPayload(input: {
 // ONLINE translation (Nebius Token Factory / Nemotron)
 // ---------------------------------------------------------------------------
 
-export async function translateEmergencyOnline(
-  input: {
-    sourceText: string;
-    targetLanguage: string;
-    sourceLanguage?: unknown;
-    currentSOS?: Record<string, any> | null;
-    location?: unknown;
+type StructuredSourceFieldName = 'headline' | 'action_steps' | 'instructions_for_responders' | 'first_aid_actions' | 'needs';
+type StructuredSourceFields = Partial<Record<StructuredSourceFieldName, string | string[]>>;
+type StructuredTranslationFields = Pick<
+  TranslatedSOS,
+  | 'translated_headline'
+  | 'translated_action_steps'
+  | 'translated_instructions_for_responders'
+  | 'translated_first_aid_actions'
+  | 'translated_needs'
+>;
+
+const STRUCTURED_FIELD_DEFINITIONS: {
+  sourceKey: StructuredSourceFieldName;
+  translatedKey: keyof StructuredTranslationFields;
+  kind: 'string' | 'string[]';
+  description: string;
+}[] = [
+  { sourceKey: 'headline', translatedKey: 'translated_headline', kind: 'string', description: 'the headline' },
+  { sourceKey: 'action_steps', translatedKey: 'translated_action_steps', kind: 'string[]', description: 'the action steps' },
+  {
+    sourceKey: 'instructions_for_responders',
+    translatedKey: 'translated_instructions_for_responders',
+    kind: 'string',
+    description: 'the responder instructions'
   },
-  config: TranslationConfig
-): Promise<TranslatedSOS> {
-  const { sourceText } = input;
-  const targetLangObj = getLanguageByCodeOrName(input.targetLanguage);
-  const detectedSource = resolveDetectedSourceLanguage(input.sourceLanguage, sourceText);
-  const locked = lockTriage(input.currentSOS, sourceText);
-  const structured = input.currentSOS?.visual_card || {};
-
-  // Native-writing-system requirement, per target language: Indian regional
-  // languages name their native script explicitly; Latin-script languages get
-  // the standard writing-system requirement instead.
-  const scriptInstruction = targetLangObj.script
-    ? `the correct native ${targetLangObj.script} script — the writing system in which ${targetLangObj.name} is normally written — never romanized or transliterated into Latin letters`
-    : targetLangObj.nativeName.toLowerCase() === targetLangObj.name.toLowerCase()
-      ? `the standard writing system of ${targetLangObj.name} — never transliterated into a different script`
-      : `the standard writing system of ${targetLangObj.name} (${targetLangObj.nativeName}) — never transliterated into a different script`;
-
-  const systemPrompt = `You are LifeLine AI's specialized emergency multilingual translation engine developed by MSB Creative Studios.
-
-TASK: Translate the user's ORIGINAL TRANSMISSION (provided in the user message) into the target language: ${targetLangObj.name} (${targetLangObj.nativeName}).
-
-TRANSLATION QUALITY:
-1. Natural and professional: use native ${targetLangObj.name} grammar, word order and idiom. When a natural phrasing preserves the exact meaning, prefer the grammatically natural rendering over a mechanical word-for-word translation.
-2. Semantically faithful: convey every meaning, fact and detail of the original transmission — and only those.
-3. Emergency-appropriate: keep the tone and plainness of the original, the way a native ${targetLangObj.name} speaker would communicate an emergency to first responders.
-4. Concise when the original is concise: a short transmission (e.g. "Help", "Fire", "I am trapped", "I can't breathe", "My child is unconscious") MUST come back just as short — the minimal natural translation, never expanded into a longer explanation or report.
-5. Correct writing system: write the translation in ${scriptInstruction}.
-
-FIDELITY & PRESERVATION (keep these exactly as transmitted):
-- Names and proper nouns: keep personal names, place names and organization names the same (transliteration into the target script only when that language normally writes them that way).
-- Numbers and measurements: keep every number, measurement, dosage and unit exactly as given.
-- Ages: keep every age exactly as given.
-- Quantities: keep every count or quantity exact.
-- Addresses and locations: keep street names, landmarks, PIN codes and place names complete and accurate.
-- Medication names: keep medicine/medication names exactly as given.
-- Times and dates: keep times, durations and dates unchanged.
-- Phone numbers and identifiers: reproduce every digit and character of phone numbers and IDs exactly.
-- Urgency: preserve the urgency already present in the original — never increase or reduce it.
-- Emergency and medical terminology: use the standard terms that first responders in ${targetLangObj.name} expect for the user's words.
-
-HARD LIMITS — "translated_message" MUST ONLY be the translation of the user's original transmission. It must NEVER:
-- add, invent or imply any information that is not in the original transmission;
-- summarize, reformat or reinterpret the original;
-- become a dispatch report (no added headlines, priorities, emergency categories, severity levels or required units);
-- add medical advice or a diagnosis;
-- add first-aid instructions;
-- add responder instructions or directives.
-If the original transmission is one short word or sentence, "translated_message" is exactly that word or sentence translated — nothing more.
-
-LOCKED TRIAGE VALUES:
-The emergency type ("${locked.type}"), the standardized emergency category ("${locked.category}") and the severity level (${locked.severity}) are locked life-critical triage parameters. Never change them, never translate them into different meanings, and never fold them into "translated_message".
-
-SEPARATE STRUCTURED FIELDS:
-The structured responder/dispatch fields (translated_headline, translated_action_steps, translated_instructions_for_responders, translated_first_aid_actions, translated_needs) are translated SEPARATELY, only from the structured content provided for them. Their text must never appear in "translated_message", and the user's transmission must not be rewritten into them.
-
-OUTPUT — STRICT JSON:
-Output exactly one valid JSON object — pure JSON, no markdown fences, no extra text — matching this schema:
-{
-  "detected_source_language": {
-    "code": "${detectedSource.code}",
-    "name": "${detectedSource.name}"
+  {
+    sourceKey: 'first_aid_actions',
+    translatedKey: 'translated_first_aid_actions',
+    kind: 'string[]',
+    description: 'the first-aid actions'
   },
-  "target_language": "${targetLangObj.code}",
-  "target_language_name": "${targetLangObj.name}",
-  "original_message": string (the exact original transmission, unchanged),
-  "translated_message": string (the natural, faithful translation of the original transmission ONLY),
-  "translated_headline": string (the provided headline in ${targetLangObj.name}),
-  "translated_action_steps": string[] (the provided action steps in ${targetLangObj.name}),
-  "translated_instructions_for_responders": string (the provided on-arrival directive in ${targetLangObj.name}),
-  "translated_first_aid_actions": string[] (the provided first aid actions in ${targetLangObj.name}),
-  "translated_needs": string[] (the provided required units in ${targetLangObj.name})
+  { sourceKey: 'needs', translatedKey: 'translated_needs', kind: 'string[]', description: 'the required units' }
+];
+
+function nativeScriptInstruction(targetLanguage: ReturnType<typeof getLanguageByCodeOrName>): string {
+  if (targetLanguage.script) {
+    return `Use the correct native ${targetLanguage.script} script, not romanization or Latin-letter transliteration.`;
+  }
+  return `Use the standard writing system of ${targetLanguage.name} (${targetLanguage.nativeName}); do not transliterate it into another script.`;
 }
-Translate only the provided structured content — never invent additional medical advice, responder instructions or required equipment.
-Do NOT include markdown fences. Output pure JSON only.`;
 
-  // ONLY the user's original transmission is the translation source. The
-  // generated dispatch/responder fields travel separately for their own keys.
-  // The transmission is embedded as a JSON string so quotes/newlines in the
-  // user's text can never break the prompt structure.
-  const userPrompt = `Translate the user's ORIGINAL TRANSMISSION into ${targetLangObj.name} (${targetLangObj.nativeName}) and put that one faithful, natural translation in the "translated_message" JSON field. The original transmission is the ONLY text that may go into "translated_message": do not paraphrase, summarize, expand, or regenerate it as a dispatch report.
+function buildStructuredSourceFields(currentSOS?: Record<string, any> | null): StructuredSourceFields {
+  const visualCard = currentSOS?.visual_card;
+  const card = visualCard && typeof visualCard === 'object' && !Array.isArray(visualCard)
+    ? visualCard as Record<string, unknown>
+    : {};
+  const fields: StructuredSourceFields = {};
 
-ORIGINAL TRANSMISSION (the only text to translate):
-${JSON.stringify(sourceText)}
+  const headline = typeof card.headline === 'string' ? card.headline.trim() : '';
+  if (headline) fields.headline = card.headline as string;
 
-SEPARATELY, translate ONLY the provided structured responder/dispatch fields below into ${targetLangObj.name}, each for its own JSON key — never into "translated_message":
-ORIGINAL HEADLINE: "${structured.headline || locked.type}"
-RESPONDER INSTRUCTION: "${structured.instructions_for_responders || 'Assess scene safety and vitals.'}"
-ACTION STEPS: ${JSON.stringify(structured.action_steps || [])}
-FIRST AID: ${JSON.stringify(structured.first_aid_actions || [])}
-REQUIRED UNITS: ${JSON.stringify(input.currentSOS?.needs || [])}
-Source Language: ${detectedSource.name}`;
+  const responderInstructions =
+    typeof card.instructions_for_responders === 'string' ? card.instructions_for_responders.trim() : '';
+  if (responderInstructions) fields.instructions_for_responders = card.instructions_for_responders as string;
 
-  const timeoutMs = typeof config.timeoutMs === 'number' && config.timeoutMs > 0 ? config.timeoutMs : TRANSLATION_TIMEOUT_MS;
+  for (const key of ['action_steps', 'first_aid_actions'] as const) {
+    const value = card[key];
+    if (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string' && item.trim())) {
+      fields[key] = value as string[];
+    }
+  }
 
+  const needs = currentSOS?.needs;
+  if (Array.isArray(needs) && needs.length > 0 && needs.every((item) => typeof item === 'string' && item.trim())) {
+    fields.needs = needs as string[];
+  }
+
+  return fields;
+}
+
+function validateStructuredTranslationPayload(
+  parsed: any,
+  sourceFields: StructuredSourceFields
+): StructuredTranslationFields {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new TranslationError(
+      'TRANSLATION_INVALID_RESPONSE',
+      'The online service returned an unexpected structured responder translation. The original transmission is preserved.'
+    );
+  }
+
+  const translated: Partial<StructuredTranslationFields> = {};
+  for (const definition of STRUCTURED_FIELD_DEFINITIONS) {
+    if (!(definition.sourceKey in sourceFields)) continue;
+    const value = parsed[definition.translatedKey];
+    const sourceValue = sourceFields[definition.sourceKey];
+    const valid = definition.kind === 'string'
+      ? typeof value === 'string' && Boolean(value.trim())
+      : Array.isArray(value) &&
+        Array.isArray(sourceValue) &&
+        value.length === sourceValue.length &&
+        value.every((item: unknown) => typeof item === 'string' && Boolean(item.trim()));
+
+    if (!valid) {
+      throw new TranslationError(
+        'TRANSLATION_INVALID_RESPONSE',
+        `The online service returned an incomplete or invalid translation for ${definition.description}. The original transmission is preserved.`
+      );
+    }
+    (translated as Record<string, unknown>)[definition.translatedKey] =
+      typeof value === 'string' ? value.trim() : (value as string[]).map((item) => item.trim());
+  }
+
+  return translated as StructuredTranslationFields;
+}
+
+function toStructuredTranslationError(err: unknown): TranslationErrorInfo {
+  const error = toTranslationError(err);
+  const detail = error.message
+    .replace(/\s*The original transmission(?: and primary translated_message)? is preserved\.?$/i, '')
+    .trim()
+    .replace(/[.]+$/, '');
+  return {
+    code: error.code,
+    error: `Structured responder translation unavailable: ${detail || 'the structured response was incomplete'}. The original transmission and primary translated_message are preserved.`,
+    ...(typeof error.upstreamStatus === 'number' ? { upstream_status: error.upstreamStatus } : {})
+  };
+}
+
+async function requestTranslationJson(input: {
+  config: TranslationConfig;
+  systemPrompt: string;
+  userPrompt: string;
+  maxTokens: number;
+  timeoutMs: number;
+  phase: 'primary' | 'structured';
+}): Promise<any> {
+  const { config, systemPrompt, userPrompt, maxTokens, timeoutMs, phase } = input;
+  const structured = phase === 'structured';
   const response = await fetch(`${config.baseUri}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -471,12 +499,11 @@ Source Language: ${detectedSource.name}`;
       ],
       temperature: TRANSLATION_TEMPERATURE,
       response_format: { type: 'json_object' },
-      max_tokens: TRANSLATION_MAX_TOKENS
+      max_tokens: maxTokens
     }),
     signal: AbortSignal.timeout(timeoutMs)
   });
 
-  // 1. HTTP status — a non-2xx upstream is NEVER a successful translation.
   if (!response.ok) {
     let detail = '';
     try {
@@ -486,27 +513,27 @@ Source Language: ${detectedSource.name}`;
     }
     throw new TranslationError(
       'TRANSLATION_UPSTREAM_HTTP',
-      `Translation provider returned HTTP ${response.status}${detail ? ` (${detail})` : ''}. The original transmission is preserved.`,
+      `${structured ? 'Structured translation provider' : 'Translation provider'} returned HTTP ${response.status}${detail ? ` (${detail})` : ''}. The original transmission is preserved.`,
       502,
       response.status
     );
   }
 
-  // 2. Response shape / completion existence.
   const raw = await response.json().catch(() => null);
   const choice = (raw as any)?.choices?.[0];
   if (!raw || !Array.isArray((raw as any).choices) || !choice || typeof choice !== 'object') {
     throw new TranslationError(
       'TRANSLATION_INVALID_RESPONSE',
-      'The online translation service returned an unexpected response shape. The original transmission is preserved.'
+      `${structured ? 'The online service returned an unexpected structured translation response' : 'The online translation service returned an unexpected response shape'}. The original transmission is preserved.`
     );
   }
 
-  // 3. Truncation / unfinished completion.
   if (choice.finish_reason === 'length') {
     throw new TranslationError(
       'TRANSLATION_TRUNCATED',
-      'The online translation service returned an incomplete (truncated) response. The original transmission is preserved.'
+      structured
+        ? 'The online structured responder translation service returned an incomplete (truncated) response. The original transmission is preserved.'
+        : 'The online translation service returned an incomplete (truncated) response. The original transmission is preserved.'
     );
   }
 
@@ -514,52 +541,185 @@ Source Language: ${detectedSource.name}`;
   if (typeof content !== 'string' || !content.trim()) {
     throw new TranslationError(
       'TRANSLATION_EMPTY_RESPONSE',
-      'The online translation service returned no text. The original transmission is preserved.'
+      `${structured ? 'The online service returned no structured responder translation' : 'The online translation service returned no text'}. The original transmission is preserved.`
     );
   }
 
-  // 4. Malformed JSON payload.
-  let parsed: any;
   try {
-    parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
+    return JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
   } catch {
     throw new TranslationError(
       'TRANSLATION_INVALID_JSON',
-      'The online translation service returned malformed JSON. The original transmission is preserved.'
+      `${structured ? 'The online service returned malformed structured responder JSON' : 'The online translation service returned malformed JSON'}. The original transmission is preserved.`
     );
   }
+}
 
-  // 5. translated_message / target language / original association / PR #16 safety.
+export async function translateEmergencyOnline(
+  input: {
+    sourceText: string;
+    targetLanguage: string;
+    sourceLanguage?: unknown;
+    currentSOS?: Record<string, any> | null;
+    location?: unknown;
+  },
+  config: TranslationConfig
+): Promise<TranslatedSOS> {
+  const startedAt = Date.now();
+  const overallTimeoutMs = typeof config.timeoutMs === 'number' && config.timeoutMs > 0
+    ? config.timeoutMs
+    : TRANSLATION_TIMEOUT_MS;
+  const deadline = startedAt + overallTimeoutMs;
+  const sourceText = input.sourceText;
+  const targetLangObj = getLanguageByCodeOrName(input.targetLanguage);
+  const detectedSource = resolveDetectedSourceLanguage(input.sourceLanguage, sourceText);
+  const locked = lockTriage(input.currentSOS, sourceText);
+  const scriptInstruction = nativeScriptInstruction(targetLangObj);
+
+  // PHASE 1 is deliberately limited to the user's original transmission and
+  // the language metadata needed to translate it faithfully. No dispatch or
+  // responder fields are included in either prompt or the output schema.
+  const primarySystemPrompt = `You are LifeLine AI's emergency-message translation engine.
+
+Translate only the user's original transmission from ${detectedSource.name} (${detectedSource.code}) into the target language: ${targetLangObj.name} (${targetLangObj.nativeName}).
+
+QUALITY AND FIDELITY:
+- Use natural ${targetLangObj.name} grammar, word order and idiom while preserving the exact meaning.
+- Preserve every fact and detail in the original, and add no unsupported facts.
+- Preserve names and proper nouns (transliterate only when the target language normally writes them in its native script).
+- Preserve numbers and measurements (including every dosage and unit) exactly as given.
+- Preserve ages and quantities exactly.
+- Preserve addresses and locations: keep full street addresses, landmarks and postal codes; keep medication names exactly as given.
+- Preserve times and dates (including durations); reproduce every digit and character in phone numbers and identifiers exactly.
+- Preserve the urgency and tone; use standard emergency and medical terminology expected by target-language first responders.
+- Keep every short transmission concise. "Help", "Fire", "I am trapped", "I can't breathe", and "My child is unconscious" must not be expanded into explanations or reports.
+- ${scriptInstruction}
+
+SAFETY LIMITS:
+- The translated message must be only a faithful translation of the user's original transmission.
+- Never summarize, reformat, reinterpret, or turn it into a dispatch report.
+- Never add medical advice, a diagnosis, first-aid instructions, or responder instructions.
+- Do not invent, imply, or omit emergency details.
+
+OUTPUT — STRICT JSON:
+Return exactly one JSON object and no other text, with only these fields:
+{
+  "detected_source_language": { "code": "${detectedSource.code}", "name": "${detectedSource.name}" },
+  "target_language": "${targetLangObj.code}",
+  "target_language_name": "${targetLangObj.name}",
+  "original_message": "the exact original transmission, unchanged",
+  "translated_message": "the natural, faithful translation of that original transmission only"
+}`;
+
+  const primaryUserPrompt = `Translate ONLY the user's original transmission from ${detectedSource.name} (${detectedSource.code}) into ${targetLangObj.name} (${targetLangObj.nativeName}). Return the strict JSON object described in the system instructions.
+
+ORIGINAL TRANSMISSION (the only text to translate):
+${JSON.stringify(sourceText)}`;
+
+  const primaryTimeoutMs = Math.max(1, Math.min(overallTimeoutMs, TRANSLATION_PRIMARY_TIMEOUT_MS));
+  const primaryParsed = await requestTranslationJson({
+    config,
+    systemPrompt: primarySystemPrompt,
+    userPrompt: primaryUserPrompt,
+    maxTokens: TRANSLATION_PRIMARY_MAX_TOKENS,
+    timeoutMs: primaryTimeoutMs,
+    phase: 'primary'
+  });
+
+  // `validateTranslatedMessage()` remains the authoritative validator. The
+  // transport checks also retain target-language and original-association
+  // validation; original_message in the returned object is always sourceText,
+  // never a model-generated echo.
   const { translatedMessage } = validateOnlineTranslationPayload({
-    parsed,
+    parsed: primaryParsed,
     requestedTargetLanguageCode: targetLangObj.code,
     sourceText
   });
 
-  const asString = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);
-  const asStringArray = (value: unknown): string[] | undefined =>
-    Array.isArray(value) && value.every((v) => typeof v === 'string') ? (value as string[]) : undefined;
-
-  return {
+  const primaryResult: TranslatedSOS = {
     detected_source_language: detectedSource,
     target_language: targetLangObj.code,
     target_language_name: targetLangObj.name,
-    // The original the user actually sent — never a model-generated echo.
     original_message: sourceText,
     translated_message: translatedMessage,
-    translated_headline: asString(parsed.translated_headline),
-    translated_action_steps: asStringArray(parsed.translated_action_steps),
-    translated_instructions_for_responders: asString(parsed.translated_instructions_for_responders),
-    translated_first_aid_actions: asStringArray(parsed.translated_first_aid_actions),
-    translated_needs: asStringArray(parsed.translated_needs),
-    // STRICT PRESERVATION of emergency type, category and severity.
     category: locked.category,
     severity: locked.severity,
     emergency_type: locked.type,
     timestamp: new Date().toISOString(),
     model_used: config.model,
-    source: 'nebius_nemotron'
+    source: 'nebius_nemotron',
+    translation_status: 'ok',
+    structured_translation_status: 'none'
   };
+
+  // PHASE 2 is optional and receives only the structured responder fields.
+  // It has its own small token budget; errors here are explicitly recorded but
+  // can never escape and invalidate the already-validated primary translation.
+  const structuredSource = buildStructuredSourceFields(input.currentSOS);
+  const structuredDefinitions = STRUCTURED_FIELD_DEFINITIONS.filter((field) => field.sourceKey in structuredSource);
+  if (structuredDefinitions.length === 0) return primaryResult;
+
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    const timeoutError = new TranslationError(
+      'TRANSLATION_TIMEOUT',
+      'The overall translation time budget expired before structured responder translation could finish.',
+      504
+    );
+    return {
+      ...primaryResult,
+      translation_status: 'partial',
+      structured_translation_status: 'error',
+      structured_translation_error: toStructuredTranslationError(timeoutError)
+    };
+  }
+
+  const structuredSystemPrompt = `You are LifeLine AI's structured emergency-responder translation engine.
+
+Translate ONLY the supplied structured responder/dispatch fields into the target language: ${targetLangObj.name} (${targetLangObj.nativeName}). ${scriptInstruction}
+
+QUALITY AND SAFETY:
+- Use natural target-language grammar and preserve the meaning and urgency of each supplied field.
+- Preserve names and proper nouns, numbers and measurements, ages, quantities, addresses and locations, medication names, times, dates, phone numbers and identifiers.
+- Translate each field only from its corresponding input field; preserve array order and item count.
+- Do not add, invent, summarize, or omit details. Never add medical advice, first-aid actions, equipment, responder instructions, or other facts not present in the corresponding input.
+- Do not create any fields that were not supplied.
+
+OUTPUT — STRICT JSON:
+Return one JSON object containing only the translated keys for the supplied fields. Use these types:
+${structuredDefinitions.map((field) => `- "${field.translatedKey}": ${field.kind}`).join('\n')}
+No markdown, explanations, or other text.`;
+
+  const structuredUserPrompt = `Translate each supplied structured responder field into ${targetLangObj.name} (${targetLangObj.nativeName}), preserving its field and array-item association. These are the only fields to translate; do not translate or generate any user transmission.
+
+STRUCTURED RESPONDER FIELDS:
+${JSON.stringify(structuredSource)}`;
+  const structuredTimeoutMs = Math.max(1, Math.min(remainingMs, TRANSLATION_STRUCTURED_TIMEOUT_MS));
+
+  try {
+    const structuredParsed = await requestTranslationJson({
+      config,
+      systemPrompt: structuredSystemPrompt,
+      userPrompt: structuredUserPrompt,
+      maxTokens: TRANSLATION_STRUCTURED_MAX_TOKENS,
+      timeoutMs: structuredTimeoutMs,
+      phase: 'structured'
+    });
+    const translatedFields = validateStructuredTranslationPayload(structuredParsed, structuredSource);
+    return {
+      ...primaryResult,
+      ...translatedFields,
+      translation_status: 'ok',
+      structured_translation_status: 'ok'
+    };
+  } catch (err) {
+    return {
+      ...primaryResult,
+      translation_status: 'partial',
+      structured_translation_status: 'error',
+      structured_translation_error: toStructuredTranslationError(err)
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------

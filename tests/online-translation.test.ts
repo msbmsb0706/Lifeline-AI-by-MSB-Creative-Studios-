@@ -101,17 +101,17 @@ function validPayload(overrides: Record<string, any> = {}) {
     original_message: EN_TEXT,
     translated_message: TA_TEXT,
     translated_headline: 'தீ விபத்து',
-    translated_action_steps: ['வெளியேறு'],
+    translated_action_steps: ['உடனே வெளியேறு', 'தீயணைப்பு சேவையை அழைக்கவும்'],
     translated_instructions_for_responders: 'காட்சியை மதிப்பிடு',
     translated_first_aid_actions: ['தண்ணீர் ஊற்று'],
-    translated_needs: ['தீயணைப்பு வாகனம்'],
+    translated_needs: ['தீயணைப்பு வாகனம்', 'ஆம்புலன்ஸ்'],
     ...overrides
   };
 }
 
 /** Last upstream request body (parsed) — used to inspect what is sent. */
-function lastRequestBody(): any {
-  return JSON.parse(calls[calls.length - 1].init.body);
+function requestBody(index: number): any {
+  return JSON.parse(calls[index].init.body);
 }
 
 function resetCalls(): void {
@@ -148,10 +148,10 @@ section('A — standalone online-analysis adapter uses the ONLINE translator');
   );
 
   assertEqual(result.status, 'ok', 'standalone online-analysis adapter succeeds');
-  assertEqual(calls.length, 1, 'exactly one upstream translation request was made');
+  assertEqual(calls.length, 2, 'primary and structured translations use separate upstream requests');
   assert(
-    String(calls[0].url).endsWith('/chat/completions'),
-    'the shared online translator called the chat-completions upstream'
+    String(calls[0].url).endsWith('/chat/completions') && String(calls[1].url).endsWith('/chat/completions'),
+    'both translation phases call the chat-completions upstream'
   );
 
   if (result.status === 'ok') {
@@ -161,26 +161,41 @@ section('A — standalone online-analysis adapter uses the ONLINE translator');
     assert(t.model_used !== OFFLINE_TRANSLATION_MODEL, 'the online adapter never substitutes the offline engine');
     assertEqual(t.translated_message, TA_TEXT, 'translated_message is the online translation');
     assertEqual(t.original_message, EN_TEXT, 'original_message is the user transmission');
+    assertEqual(t.translation_status, 'ok', 'a successful structured phase produces overall translation_status ok');
+    assertEqual(t.structured_translation_status, 'ok', 'structured translations are marked available when their phase succeeds');
+    assertEqual(t.translated_headline, 'தீ விபத்து', 'structured headline is merged into the compatible translation object');
     assertEqual(t.target_language, 'ta', 'target language is the requested one');
     assertEqual(t.category, 'FIRE', 'category locked by translation');
     assertEqual(t.severity, 5, 'severity locked by translation');
     assertEqual(t.emergency_type, 'Fire', 'emergency type locked by translation');
   }
 
-  const body = lastRequestBody();
-  const userPrompt: string = body.messages[1].content;
+  const primaryBody = requestBody(0);
+  const primaryPrompt = `${primaryBody.messages[0].content}\n${primaryBody.messages[1].content}`;
   assert(
-    userPrompt.includes(`ORIGINAL TRANSMISSION (the only text to translate):\n${JSON.stringify(EN_TEXT)}`),
-    'the user original transmission is the translation source in the request'
+    primaryBody.messages[1].content.includes(`ORIGINAL TRANSMISSION (the only text to translate):\n${JSON.stringify(EN_TEXT)}`),
+    'the primary request contains the user original transmission as its only translation source'
   );
-  assert(
-    !userPrompt.includes(GENERATED_DISPATCH),
-    'the generated dispatch report is never sent as the translation source'
-  );
-  assert(
-    userPrompt.indexOf('ORIGINAL TRANSMISSION (the only text to translate)') < userPrompt.indexOf('RESPONDER INSTRUCTION:'),
-    'structured responder fields are sent separately, after the original transmission (never as the source)'
-  );
+  assert(primaryPrompt.includes('English (en)') && primaryPrompt.includes('Tamil (தமிழ்)'),
+    'the primary request identifies both source and target languages');
+  assert(!primaryPrompt.includes(GENERATED_DISPATCH), 'the generated dispatch report is never sent as a translation source');
+  for (const field of [
+    'translated_headline',
+    'translated_action_steps',
+    'translated_instructions_for_responders',
+    'translated_first_aid_actions',
+    'translated_needs'
+  ]) {
+    assert(!primaryPrompt.includes(field), `the primary request does not ask for ${field}`);
+  }
+
+  const structuredBody = requestBody(1);
+  const structuredPrompt = `${structuredBody.messages[0].content}\n${structuredBody.messages[1].content}`;
+  assert(structuredPrompt.includes('STRUCTURED RESPONDER FIELDS'), 'the second request is scoped to structured responder fields');
+  assert(structuredPrompt.includes('translated_headline') && structuredPrompt.includes('translated_needs'),
+    'the separate structured request asks for the compatible translated responder keys');
+  assert(!structuredPrompt.includes(EN_TEXT), "the structured request does not receive the user's original transmission");
+  assert(!structuredPrompt.includes(GENERATED_DISPATCH), 'the generated dispatch report is never used as a translation source');
 
   // The offline engine is unreachable here (no fetch would be needed anyway):
   // prove no substitution happened even when the offline engine could answer.
@@ -263,6 +278,83 @@ section('C — online HTTP failure is an explicit error (no offline substitution
     assertEqual(analysis.error.code, 'TRANSLATION_UPSTREAM_HTTP', 'adapter failure code identifies the upstream error');
     assert(!('translation' in analysis), 'no translation object is produced for a failed online translation');
   }
+}
+
+// ---------------------------------------------------------------------------
+// C2. Primary success is preserved when the optional structured call truncates
+// ---------------------------------------------------------------------------
+section('C2 — structured truncation cannot erase a successful primary translation');
+
+{
+  resetCalls();
+  let callIndex = 0;
+  stubFetch(async () => {
+    callIndex += 1;
+    if (callIndex === 1) {
+      return okResponse({
+        detected_source_language: { code: 'en', name: 'English' },
+        target_language: 'ta',
+        target_language_name: 'Tamil',
+        original_message: EN_TEXT,
+        translated_message: TA_TEXT
+      });
+    }
+    return okResponse({ translated_headline: 'தீ விபத்து' }, 'length');
+  });
+
+  const outcome = await resolveEmergencyTranslation(
+    { text: EN_TEXT, targetLanguage: 'ta', sourceLanguage: 'en', currentSOS: CURRENT_SOS },
+    CONFIG
+  );
+
+  assertEqual(outcome.kind, 'ok', 'a truncated structured phase remains a successful primary translation');
+  assertEqual(calls.length, 2, 'the primary and structured phases are separate requests');
+  if (outcome.kind === 'ok') {
+    assertEqual(outcome.data.translated_message, TA_TEXT, 'the validated primary translated_message remains available');
+    assertEqual(outcome.data.original_message, EN_TEXT, 'the exact original transmission remains available');
+    assertEqual(outcome.data.translation_status, 'partial', 'primary success plus structured truncation is partial success');
+    assertEqual(outcome.data.structured_translation_status, 'error', 'structured output is marked unavailable');
+    assertEqual(outcome.data.structured_translation_error?.code, 'TRANSLATION_TRUNCATED', 'structured truncation is explicit');
+    assert(outcome.data.structured_translation_error?.error.includes('primary translated_message are preserved'),
+      'the structured error explicitly promises primary-message preservation');
+    assertEqual(outcome.data.translated_headline, undefined, 'truncated structured output is not partially accepted');
+    assertEqual(outcome.data.source, 'nebius_nemotron', 'the result remains the successful online primary translation');
+    assert(outcome.data.source !== 'offline_fallback', 'no offline translation is substituted');
+  }
+  assertEqual(CURRENT_SOS.raw_transcript, EN_TEXT, 'the stored original source remains unchanged');
+  assert(!requestBody(0).messages[1].content.includes('RESPONDER INSTRUCTION:'),
+    'phase one does not include structured responder fields');
+  assert(!requestBody(1).messages[1].content.includes(EN_TEXT),
+    'phase two does not receive the original user transmission');
+}
+
+// ---------------------------------------------------------------------------
+// C3. Primary truncation remains an explicit total failure
+// ---------------------------------------------------------------------------
+section('C3 — primary truncation is explicit and accepts no partial translation');
+
+{
+  resetCalls();
+  stubFetch(async () => okResponse({
+    target_language: 'ta',
+    original_message: EN_TEXT,
+    translated_message: TA_TEXT
+  }, 'length'));
+
+  const outcome = await resolveEmergencyTranslation(
+    { text: EN_TEXT, targetLanguage: 'ta', sourceLanguage: 'en', currentSOS: CURRENT_SOS },
+    CONFIG
+  );
+
+  assert(outcome.kind === 'error', 'primary finish_reason=length is a total online translation failure');
+  if (outcome.kind === 'error') {
+    assertEqual(outcome.code, 'TRANSLATION_TRUNCATED', 'primary truncation keeps the PR #34 error code');
+    assert(outcome.error.includes('incomplete (truncated) response'), 'primary truncation has the explicit failure reason');
+    assert(outcome.error.includes('original transmission is preserved'), 'primary truncation promises original preservation');
+    assert(!('data' in outcome), 'no partial translated_message is accepted');
+  }
+  assertEqual(calls.length, 1, 'structured translation is not started after primary truncation');
+  assertEqual(CURRENT_SOS.raw_transcript, EN_TEXT, 'the original transmission remains available after primary failure');
 }
 
 // ---------------------------------------------------------------------------

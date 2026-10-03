@@ -1,10 +1,10 @@
 /**
  * Translation follow-up — truncation budget + single failure display.
  *
- * 1. The online translation request now reserves 4096 tokens (was 2400), so
- *    long free-form transmissions no longer come back with
- *    `finish_reason === 'length'`. Truncation is still reported explicitly —
- *    the higher budget never weakens the failure contract.
+ * 1. PR #34's TRANSLATION_MAX_TOKENS ceiling remains 4096. The primary user
+ *    translation has a deliberately smaller dedicated budget and explicit
+ *    truncation handling remains active — the smaller request never weakens
+ *    the failure contract.
  * 2. A failed online translation is shown ONCE: the specific reason appears
  *    once, and "original transmission preserved" appears once — both in the
  *    composed client message and in the rendered SOS card's explicit
@@ -19,7 +19,11 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { installBrowserStub } from './browser-stub.ts';
 import { section, assert, assertEqual } from './helpers.ts';
-import { resolveEmergencyTranslation, TRANSLATION_MAX_TOKENS } from '../server/translation.ts';
+import {
+  resolveEmergencyTranslation,
+  TRANSLATION_MAX_TOKENS,
+  TRANSLATION_PRIMARY_MAX_TOKENS
+} from '../server/translation.ts';
 import {
   ORIGINAL_PRESERVED_SENTENCE,
   ensureOriginalPreservedNotice,
@@ -65,7 +69,7 @@ function validPayload(): string {
 // ---------------------------------------------------------------------------
 section('Follow-up A — the online translation budget is 4096 tokens');
 
-assertEqual(TRANSLATION_MAX_TOKENS, 4096, 'TRANSLATION_MAX_TOKENS is 4096 (raised from 2400)');
+assertEqual(TRANSLATION_MAX_TOKENS, 4096, 'TRANSLATION_MAX_TOKENS remains 4096 as the compatibility ceiling');
 
 {
   const calls: any[] = [];
@@ -86,8 +90,9 @@ assertEqual(TRANSLATION_MAX_TOKENS, 4096, 'TRANSLATION_MAX_TOKENS is 4096 (raise
   assertEqual(calls.length, 1, 'exactly one upstream request was made');
 
   const body = JSON.parse(calls[0].init.body);
-  assertEqual(body.max_tokens, 4096, 'the real upstream request asks for 4096 max_tokens');
-  assertEqual(body.max_tokens, TRANSLATION_MAX_TOKENS, 'the request uses the exported budget constant');
+  assertEqual(TRANSLATION_MAX_TOKENS, 4096, 'the PR #34 global compatibility ceiling remains 4096');
+  assertEqual(body.max_tokens, 1000, 'the primary user translation uses a smaller dedicated budget');
+  assertEqual(body.max_tokens, TRANSLATION_PRIMARY_MAX_TOKENS, 'the primary request uses its exported budget constant');
 
   // The higher budget never weakens the failure contract: a truncated
   // completion is still an explicit TRANSLATION_TRUNCATED error.
