@@ -655,6 +655,18 @@ ${JSON.stringify(sourceText)}`;
   // PHASE 2 is optional and receives only the structured responder fields.
   // It has its own small token budget; errors here are explicitly recorded but
   // can never escape and invalidate the already-validated primary translation.
+  //
+  // The online triage may already have AUTHORED those responder fields in the
+  // requested language (the language selected in the voice / type panel is
+  // passed to /api/analyze-emergency and reported as `visual_card_language`).
+  // Re-translating them into the language they were written in would waste the
+  // request and could report a misleading "responder details are not
+  // translated" notice, so the structured phase is skipped in that case.
+  const authoredCardLanguage = typeof input.currentSOS?.visual_card_language === 'string'
+    ? getLanguageByCodeOrName(input.currentSOS.visual_card_language).code
+    : '';
+  if (authoredCardLanguage && authoredCardLanguage === targetLangObj.code) return primaryResult;
+
   const structuredSource = buildStructuredSourceFields(input.currentSOS);
   const structuredDefinitions = STRUCTURED_FIELD_DEFINITIONS.filter((field) => field.sourceKey in structuredSource);
   if (structuredDefinitions.length === 0) return primaryResult;

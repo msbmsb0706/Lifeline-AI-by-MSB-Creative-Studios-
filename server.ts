@@ -6,10 +6,13 @@ import { classifyEmergencyOffline } from './src/lib/offlineClassifier.ts';
 import {
   detectLanguage,
   standardizeCategory,
+  getLanguageByCodeOrName,
+  isWrittenInScript,
+  EMERGENCY_TRANSLATION_DICTIONARY,
   SUPPORTED_LANGUAGES,
   STANDARDIZED_CATEGORIES
 } from './src/lib/languages.ts';
-import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, DetectedLanguage } from './src/types.ts';
+import { NemotronEmergencyResponse, SeverityLevel, StandardEmergencyCategory, SupportedLanguageInfo, DetectedLanguage } from './src/types.ts';
 import { createPrivacyContactRouter, getPrivacyContactConfigStatus } from './server/privacyContact.ts';
 import { capacitorCors } from './server/capacitorCors.ts';
 import { getEmergencyPartnerConfig } from './server/partnerConfig.ts';
@@ -102,6 +105,142 @@ function audioExtensionFromMime(mimeType: string): string {
   if (mimeType.includes('wav')) return 'wav';
   if (mimeType.includes('mpeg')) return 'mp3';
   return 'webm';
+}
+
+/* ---------------------------------------------------------------------------
+ * Triage card language — the language chosen in the voice / type panel.
+ *
+ * That selection is not only a translation preference: it is the language the
+ * person in distress can actually read. OFFLINE triage has always honoured it
+ * (the bundled phrasebook authors the whole card in the selected language),
+ * while ONLINE triage received the value and used it for nothing — so the card
+ * language depended entirely on a separate, best-effort translation call.
+ *
+ * Deliberately narrow scope:
+ *   - only the on-screen emergency CARD content (headline / priority wording,
+ *     action steps, responder directive, first-aid steps, required units) is
+ *     authored in the selected language;
+ *   - "message" (the dispatch radio report) stays in English for responder
+ *     interoperability, exactly as before;
+ *   - the user's original transmission and its translation are NOT touched:
+ *     the original is preserved verbatim and the translated transmission is
+ *     still produced by the independent POST /api/translate-emergency follow-up.
+ * ------------------------------------------------------------------------- */
+
+/** The language to author the card in; null keeps today's English card. */
+function resolveCardLanguage(targetLanguage: unknown): SupportedLanguageInfo | null {
+  if (typeof targetLanguage !== 'string' || !targetLanguage.trim()) return null;
+  const requested = getLanguageByCodeOrName(targetLanguage);
+  if (!requested || requested.code === 'en') return null;
+  // The bundled phrasebook is the deterministic fallback for every field the
+  // model omits or writes in the wrong script. Without a phrasebook entry there
+  // is nothing to fall back to, so the card stays English rather than partial.
+  return EMERGENCY_TRANSLATION_DICTIONARY[requested.code] ? requested : null;
+}
+
+/**
+ * Deterministic script verification, using the app's own Unicode ranges: a
+ * field counts as written in the selected language only when it really carries
+ * that language's native script, so romanized text is never shown as if it
+ * were translated. Marathi and Hindi share Devanagari, so the SCRIPT is
+ * compared rather than the language — rejecting valid Marathi wording merely
+ * because it is Devanagari would be worse than accepting it.
+ *
+ * Languages the app cannot separate by script (Spanish, French) are NOT
+ * trusted: unverified provider text must never be presented to the person as
+ * their own language, so those cards are authored from the curated phrasebook
+ * instead — the same source OFFLINE triage has always used.
+ */
+function isWrittenInLanguage(text: unknown, language: SupportedLanguageInfo): boolean {
+  return isWrittenInScript(text, language.script);
+}
+
+function localizedCardText(value: unknown, language: SupportedLanguageInfo): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return isWrittenInLanguage(text, language) ? text : '';
+}
+
+/** A list is accepted only when EVERY item carries the target script, so the
+ *  card never shows a half-translated bullet list. */
+function localizedCardList(value: unknown, language: SupportedLanguageInfo): string[] {
+  if (!Array.isArray(value) || value.length === 0) return [];
+  const items = value.map((item) => localizedCardText(item, language));
+  return items.every(Boolean) ? items : [];
+}
+
+/**
+ * Responder asset names, mapped through the bundled phrasebook. An asset the
+ * phrasebook does not know keeps the wording the AI produced: substituting a
+ * guessed emergency resource would be less safe than an English label.
+ */
+function localizedNeeds(needs: string[], language: SupportedLanguageInfo): string[] {
+  const table = Object.entries(EMERGENCY_TRANSLATION_DICTIONARY[language.code]?.needsTranslations || {});
+  return needs.map((need) => {
+    if (isWrittenInLanguage(need, language)) return need;
+    const wanted = need.toLowerCase().trim();
+    if (!wanted) return need;
+    const match = table.find(([english]) => {
+      const key = english.toLowerCase();
+      return key === wanted || key.includes(wanted) || wanted.includes(key);
+    });
+    return match ? match[1] : need;
+  });
+}
+
+/**
+ * Authors the visual card in the selected language. Model text is preferred and
+ * verified; the bundled phrasebook supplies the same content deterministically
+ * whenever the model omits a field or ignores the language requirement, so a
+ * selected language can never silently produce an English card.
+ */
+function authorVisualCardInLanguage(input: {
+  rawCard: Record<string, any> | null;
+  /** The `visual_card` value when the provider answered with the legacy string. */
+  rawCardText?: string;
+  language: SupportedLanguageInfo;
+  category: StandardEmergencyCategory;
+  severity: SeverityLevel;
+  emergencyType: string;
+}): {
+  headline: string;
+  action_steps: string[];
+  instructions_for_responders: string;
+  first_aid_actions: string[];
+} {
+  const dict = EMERGENCY_TRANSLATION_DICTIONARY[input.language.code];
+  const directive = dict?.sampleDirectives?.[input.category] || dict?.sampleDirectives?.OTHER;
+  const priority = `${dict?.priorityLabel || 'Priority'} ${input.severity}/5`;
+
+  const headline =
+    localizedCardText(input.rawCard?.headline, input.language) ||
+    // A provider that answers with the legacy string shape is still honoured,
+    // as long as that string really is in the selected language's script.
+    localizedCardText(input.rawCardText, input.language) ||
+    directive?.headline ||
+    `${input.emergencyType} EMERGENCY (${priority})`;
+
+  const modelSteps = localizedCardList(input.rawCard?.action_steps, input.language);
+  const phrasebookSteps = directive?.actionSteps && directive.actionSteps.length > 0
+    ? directive.actionSteps
+    : [headline];
+
+  const categoryLabel = dict?.categoryLabels?.[input.category] || input.emergencyType;
+  const directiveText = (directive?.responderDirective || '').trim().replace(/\.+$/, '');
+  const fallbackDirective = [`${categoryLabel} — ${priority}`, directiveText].filter(Boolean).join('. ');
+  const responderDirective =
+    localizedCardText(input.rawCard?.instructions_for_responders, input.language) || fallbackDirective;
+
+  const modelFirstAid = localizedCardList(input.rawCard?.first_aid_actions, input.language);
+  const phrasebookFirstAid = directive?.firstAid && directive.firstAid.length > 0
+    ? directive.firstAid
+    : [];
+
+  return {
+    headline,
+    action_steps: modelSteps.length > 0 ? modelSteps : phrasebookSteps,
+    instructions_for_responders: responderDirective,
+    first_aid_actions: modelFirstAid.length > 0 ? modelFirstAid : phrasebookFirstAid
+  };
 }
 
 export async function createApp(dispatchLedger = createConfiguredDispatchLedger(process.env)) {
@@ -566,6 +705,15 @@ RULES:
     const locationString = typeof location === 'string' ? location : (location ? JSON.stringify(location) : '');
     const detectedSourceLang = voiceDetectedLanguage || detectLanguage(trimmedText);
     const preferredLang = language || detectedSourceLang.name;
+    // The language selected in the voice / type panel is the language the
+    // emergency card is authored in. `null` (English / nothing selected) keeps
+    // the existing English card and the existing prompt word for word.
+    const cardLanguage = resolveCardLanguage(targetLanguage);
+    // The language requirement is only ANNOUNCED to the provider when the answer
+    // can be verified by script. Spanish and French cards are authored from the
+    // bundled phrasebook instead, so for them the triage prompt stays exactly the
+    // prompt it has always been.
+    const cardLanguagePrompt = cardLanguage && cardLanguage.script ? cardLanguage : null;
 
     console.log(`[LifeLine API] /api/analyze-emergency called with text: "${trimmedText.slice(0, 50)}..." (len: ${trimmedText.length}, offlineModeForce: ${Boolean(offlineModeForce)})`);
 
@@ -606,6 +754,27 @@ RULES:
 
     // Call Nebius Token Factory backend with Nemotron model
     try {
+      /*
+       * Card-language instruction. It only ever exists when the person picked a
+       * language the app can VERIFY by script — Spanish and French keep the
+       * historical prompt and their card comes from the bundled phrasebook.
+       * It changes WHAT LANGUAGE THE CARD IS WRITTEN IN and nothing else: the
+       * triage category, the severity number, the transcript and the English
+       * dispatch report are untouched, and the original / translated transmission
+       * block below the card is still produced by the separate endpoint.
+       */
+      const cardLanguageRequirement = cardLanguagePrompt
+        ? `\n\nCARD LANGUAGE — the emergency visual card is read by the person in distress and by bystanders, so every visual-card field MUST be written in ${cardLanguagePrompt.name} (${cardLanguagePrompt.nativeName}), in the ${cardLanguagePrompt.script} script — never romanized and never transliterated into Latin letters:\n` +
+          `For ${cardLanguagePrompt.name}, return "visual_card" as an OBJECT with exactly these keys instead of a string:\n` +
+          `{"headline": "string", "action_steps": ["string", "string", "string"], "instructions_for_responders": "string", "first_aid_actions": ["string", "string"]}\n` +
+          `- "headline": high-impact headline for the on-screen emergency visual card.\n` +
+          `- "action_steps": exactly 3 immediate life-saving steps for the person in distress.\n` +
+          `- "instructions_for_responders": one directive for arriving responders that states the priority level as "${EMERGENCY_TRANSLATION_DICTIONARY[cardLanguagePrompt.code]?.priorityLabel || 'Priority'} <severity>/5"; the severity number itself stays 1-5.\n` +
+          `- "first_aid_actions": exactly 2 on-scene first-aid actions.\n` +
+          `- every "needs" entry names the required responder unit or equipment in ${cardLanguagePrompt.name}.\n` +
+          `Never translate or restate the person's own words in these fields, never add facts that are not in the transmission, and keep names, numbers, dosages, addresses, times and phone numbers exactly as given. "transcript" stays verbatim in the language it was received in and "language" names the language the person spoke — never the card language. The dispatch report "message" keeps being written in English.`
+        : '';
+
       const systemPrompt = `You are LifeLine AI, an emergency response triage intelligence engine powered by NVIDIA Nemotron via Nebius Token Factory.
 Analyze the provided emergency distress transcript and return a structured JSON object matching this schema EXACTLY:
 {
@@ -623,7 +792,9 @@ CONSTRAINTS:
 2. "severity" MUST be an integer from 1 to 5 (1=Minor, 2=Moderate, 3=Urgent, 4=Severe, 5=Critical).
 3. "needs" MUST be an array of strings.
 4. Output ONLY valid, parseable JSON matching the schema. No markdown fences (\`\`\`json) and no preamble.
-5. When an ORIGINAL TRANSCRIPT and an ENGLISH TRANSLATION are provided, the original transcript is the AUTHORITATIVE record of the user's speech; the English translation is a machine-generated aid only. If they appear to conflict, prioritize the original transcript. Write "message" and "visual_card" in English for responder interoperability.`;
+5. When an ORIGINAL TRANSCRIPT and an ENGLISH TRANSLATION are provided, the original transcript is the AUTHORITATIVE record of the user's speech; the English translation is a machine-generated aid only. If they appear to conflict, prioritize the original transcript. ${cardLanguagePrompt
+        ? 'Write "message" in English for responder interoperability; the "visual_card" fields follow the CARD LANGUAGE requirement below.'
+        : 'Write "message" and "visual_card" in English for responder interoperability.'}${cardLanguageRequirement}`;
 
       const voiceContextBlock = hasVoiceContext
         ? `\nDETECTED LANGUAGE: ${detectedSourceLang.name} (${detectedSourceLang.code})\nORIGINAL TRANSCRIPT (AUTHORITATIVE USER SPEECH — ${detectedSourceLang.name}):\n"${voiceOriginalTranscript}"${
@@ -633,7 +804,11 @@ CONSTRAINTS:
           }`
         : '';
 
-      const userMessageContent = `EMERGENCY DISTRESS TRANSCRIPT:\n"${trimmedText}"${voiceContextBlock}${locationString ? `\nREPORTED LOCATION: ${locationString}` : ''}\nLanguage hint: ${preferredLang}`;
+      const userMessageContent = `EMERGENCY DISTRESS TRANSCRIPT:\n"${trimmedText}"${voiceContextBlock}${locationString ? `\nREPORTED LOCATION: ${locationString}` : ''}\nLanguage hint: ${preferredLang}${
+        cardLanguagePrompt
+          ? `\nCard language: ${cardLanguagePrompt.name} (${cardLanguagePrompt.nativeName}) — write every "visual_card" field and every "needs" entry in ${cardLanguagePrompt.name}, while "message" stays English.`
+          : ''
+      }`;
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 12000); // 12-second timeout
@@ -716,9 +891,33 @@ CONSTRAINTS:
         ? parsedNemotron.message.trim()
         : trimmedText;
 
-      const visualCardText = typeof parsedNemotron.visual_card === 'string' && parsedNemotron.visual_card.trim()
-        ? parsedNemotron.visual_card.trim()
+      const rawVisualCard = parsedNemotron.visual_card;
+      // With a card language selected the model is asked for the structured
+      // object; a plain string is still accepted (older/alternative providers).
+      const rawVisualCardObject =
+        rawVisualCard && typeof rawVisualCard === 'object' && !Array.isArray(rawVisualCard)
+          ? rawVisualCard as Record<string, any>
+          : null;
+
+      const visualCardText = typeof rawVisualCard === 'string' && rawVisualCard.trim()
+        ? rawVisualCard.trim()
         : `${emergencyType} EMERGENCY (PRIORITY ${validatedSeverity}/5)`;
+
+      // Selected language → the card content itself is authored in it, with the
+      // bundled phrasebook as the deterministic guarantee that no field silently
+      // falls back to English when the provider ignores the requirement.
+      const localizedCard = cardLanguage
+        ? authorVisualCardInLanguage({
+            rawCard: rawVisualCardObject,
+            rawCardText: typeof rawVisualCard === 'string' ? rawVisualCard : '',
+            language: cardLanguage,
+            category: emergencyType as StandardEmergencyCategory,
+            severity: validatedSeverity,
+            emergencyType
+          })
+        : null;
+      const cardHeadline = localizedCard ? localizedCard.headline : visualCardText;
+      const cardNeeds = cardLanguage ? localizedNeeds(validatedNeeds, cardLanguage) : validatedNeeds;
 
       const validatedLang = typeof parsedNemotron.language === 'string' && parsedNemotron.language.trim()
         ? parsedNemotron.language.trim()
@@ -737,25 +936,32 @@ CONSTRAINTS:
         transcript: validatedTranscript,
         emergency_type: emergencyType,
         severity: validatedSeverity,
-        needs: validatedNeeds,
+        needs: cardNeeds,
+        // The responder dispatch report stays English for interoperability.
         message: validatedMessage,
         visual_card: {
-          headline: visualCardText,
+          headline: cardHeadline,
           badge_color: validatedSeverity >= 4 ? 'RED' : validatedSeverity === 3 ? 'ORANGE' : 'YELLOW',
-          action_steps: [
-            visualCardText,
-            'Ensure immediate personal safety and protect vital signs',
-            'Keep communication lines open for incoming responders'
-          ],
+          action_steps: localizedCard
+            ? localizedCard.action_steps
+            : [
+                visualCardText,
+                'Ensure immediate personal safety and protect vital signs',
+                'Keep communication lines open for incoming responders'
+              ],
           priority_symbol: emergencyType === 'MEDICAL' ? 'HEART_PULSE' : emergencyType === 'FIRE' ? 'FLAME' : 'SHIELD_ALERT',
-          instructions_for_responders: `Emergency Category: ${emergencyType} (Priority ${validatedSeverity}/5). Immediate direct on-scene access required.`,
-          first_aid_actions: [
-            'Assess airway, breathing, and circulation',
-            'Do not move injured patient unless in immediate secondary danger'
-          ]
+          instructions_for_responders: localizedCard
+            ? localizedCard.instructions_for_responders
+            : `Emergency Category: ${emergencyType} (Priority ${validatedSeverity}/5). Immediate direct on-scene access required.`,
+          first_aid_actions: localizedCard
+            ? localizedCard.first_aid_actions
+            : [
+                'Assess airway, breathing, and circulation',
+                'Do not move injured patient unless in immediate secondary danger'
+              ]
         },
-        raw_visual_card: visualCardText,
-        visual_card_text: visualCardText,
+        raw_visual_card: cardHeadline,
+        visual_card_text: cardHeadline,
         emergency_category: emergencyType as StandardEmergencyCategory,
         source: 'nebius_nemotron',
         model_used: NEBIUS_MODEL,
@@ -772,6 +978,12 @@ CONSTRAINTS:
         translation_status: 'none',
         translation_error: null
       };
+
+      // Records the language the card was authored in, so the translation
+      // follow-up does not re-translate responder content into the language it is
+      // already written in — that would only add latency and could report a
+      // misleading "responder details are not translated" notice.
+      if (cardLanguage) resultData.visual_card_language = cardLanguage.code;
 
       res.json({
         success: true,

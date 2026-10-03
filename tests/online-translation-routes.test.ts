@@ -417,6 +417,31 @@ if (ready && successfulOnlineTriage) {
   assertEqual(followup.json?.data?.source, 'nebius_nemotron', 'follow-up translation uses the online engine');
   assertEqual(followup.json?.data?.translated_message, TA_TEXT, 'follow-up translation returns the target-language text');
   assertEqual(followup.json?.data?.original_message, EN_TEXT, "follow-up preserves association to the user's original text");
+  // The selected language was sent with the triage request, so the responder
+  // card is ALREADY authored in that language (see triage-language-selection).
+  // Re-translating the card into the language it was written in is therefore
+  // skipped: one provider call, and no misleading "not translated" notice.
+  assertEqual(successfulOnlineTriage.visual_card_language, 'ta', 'triage records the language its card was authored in');
+  assertEqual(translationRequests, 1, 'the redundant structured re-translation is skipped for an already-authored card');
+  assertEqual(followup.json?.data?.structured_translation_status, 'none', 'no structured phase is reported for an already-authored card');
+  assertEqual(lastOriginalFromPrompt(lastTranslationBody), EN_TEXT, 'the single provider call is the primary user-message translation');
+  assert(!lastOriginalFromPrompt(lastTranslationBody).includes('DISPATCH ALERT'), 'generated dispatch text is never sent as primary translation source');
+}
+
+// A target language that DIFFERS from the language the card was authored in
+// still runs the two independently validated phases of PR #38.
+if (ready && successfulOnlineTriage) {
+  mode = 'ok';
+  translationRequests = 0;
+  const otherLanguage = await postJson(`${base}/api/translate-emergency`, {
+    text: successfulOnlineTriage.raw_transcript,
+    targetLanguage: 'en',
+    sourceLanguage: successfulOnlineTriage.detected_language?.code || 'en',
+    currentSOS: successfulOnlineTriage,
+    offlineModeForce: false
+  });
+  assertEqual(otherLanguage.status, 200, 'follow-up into another language succeeds');
+  assertEqual(otherLanguage.json?.data?.translated_message, EN_TEXT, 'the follow-up returns the requested language');
   assertEqual(translationRequests, 2, 'the follow-up endpoint makes separate primary and structured requests');
   assertEqual(lastOriginalFromPrompt(lastPrimaryTranslationBody), EN_TEXT, 'the primary provider receives the original transmission as source');
   assert(!lastOriginalFromPrompt(lastPrimaryTranslationBody).includes('DISPATCH ALERT'), 'generated dispatch text is never sent as primary translation source');
