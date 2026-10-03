@@ -170,7 +170,7 @@ section('A — standalone online-analysis adapter uses the ONLINE translator');
   const body = lastRequestBody();
   const userPrompt: string = body.messages[1].content;
   assert(
-    userPrompt.includes(`ORIGINAL TRANSMISSION (translate word-for-word): "${EN_TEXT}"`),
+    userPrompt.includes(`ORIGINAL TRANSMISSION (the only text to translate):\n${JSON.stringify(EN_TEXT)}`),
     'the user original transmission is the translation source in the request'
   );
   assert(
@@ -178,7 +178,7 @@ section('A — standalone online-analysis adapter uses the ONLINE translator');
     'the generated dispatch report is never sent as the translation source'
   );
   assert(
-    userPrompt.indexOf('ORIGINAL TRANSMISSION (translate word-for-word)') < userPrompt.indexOf('RESPONDER INSTRUCTION:'),
+    userPrompt.indexOf('ORIGINAL TRANSMISSION (the only text to translate)') < userPrompt.indexOf('RESPONDER INSTRUCTION:'),
     'structured responder fields are sent separately, after the original transmission (never as the source)'
   );
 

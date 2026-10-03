@@ -371,16 +371,55 @@ export async function translateEmergencyOnline(
   const locked = lockTriage(input.currentSOS, sourceText);
   const structured = input.currentSOS?.visual_card || {};
 
-  const systemPrompt = `You are LifeLine AI's specialized emergency multilingual translation engine developed by MSB Creative Studios.
-Translate the emergency distress report and radio dispatch message into the target language: ${targetLangObj.name} (${targetLangObj.nativeName}).
+  // Native-writing-system requirement, per target language: Indian regional
+  // languages name their native script explicitly; Latin-script languages get
+  // the standard writing-system requirement instead.
+  const scriptInstruction = targetLangObj.script
+    ? `the correct native ${targetLangObj.script} script — the writing system in which ${targetLangObj.name} is normally written — never romanized or transliterated into Latin letters`
+    : targetLangObj.nativeName.toLowerCase() === targetLangObj.name.toLowerCase()
+      ? `the standard writing system of ${targetLangObj.name} — never transliterated into a different script`
+      : `the standard writing system of ${targetLangObj.name} (${targetLangObj.nativeName}) — never transliterated into a different script`;
 
-CRITICAL SAFETY & MEDICAL INVARIANTS:
-1. NEVER alter or change the emergency type ("${locked.type}"), the standardized emergency category ("${locked.category}"), or the severity level (${locked.severity}). These are locked life-critical triage parameters.
-2. Preserve the emergency meaning, high-urgency tone, and specific assistance required.
-3. Translate with high linguistic accuracy and natural phrasing into ${targetLangObj.name} (using its native script: ${targetLangObj.script || targetLangObj.name}).
-4. "translated_message" MUST be a FAITHFUL, LITERAL translation of ONLY the user's original transmission, word-for-word where possible. It must NEVER add, summarize, reformat, or regenerate dispatch/triage content (no added headlines, priorities, categories, responder directives, or instructions). If the original is a single plain sentence of distress, "translated_message" is exactly that sentence translated.
-5. The structured responder/dispatch fields (translated_headline, translated_action_steps, translated_instructions_for_responders, translated_first_aid_actions, translated_needs) are translated SEPARATELY from the provided structured content — do not fold them into translated_message.
-6. Output STRICTLY a valid JSON object matching this schema:
+  const systemPrompt = `You are LifeLine AI's specialized emergency multilingual translation engine developed by MSB Creative Studios.
+
+TASK: Translate the user's ORIGINAL TRANSMISSION (provided in the user message) into the target language: ${targetLangObj.name} (${targetLangObj.nativeName}).
+
+TRANSLATION QUALITY:
+1. Natural and professional: use native ${targetLangObj.name} grammar, word order and idiom. When a natural phrasing preserves the exact meaning, prefer the grammatically natural rendering over a mechanical word-for-word translation.
+2. Semantically faithful: convey every meaning, fact and detail of the original transmission — and only those.
+3. Emergency-appropriate: keep the tone and plainness of the original, the way a native ${targetLangObj.name} speaker would communicate an emergency to first responders.
+4. Concise when the original is concise: a short transmission (e.g. "Help", "Fire", "I am trapped", "I can't breathe", "My child is unconscious") MUST come back just as short — the minimal natural translation, never expanded into a longer explanation or report.
+5. Correct writing system: write the translation in ${scriptInstruction}.
+
+FIDELITY & PRESERVATION (keep these exactly as transmitted):
+- Names and proper nouns: keep personal names, place names and organization names the same (transliteration into the target script only when that language normally writes them that way).
+- Numbers and measurements: keep every number, measurement, dosage and unit exactly as given.
+- Ages: keep every age exactly as given.
+- Quantities: keep every count or quantity exact.
+- Addresses and locations: keep street names, landmarks, PIN codes and place names complete and accurate.
+- Medication names: keep medicine/medication names exactly as given.
+- Times and dates: keep times, durations and dates unchanged.
+- Phone numbers and identifiers: reproduce every digit and character of phone numbers and IDs exactly.
+- Urgency: preserve the urgency already present in the original — never increase or reduce it.
+- Emergency and medical terminology: use the standard terms that first responders in ${targetLangObj.name} expect for the user's words.
+
+HARD LIMITS — "translated_message" MUST ONLY be the translation of the user's original transmission. It must NEVER:
+- add, invent or imply any information that is not in the original transmission;
+- summarize, reformat or reinterpret the original;
+- become a dispatch report (no added headlines, priorities, emergency categories, severity levels or required units);
+- add medical advice or a diagnosis;
+- add first-aid instructions;
+- add responder instructions or directives.
+If the original transmission is one short word or sentence, "translated_message" is exactly that word or sentence translated — nothing more.
+
+LOCKED TRIAGE VALUES:
+The emergency type ("${locked.type}"), the standardized emergency category ("${locked.category}") and the severity level (${locked.severity}) are locked life-critical triage parameters. Never change them, never translate them into different meanings, and never fold them into "translated_message".
+
+SEPARATE STRUCTURED FIELDS:
+The structured responder/dispatch fields (translated_headline, translated_action_steps, translated_instructions_for_responders, translated_first_aid_actions, translated_needs) are translated SEPARATELY, only from the structured content provided for them. Their text must never appear in "translated_message", and the user's transmission must not be rewritten into them.
+
+OUTPUT — STRICT JSON:
+Output exactly one valid JSON object — pure JSON, no markdown fences, no extra text — matching this schema:
 {
   "detected_source_language": {
     "code": "${detectedSource.code}",
@@ -388,23 +427,27 @@ CRITICAL SAFETY & MEDICAL INVARIANTS:
   },
   "target_language": "${targetLangObj.code}",
   "target_language_name": "${targetLangObj.name}",
-  "original_message": string (exact original message),
-  "translated_message": string (faithful translation of the original message ONLY),
-  "translated_headline": string (urgent headline in ${targetLangObj.name}),
-  "translated_action_steps": string[] (provided action steps in ${targetLangObj.name}),
-  "translated_instructions_for_responders": string (on-arrival directive in ${targetLangObj.name}),
-  "translated_first_aid_actions": string[] (provided first aid protocols in ${targetLangObj.name}),
-  "translated_needs": string[] (translated list of needed units/equipment in ${targetLangObj.name})
+  "original_message": string (the exact original transmission, unchanged),
+  "translated_message": string (the natural, faithful translation of the original transmission ONLY),
+  "translated_headline": string (the provided headline in ${targetLangObj.name}),
+  "translated_action_steps": string[] (the provided action steps in ${targetLangObj.name}),
+  "translated_instructions_for_responders": string (the provided on-arrival directive in ${targetLangObj.name}),
+  "translated_first_aid_actions": string[] (the provided first aid actions in ${targetLangObj.name}),
+  "translated_needs": string[] (the provided required units in ${targetLangObj.name})
 }
-Translate only the provided structured content; do not invent additional medical advice or instructions.
-Do NOT include markdown fences (\`\`\`json). Output pure JSON only.`;
+Translate only the provided structured content — never invent additional medical advice, responder instructions or required equipment.
+Do NOT include markdown fences. Output pure JSON only.`;
 
   // ONLY the user's original transmission is the translation source. The
   // generated dispatch/responder fields travel separately for their own keys.
-  const userPrompt = `Translate the user's ORIGINAL TRANSMISSION into ${targetLangObj.name} (${targetLangObj.nativeName}) — output this faithful translation in the "translated_message" JSON field. Do not paraphrase, summarize, or regenerate it as a dispatch report.
-ORIGINAL TRANSMISSION (translate word-for-word): "${sourceText}"
+  // The transmission is embedded as a JSON string so quotes/newlines in the
+  // user's text can never break the prompt structure.
+  const userPrompt = `Translate the user's ORIGINAL TRANSMISSION into ${targetLangObj.name} (${targetLangObj.nativeName}) and put that one faithful, natural translation in the "translated_message" JSON field. The original transmission is the ONLY text that may go into "translated_message": do not paraphrase, summarize, expand, or regenerate it as a dispatch report.
 
-Separately, translate these structured responder/dispatch fields into ${targetLangObj.name} for their own JSON keys:
+ORIGINAL TRANSMISSION (the only text to translate):
+${JSON.stringify(sourceText)}
+
+SEPARATELY, translate ONLY the provided structured responder/dispatch fields below into ${targetLangObj.name}, each for its own JSON key — never into "translated_message":
 ORIGINAL HEADLINE: "${structured.headline || locked.type}"
 RESPONDER INSTRUCTION: "${structured.instructions_for_responders || 'Assess scene safety and vitals.'}"
 ACTION STEPS: ${JSON.stringify(structured.action_steps || [])}

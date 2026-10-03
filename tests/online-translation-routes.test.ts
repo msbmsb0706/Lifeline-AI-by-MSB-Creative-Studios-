@@ -186,8 +186,14 @@ const upstream: Server = createServer((req, res) => {
 /** The ORIGINAL TRANSMISSION the server asked the provider to translate. */
 function lastOriginalFromPrompt(body: any): string {
   const userPrompt: string = body?.messages?.[1]?.content || '';
-  const match = /ORIGINAL TRANSMISSION \(translate word-for-word\): "([\s\S]*?)"/.exec(userPrompt);
-  return match?.[1] || '';
+  // The transmission is embedded as a single-line JSON string.
+  const match = /ORIGINAL TRANSMISSION \(the only text to translate\):\n(".*")/.exec(userPrompt);
+  if (!match) return '';
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return '';
+  }
 }
 
 interface HttpResponse {
