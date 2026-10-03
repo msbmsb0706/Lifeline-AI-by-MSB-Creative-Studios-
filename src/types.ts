@@ -151,6 +151,12 @@ export interface EmergencyAnalysisResult extends NemotronEmergencyResponse {
   /** Present when translation_status === 'error'. */
   translation_error?: TranslationErrorInfo | null;
   active_view_language?: 'original' | 'translated';
+  /**
+   * Language the ONLINE triage card content itself was authored in — the
+   * language selected in the voice / type panel. Absent for the default English
+   * card, so existing records and the English flow stay exactly as they were.
+   */
+  visual_card_language?: string;
   nebius_connected?: boolean;
   /** Present when the emergency was captured via multilingual voice ASR. */
   voice_capture?: VoiceCaptureMetadata;

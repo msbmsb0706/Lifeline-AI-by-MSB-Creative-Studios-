@@ -180,6 +180,32 @@ export function getSpeechRecognitionLocale(languageCode?: string): string {
 }
 
 /**
+ * Unicode ranges of the native writing systems of the supported languages.
+ * Shared by detection and by any code that must verify that a piece of text is
+ * really written in a language's own script (never romanization).
+ */
+export const LANGUAGE_SCRIPT_RANGES: Record<string, RegExp> = {
+  Tamil: /[\u0B80-\u0BFF]/,
+  Devanagari: /[\u0900-\u097F]/,
+  Telugu: /[\u0C00-\u0C7F]/,
+  Kannada: /[\u0C80-\u0CFF]/,
+  Malayalam: /[\u0D00-\u0D7F]/,
+  Bengali: /[\u0980-\u09FF]/
+};
+
+/**
+ * True only when the text actually contains characters of the given script.
+ * Used to accept a generated emergency card only if it is genuinely written in
+ * the language the person selected — romanized text is not.
+ */
+export function isWrittenInScript(text: unknown, scriptName?: string): boolean {
+  if (!scriptName) return false;
+  const range = LANGUAGE_SCRIPT_RANGES[scriptName];
+  if (!range || typeof text !== 'string' || !text.trim()) return false;
+  return range.test(text);
+}
+
+/**
  * High-accuracy multi-script & heuristic language detector
  * Supports English, Spanish, French, and Indian Regional (Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, Marathi)
  */
