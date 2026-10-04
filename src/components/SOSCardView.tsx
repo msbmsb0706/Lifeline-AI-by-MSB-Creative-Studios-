@@ -29,8 +29,6 @@ import {
   Globe,
   Lock,
   RefreshCw,
-  Eye,
-  Columns,
   Share2,
   Shield
 } from 'lucide-react';
@@ -112,15 +110,11 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   // A saved local SOS is shown directly on this card, clearly marked NOT SENT.
   const [dispatchedSosId, setDispatchedSosId] = useState<string | null>(null);
 
-  // View mode for SOS card: 'translated' (if available) or 'original' or 'side-by-side'
-  const [viewMode, setViewMode] = useState<'translated' | 'original' | 'dual'>(
-    result.translation ? 'translated' : 'original'
-  );
-
-  // Update view mode if a new translation arrives
+  // A translation arriving never changes the CARD (the card is always the
+  // triage-authored card); it only makes the card's translation language
+  // selector show the language the displayed SOS message was translated into.
   useEffect(() => {
     if (result.translation) {
-      setViewMode('translated');
       setSelectedTargetLang(result.translation.target_language);
     }
   }, [result.translation]);
@@ -289,7 +283,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   const categoryMeta =
     STANDARDIZED_CATEGORIES.find((c) => c.id === currentCategory) || STANDARDIZED_CATEGORIES[0];
 
-  // Active displayed content based on translation state & viewMode
+  // The card body is always the triage-authored card (never swapped by a translation).
   const hasTranslation = Boolean(result.translation);
 
   // Never present empty, generated, or offline-placeholder text as a genuine
@@ -321,7 +315,6 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   // the country is unknown/unconfigured. Never invented, never universal.
   const selectedCountry = getSelectedCountry();
   const configuredEmergencyNumber = getCountryEmergencyNumber(selectedCountry);
-  const showTranslated = hasTranslation && viewMode !== 'original';
 
   /**
    * The user's OWN words, resolved with the same priority the translator uses
@@ -341,25 +334,34 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   const originalOrGenerated = originalTransmission || result.message || '';
   const originalIsGeneratedFallback = originalTransmission === null;
 
-  const activeHeadline = showTranslated && result.translation?.translated_headline
-    ? result.translation.translated_headline
-    : visualCardObj.headline;
+  // The CARD is ALWAYS the triage-authored card. The language chosen beside the
+  // microphone / text field triages it, and translating the SOS MESSAGE below
+  // never rewrites it: translating changes exactly ONE thing — the transmission
+  // block (the person's own words) — so a card triaged in the caller's language
+  // stays readable in that language while the message can be handed to a
+  // responder or bystander in a different one.
+  const activeHeadline = visualCardObj.headline;
 
-  const activeActionSteps = showTranslated && result.translation?.translated_action_steps && result.translation.translated_action_steps.length > 0
-    ? result.translation.translated_action_steps
-    : visualCardObj.action_steps;
+  const activeActionSteps = visualCardObj.action_steps;
 
-  const activeResponderInstructions = showTranslated && result.translation?.translated_instructions_for_responders
-    ? result.translation.translated_instructions_for_responders
-    : visualCardObj.instructions_for_responders;
+  const activeResponderInstructions = visualCardObj.instructions_for_responders;
 
-  const activeFirstAid = showTranslated && result.translation?.translated_first_aid_actions && result.translation.translated_first_aid_actions.length > 0
-    ? result.translation.translated_first_aid_actions
-    : visualCardObj.first_aid_actions;
+  const activeFirstAid = visualCardObj.first_aid_actions;
 
-  const activeNeeds = showTranslated && result.translation?.translated_needs && result.translation.translated_needs.length > 0
-    ? result.translation.translated_needs
-    : result.needs;
+  const activeNeeds = result.needs;
+
+  // The language the triage card is authored in (the voice / type selection),
+  // independent of whatever language the SOS message is translated into.
+  const cardLanguageCode = getLanguageByCodeOrName(
+    result.visual_card_language || result.detected_language?.code || 'en'
+  ).code;
+  const cardLanguageInfo = getLanguageByCodeOrName(cardLanguageCode);
+
+  // The translated SOS message — the only content the translation changes — is
+  // what Share / Save / the saved queue record carry. Only a safety-validated
+  // translation is used; otherwise the generated dispatch report is kept.
+  const deliveryMessage =
+    hasTranslation && safeTranslatedMessage ? safeTranslatedMessage : result.message;
 
   const detectedSourceLangInfo = result.detected_language
     ? getLanguageByCodeOrName(result.detected_language.code)
@@ -374,7 +376,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
   };
 
   const handleConfirmedShare = async () => {
-    const alertMessage = showTranslated && safeTranslatedMessage ? safeTranslatedMessage : result.message;
+    const alertMessage = deliveryMessage;
 
     const locSuffix = result.location_coordinates
       ? `\nGPS Location: https://maps.google.com/?q=${result.location_coordinates.latitude},${result.location_coordinates.longitude} (${result.location_coordinates.latitude.toFixed(5)}, ${result.location_coordinates.longitude.toFixed(5)})`
@@ -411,7 +413,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
       emergencyType: result.emergency_type,
       category: result.emergency_category,
       severity: result.severity,
-      message: showTranslated && safeTranslatedMessage ? safeTranslatedMessage : result.message,
+      message: deliveryMessage,
       gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
       source: result.source === 'nebius_nemotron' ? 'online' : 'offline',
       originalTranscript: result.raw_transcript || result.transcript || undefined,
@@ -522,7 +524,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             id="read-aloud-sos-btn"
             onClick={() => {
               const textToRead = `Emergency Alert: ${activeHeadline}. Priority ${result.severity} of 5. Emergency Category: ${currentCategory}. Type: ${result.emergency_type}. Required assistance: ${activeNeeds.join(', ')}. Instructions: ${activeResponderInstructions}. Immediate action: ${activeActionSteps.join('. ')}`;
-              handleSpeakAloud(textToRead, showTranslated ? result.translation?.target_language : result.detected_language?.code);
+              handleSpeakAloud(textToRead, cardLanguageCode);
             }}
             title={isSpeaking ? 'Stop speaking' : 'Read aloud for first responders or bystanders'}
             className={`p-2 rounded-lg text-xs font-bold transition-all ${
@@ -654,52 +656,33 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
         </div>
       </div>
 
-      {/* Translation View Mode Toggle (If translation is present) */}
+      {/* SOS message translation status. The card ABOVE is always the
+          triage-authored card and is never rewritten by a translation; only the
+          transmission block below (the person's own words) is translated. */}
       {hasTranslation && (
-        <div className="mb-3 p-2 rounded-xl bg-neutral-900/90 border border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-xs">
-          <div className="flex items-center gap-1.5 text-neutral-300 font-medium">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Translated into:</span>
-            <span className="font-bold text-white uppercase tracking-wide">
-              {result.translation?.target_language_name}
+        <div
+          id="sos-translation-status"
+          className="mb-3 p-2 rounded-xl bg-neutral-900/90 border border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-xs"
+        >
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-neutral-300 font-medium">
+            <span className="flex items-center gap-1.5" title="The card keeps the language chosen beside the microphone / text field.">
+              <Lock className="w-3 h-3 text-amber-400 shrink-0" />
+              <span>Card unchanged:</span>
+              <span className="font-bold text-white">
+                {cardLanguageInfo.name} ({cardLanguageInfo.nativeName})
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span>SOS message translated into:</span>
+              <span className="font-bold text-white uppercase tracking-wide">
+                {result.translation?.target_language_name}
+              </span>
             </span>
           </div>
-
-          {/* View selector: Translated | Original | Dual / Side-by-Side */}
-          <div className="flex items-center gap-1 bg-black/60 p-1 rounded-lg border border-neutral-800">
-            <button
-              onClick={() => setViewMode('translated')}
-              className={`px-2.5 py-1 rounded text-[11px] font-bold transition-colors ${
-                viewMode === 'translated'
-                  ? 'bg-emerald-600 text-white shadow'
-                  : 'text-neutral-400 hover:text-white'
-              }`}
-            >
-              <Eye className="w-3 h-3 inline mr-1" />
-              Show Translated
-            </button>
-            <button
-              onClick={() => setViewMode('original')}
-              className={`px-2.5 py-1 rounded text-[11px] font-bold transition-colors ${
-                viewMode === 'original'
-                  ? 'bg-neutral-700 text-white shadow'
-                  : 'text-neutral-400 hover:text-white'
-              }`}
-            >
-              Original ({detectedSourceLangInfo.code.toUpperCase()})
-            </button>
-            <button
-              onClick={() => setViewMode('dual')}
-              className={`px-2.5 py-1 rounded text-[11px] font-bold transition-colors ${
-                viewMode === 'dual'
-                  ? 'bg-amber-600 text-white shadow'
-                  : 'text-neutral-400 hover:text-white'
-              }`}
-            >
-              <Columns className="w-3 h-3 inline mr-1" />
-              Dual View
-            </button>
-          </div>
+          <span className="text-[10px] text-neutral-400">
+            Shown below with the original — nothing else changes.
+          </span>
         </div>
       )}
 
@@ -770,9 +753,12 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
                 <Radio className="w-3.5 h-3.5 text-red-400" />
                 <span>Required Assistance & Units</span>
               </div>
-              {showTranslated && (
-                <span className="text-[10px] text-emerald-400 font-bold">
-                  {result.translation?.target_language_name}
+              {hasTranslation && (
+                <span
+                  className="text-[10px] text-neutral-400 font-mono"
+                  title="The card keeps the triage language; only the SOS message below is translated."
+                >
+                  {cardLanguageInfo.name}
                 </span>
               )}
             </div>
@@ -793,8 +779,13 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
           <div className="mt-3 pt-3 border-t border-neutral-800">
             <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-1 flex items-center justify-between">
               <span>Responder On-Arrival Directive</span>
-              {showTranslated && (
-                <span className="text-[10px] text-neutral-400">Translated</span>
+              {hasTranslation && (
+                <span
+                  className="text-[10px] text-neutral-400 font-mono"
+                  title="The card keeps the triage language; only the SOS message below is translated."
+                >
+                  {cardLanguageInfo.name}
+                </span>
               )}
             </div>
             <p className="text-xs sm:text-sm font-semibold text-neutral-200 leading-relaxed bg-neutral-900/80 p-2.5 rounded-lg border border-neutral-800">
@@ -813,9 +804,12 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
               <span className="w-2 h-2 rounded-full bg-red-500" />
               <span>Immediate Survival Action Steps</span>
             </div>
-            {showTranslated && (
-              <span className="text-[10px] text-emerald-400 font-mono">
-                {result.translation?.target_language_name}
+            {hasTranslation && (
+              <span
+                className="text-[10px] text-neutral-400 font-mono"
+                title="The card keeps the triage language; only the SOS message below is translated."
+              >
+                {cardLanguageInfo.name}
               </span>
             )}
           </div>
@@ -838,9 +832,12 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <span>On-Scene First Aid Protocols</span>
             </div>
-            {showTranslated && (
-              <span className="text-[10px] text-emerald-400 font-mono">
-                {result.translation?.target_language_name}
+            {hasTranslation && (
+              <span
+                className="text-[10px] text-neutral-400 font-mono"
+                title="The card keeps the triage language; only the SOS message below is translated."
+              >
+                {cardLanguageInfo.name}
               </span>
             )}
           </div>
@@ -1241,7 +1238,7 @@ export const SOSCardView: React.FC<SOSCardViewProps> = ({
             emergencyType: result.emergency_type,
             category: result.emergency_category,
             severity: result.severity,
-            message: showTranslated && safeTranslatedMessage ? safeTranslatedMessage : result.message,
+            message: deliveryMessage,
             gps: result.location_coordinates ? { latitude: result.location_coordinates.latitude, longitude: result.location_coordinates.longitude } : null,
             source: result.source === 'nebius_nemotron' ? 'online' : 'offline',
             originalTranscript: result.raw_transcript || result.transcript || undefined,
