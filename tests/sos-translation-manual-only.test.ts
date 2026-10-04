@@ -25,6 +25,7 @@
  * POST /api/translate-emergency from the person's own words.
  */
 import { installDomHarness, installReactInputProbeEnvironment, wait, waitFor } from './dom-harness.ts';
+import { getPendingQueue } from '../src/lib/emergencyPartnerQueue.ts';
 import { mockResponse } from './browser-stub.ts';
 import { section, assert, assertEqual } from './helpers.ts';
 
@@ -330,6 +331,152 @@ section('A failed manual translation stays explicit and never substitutes offlin
     assert(retried, 'a deliberate second tap retries and succeeds');
     assertEqual(app.h.document.getElementById('translation-unavailable-state'), null,
       'the successful retry clears the prior failure state');
+  } finally {
+    await app.unmount();
+  }
+}
+
+
+// A card AUTHORED by triage in Hindi (the language chosen beside the microphone /
+// text field), while the person actually spoke Tamil.
+const HI_HEADLINE = 'गंभीर चिकित्सा आपातकाल (प्राथमिकता 5/5)';
+const HI_STEP_1 = 'तुरंत आपातकालीन नंबर पर कॉल करें';
+
+function hindiAuthoredResult(timestamp: string) {
+  return {
+    ...onlineResult(timestamp),
+    visual_card_language: 'hi',
+    visual_card: {
+      headline: HI_HEADLINE,
+      badge_color: 'RED',
+      action_steps: [HI_STEP_1, 'दरवाजा खुला रखें', 'मरीज को न हिलाएँ'],
+      priority_symbol: 'HEART_PULSE',
+      instructions_for_responders: 'आपातकालीन चिकित्सा सहायता — प्राथमिकता 5/5.',
+      first_aid_actions: ['श्वसन मार्ग खुला रखें']
+    }
+  };
+}
+
+// The translation of the SOS MESSAGE, with its own (different) structured
+// fields — which must NOT replace the card.
+const EN_TRANSLATED_HEADLINE = 'CRITICAL MEDICAL EMERGENCY';
+const EN_TRANSLATED_STEP = 'Call an ambulance immediately';
+
+function englishStructuredTranslation() {
+  return {
+    ...englishTranslation(),
+    translated_headline: EN_TRANSLATED_HEADLINE,
+    translated_action_steps: [EN_TRANSLATED_STEP],
+    translated_instructions_for_responders: 'Emergency Category: MEDICAL (Priority 5/5).',
+    translated_first_aid_actions: ['Keep the person still'],
+    translated_needs: ['Ambulance']
+  };
+}
+
+section('The card stays exactly as triaged — only the SOS message is translated');
+{
+  const app = await mountApp(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    if (url === '/api/analyze-emergency') {
+      return mockResponse(200, { success: true, data: hindiAuthoredResult('card-stays-triaged') });
+    }
+    if (url === '/api/translate-emergency') {
+      assertEqual(body?.targetLanguage, 'en', 'the SOS message is requested in the language chosen on the card');
+      return mockResponse(200, { success: true, data: englishStructuredTranslation() });
+    }
+    throw new Error(`Unexpected request in App test: ${url}`);
+  });
+
+  try {
+    await app.submitTamilPresetWithTriageHindi();
+    await app.waitForCard();
+    const cardBefore = app.h.document.getElementById('visual-sos-card')?.textContent || '';
+    assert(cardBefore.includes(HI_HEADLINE), 'the card is triaged in the selected language (Hindi)');
+
+    await app.click('translate-sos-btn');
+    let translated = false;
+    await act(async () => {
+      translated = await waitFor(
+        () => (app.h.document.getElementById('dispatch-transmission-container')?.textContent || '').includes(TRANSLATED_TEXT),
+        2000
+      );
+    });
+    assert(translated, 'the SOS message is translated after the explicit tap');
+
+    // The card: still exactly the triage output — Hindi, unchanged.
+    const cardAfter = app.h.document.getElementById('visual-sos-card')?.textContent || '';
+    assert(cardAfter.includes(HI_HEADLINE), 'the card headline stays in the triage language after translating');
+    assert(cardAfter.includes(HI_STEP_1), 'the card action steps stay in the triage language after translating');
+    assert(!cardAfter.includes(EN_TRANSLATED_HEADLINE),
+      'the translated structured headline never replaces the card headline');
+    assert(!cardAfter.includes(EN_TRANSLATED_STEP),
+      'the translated structured steps never replace the card steps');
+
+    // Only one thing changed: the SOS message below, next to the original words.
+    const transmission = app.h.document.getElementById('dispatch-transmission-container')?.textContent || '';
+    assert(transmission.includes(TRANSLATED_TEXT), 'the translated SOS message is shown');
+    assert(transmission.includes(ORIGINAL_TEXT), 'the person\'s original words stay visible next to it');
+    assert(transmission.includes('SOS message translated into') || (app.h.document.body.textContent || '').includes('SOS message translated into'),
+      'the status states that only the SOS message was translated');
+    assert((app.h.document.body.textContent || '').includes('Card unchanged'),
+      'the status states that the card itself is unchanged');
+    assertEqual(app.h.document.getElementById('sos-translation-status') !== null, true,
+      'the SOS translation status bar is rendered');
+  } finally {
+    await app.unmount();
+  }
+}
+
+section('The translated SOS message is what gets saved with the record');
+{
+  const app = await mountApp(async (url) => {
+    if (url === '/api/analyze-emergency') {
+      return mockResponse(200, { success: true, data: hindiAuthoredResult('saved-translation') });
+    }
+    if (url === '/api/translate-emergency') {
+      return mockResponse(200, { success: true, data: englishStructuredTranslation() });
+    }
+    // Partner endpoints stay inert: this test only inspects the saved record.
+    if (url.includes('/api/emergency-partner')) {
+      return mockResponse(200, { success: true, data: { configured: false } });
+    }
+    throw new Error(`Unexpected request in App test: ${url}`);
+  });
+
+  try {
+    await app.submitTamilPresetWithTriageHindi();
+    await app.waitForCard();
+    await app.click('translate-sos-btn');
+    let translated = false;
+    await act(async () => {
+      translated = await waitFor(
+        () => (app.h.document.getElementById('dispatch-transmission-container')?.textContent || '').includes(TRANSLATED_TEXT),
+        2000
+      );
+    });
+    assert(translated, 'the SOS message is translated before saving');
+
+    await app.click('save-local-sos-btn');
+    let consentShown = false;
+    await act(async () => {
+      consentShown = await waitFor(() => app.h.document.getElementById('consent-confirm-send-btn') !== null, 2000);
+    });
+    assert(consentShown, 'saving a real SOS still requires explicit confirmation');
+    await app.click('consent-confirm-send-btn');
+    let saved = false;
+    await act(async () => {
+      saved = await waitFor(() => getPendingQueue().length > 0, 2000);
+      await wait(30);
+    });
+    assert(saved, 'the confirmed SOS record is stored locally');
+    const record = getPendingQueue()[0]?.sosPackage;
+    assertEqual(record?.originalTranscript, ORIGINAL_TEXT, 'the saved record keeps the person\'s own words verbatim');
+    assertEqual(record?.message, TRANSLATED_TEXT,
+      'the saved record carries the translated SOS message a responder can read');
+    assertEqual(record?.translation?.translatedMessage, TRANSLATED_TEXT,
+      'the saved record stores the translation next to the original for later reading');
+    assertEqual(record?.translation?.targetLanguageName, 'English',
+      'the saved record names the language the SOS message was translated into');
   } finally {
     await app.unmount();
   }
