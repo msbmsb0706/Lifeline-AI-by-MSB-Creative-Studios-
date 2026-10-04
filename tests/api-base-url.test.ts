@@ -240,13 +240,11 @@ assert(
   'partner config lookup is routed through apiUrl()'
 );
 
-// The translation request is separate and user-initiated: the Android fix only
-// moved it to the right origin, and it must keep going through the helper with
-// the applied mode stated explicitly (an online failure never silently turns
-// into an offline translation).
+// Android translation stays ONLINE-only: the fix moves the request to the
+// right origin; it must not open any offline-translation fallback path.
 assert(
-  appSource.includes("apiUrl('/api/translate-emergency')") && appSource.includes('offlineModeForce: offlineForce'),
-  'the separate translate request still uses apiUrl() and states the applied mode'
+  appSource.includes('options.onlineOnly') && appSource.includes('onlineOnly: true'),
+  'onlineOnly translation behavior is preserved (Android online translation never silently falls back)'
 );
 
 // The fix must NOT load the remote site into the WebView: no server.url.

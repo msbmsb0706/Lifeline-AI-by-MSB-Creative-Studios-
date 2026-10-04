@@ -132,9 +132,9 @@ export function buildApiUrl(baseUrl: string, apiPath: string): string {
  *   fetch(apiUrl('/api/translate-emergency'), ...)
  *
  * On the web this returns the path unchanged; inside the Capacitor Android
- * app it returns the absolute production backend URL. Failure behavior is
- * unchanged — a failed network request still fails explicitly; this helper
- * only decides which origin is asked.
+ * app it returns the absolute production backend URL. Online-ONLY behaviors
+ * (e.g. onlineOnly translation) are unchanged — a failed network request
+ * still fails explicitly; this helper only decides which origin is asked.
  */
 export function apiUrl(apiPath: string): string {
   return buildApiUrl(resolveApiBaseUrl(), apiPath);

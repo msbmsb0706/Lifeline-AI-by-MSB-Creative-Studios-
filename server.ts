@@ -973,9 +973,8 @@ CONSTRAINTS:
         detected_language: detectedSourceLang,
         voice_capture: sanitizedVoiceCapture || undefined,
         nebius_connected: true,
-        // Translation is a separate, user-initiated request (the card's
-        // "Translate SOS" action) so it can never delay or block delivery of
-        // the successful online triage result.
+        // Translation is a separate follow-up request so a slow translator can
+        // never delay or block delivery of the successful online triage result.
         translation_status: 'none',
         translation_error: null
       };
