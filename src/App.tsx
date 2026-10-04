@@ -495,12 +495,8 @@ export default function App() {
       const result = attempt.data;
       setNebiusConnected(result.source === 'nebius_nemotron' || Boolean(result.nebius_connected));
       if (activeVoiceCapture && !result.voice_capture) result.voice_capture = activeVoiceCapture;
-      // Triage is rendered and recorded on its own. The SOS TRANSLATION is a
-      // separate, user-initiated action and is NEVER started here: the language
-      // picked beside the microphone/text field only triages the card in that
-      // language (unchanged), while the transmission below the card is
-      // translated only after the person taps "Translate SOS" on the card, with
-      // the card's own language selection (unchanged, already independent).
+      // Render and record the successful Nemotron result before starting any
+      // independent translation request; a slow translator cannot hold the SOS.
       setCurrentResult(result);
       saveReportToHistory(result);
       if (result.translation_status === 'error' && result.translation_error) {
@@ -511,6 +507,19 @@ export default function App() {
         setError(null);
       }
       if (soundEnabled) playPing(result.severity >= 4 ? 'alert' : 'sos');
+
+      const detectedSourceCode = getLanguageByCodeOrName(
+        result.detected_language?.code || activeVoiceCapture?.detectedLanguage?.code || detectedLang.code
+      ).code;
+      if (
+        result.source === 'nebius_nemotron' &&
+        targetLanguageCode !== detectedSourceCode &&
+        result.translation_status !== 'ok'
+      ) {
+        // Deliberately do not await: online triage and its SOS card are already
+        // available while /api/translate-emergency runs in the background.
+        void handleTranslateSOS(targetLanguageCode, result, { onlineOnly: true });
+      }
     } catch (error) {
       // Unexpected client failure is still not a reason to hide the local SOS.
       console.error('Online emergency analysis failed:', error);
@@ -529,13 +538,12 @@ export default function App() {
     if (text) analyzeRef.current(text);
   }, [voiceSubmitTick]);
 
-  // Dedicated "Translate SOS" Handler. It runs ONLY when the person explicitly
-  // taps "Translate SOS" on the card (with the card's own target language); no
-  // triage path calls it, so a language chosen for triage can never translate
-  // or overwrite the SOS transmission on its own.
+  // Dedicated "Translate SOS" Handler. Automatic online follow-ups pass the
+  // just-received result explicitly and opt out of the offline phrasebook.
   const handleTranslateSOS = async (
     targetLangCode: string,
-    resultToTranslate: EmergencyAnalysisResult | null = currentResult
+    resultToTranslate: EmergencyAnalysisResult | null = currentResult,
+    options: { onlineOnly?: boolean } = {}
   ) => {
     if (!resultToTranslate) return;
 
@@ -580,11 +588,13 @@ export default function App() {
         const unavailableMessage = formatTranslationUnavailableMessage(
           'the original transmission is not available for this record.'
         );
-        updateTranslationResult({
-          translation: undefined,
-          translation_status: 'error',
-          translation_error: { code: 'TRANSLATION_INVALID_INPUT', error: unavailableMessage }
-        });
+        if (options.onlineOnly) {
+          updateTranslationResult({
+            translation: undefined,
+            translation_status: 'error',
+            translation_error: { code: 'TRANSLATION_INVALID_INPUT', error: unavailableMessage }
+          });
+        }
         if (isResultDisplayed()) setError(unavailableMessage);
         return;
       }
@@ -596,8 +606,10 @@ export default function App() {
         return validateTranslatedMessage(candidate.translated_message).ok;
       };
 
-      // The user-initiated translation retains its offline/resilience behavior.
-      if (offlineForce || !networkAvailable || !navigator.onLine) {
+      // Manual translation retains its offline/resilience behavior. Automatic
+      // follow-up for a Nemotron result is always online, even if connectivity
+      // changes while the independent request is running.
+      if (!options.onlineOnly && (offlineForce || !networkAvailable || !navigator.onLine)) {
         const localTrans = translateEmergencyOffline(
           sourceTranscript,
           targetCode,
@@ -623,8 +635,8 @@ export default function App() {
       }
 
       // Online translation failures are explicit; they never fall back to the
-      // offline engine. The applied mode is sent with the request so a mode
-      // change while it is in flight cannot change how it is handled.
+      // offline engine. `onlineOnly` also sends false if the mode changed after
+      // this result's successful online triage.
       let failureCode = 'TRANSLATION_FAILED';
       try {
         const response = await fetch(apiUrl('/api/translate-emergency'), {
@@ -635,7 +647,7 @@ export default function App() {
             targetLanguage: targetCode,
             sourceLanguage: resultToTranslate.detected_language?.code || resultToTranslate.language,
             currentSOS: resultToTranslate,
-            offlineModeForce: offlineForce,
+            offlineModeForce: options.onlineOnly ? false : offlineForce,
             location: locationInfo
           })
         });

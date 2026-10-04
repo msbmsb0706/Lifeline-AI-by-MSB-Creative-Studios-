@@ -90,13 +90,11 @@ assert(handler.includes("source: 'offline_fallback'") && handler.includes('NOT s
   'App labels its local fallback and never claims the SOS was delivered');
 const displayedOnlineResult = handler.indexOf('setCurrentResult(result)');
 const savedOnlineResult = handler.indexOf('saveReportToHistory(result)', displayedOnlineResult);
-assert(displayedOnlineResult !== -1 && savedOnlineResult > displayedOnlineResult,
-  'the online SOS is displayed and saved on its own, before anything else can delay it');
-// The SOS translation is a separate, user-initiated action (the card's
-// Translate SOS button). Triage itself must never start a translation, so the
-// language chosen for triage cannot move or hold the SOS card.
-assert(!handler.includes('handleTranslateSOS'),
-  'triage never starts a translation by itself — the SOS translation stays user-initiated');
+const automaticFollowup = handler.indexOf('void handleTranslateSOS(targetLanguageCode, result, { onlineOnly: true })');
+assert(displayedOnlineResult !== -1 && savedOnlineResult > displayedOnlineResult && automaticFollowup > savedOnlineResult,
+  'online SOS is displayed and saved before the separate automatic follow-up starts');
+assert(automaticFollowup !== -1 && !/await\s+handleTranslateSOS\(/.test(handler),
+  'automatic translation is fired without awaiting it, so a slow translator cannot block the SOS card');
 const translateHandler = app.slice(app.indexOf('const handleTranslateSOS ='), app.indexOf('\n  return (', app.indexOf('const handleTranslateSOS =')));
 assert(translateHandler.includes('offlineForce || !networkAvailable || !navigator.onLine'),
   'the bundled phrasebook is used only in explicit Offline Mode or while the device is offline');
