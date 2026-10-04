@@ -481,3 +481,77 @@ section('The translated SOS message is what gets saved with the record');
     await app.unmount();
   }
 }
+
+// The two scenarios the user asked to confirm, end to end:
+//   A) triage language = English (panel), SOS translation = Tamil (card box)
+//   B) the same triage output is kept while a DIFFERENT language is chosen for
+//      the message — one Analyze, one tap, never a second triage run.
+const TA_STRUCT_HEADLINE = 'கடுமையான மருத்துவ அவசரநிலை';
+const TA_STRUCT_STEP = 'உடனடியாக ஆம்புலன்ஸ் அழைக்கவும்';
+
+function tamilStructuredTranslation() {
+  return {
+    ...tamilTranslation(),
+    translated_headline: TA_STRUCT_HEADLINE,
+    translated_action_steps: [TA_STRUCT_STEP],
+    translated_instructions_for_responders: 'மருத்துவ அவசரநிலை — முன்னுரிமை 5/5.',
+    translated_first_aid_actions: ['நோயாளியை அசைக்க வேண்டாம்'],
+    translated_needs: ['ஆம்புலன்ஸ்']
+  };
+}
+
+section('English triage + any other SOS language: one triage, one tap, card unchanged');
+{
+  const app = await mountApp(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    if (url === '/api/analyze-emergency') {
+      return mockResponse(200, { success: true, data: onlineResult('english-triage-other-sos') });
+    }
+    if (url === '/api/translate-emergency') {
+      assertEqual(body?.targetLanguage, 'ta', 'the SOS message is requested in the user-defined card language');
+      return mockResponse(200, { success: true, data: tamilStructuredTranslation() });
+    }
+    throw new Error(`Unexpected request in App test: ${url}`);
+  });
+
+  try {
+    // Triage language chosen ABOVE = English.
+    await app.click('skip-splash-btn');
+    await app.chooseLanguage('target-emergency-language-select', 'en');
+    await app.click('preset-tamil-chest-pain');
+    await app.click('submit-emergency-analysis-btn');
+    await app.waitForCard();
+
+    const cardBefore = app.h.document.getElementById('visual-sos-card')?.textContent || '';
+    assert(cardBefore.includes('MEDICAL EMERGENCY — CRITICAL'), 'the card is triaged in the selected English panel language');
+    assertEqual(app.requests.filter((r) => r.url === '/api/analyze-emergency').length, 1, 'exactly ONE triage request is made');
+    assertEqual(app.translationRequests().length, 0, 'triaging alone still translates nothing');
+
+    // The person chooses a DIFFERENT language for the SOS message on the card.
+    await app.chooseLanguage('sos-target-lang-select', 'ta');
+    await app.click('translate-sos-btn');
+    let translated = false;
+    await act(async () => {
+      translated = await waitFor(
+        () => (app.h.document.getElementById('dispatch-transmission-container')?.textContent || '').includes(TAMIL_TRANSLATED_TEXT),
+        2000
+      );
+    });
+    assert(translated, 'the SOS message is translated into the user-defined language on one tap');
+
+    // The triage output is untouched, and triage is not run a second time.
+    const cardAfter = app.h.document.getElementById('visual-sos-card')?.textContent || '';
+    assert(cardAfter.includes('MEDICAL EMERGENCY — CRITICAL'), 'the English triage card is unchanged');
+    assert(!cardAfter.includes(TA_STRUCT_HEADLINE), 'the Tamil structured headline never replaces the English card headline');
+    assert(!cardAfter.includes(TA_STRUCT_STEP), 'the Tamil structured steps never replace the English card steps');
+    assertEqual(app.requests.filter((r) => r.url === '/api/analyze-emergency').length, 1,
+      'translating the SOS never re-runs triage (no two times)');
+    assertEqual(app.translationRequests().length, 1, 'one tap issues exactly one translation');
+    const transmission = app.h.document.getElementById('dispatch-transmission-container')?.textContent || '';
+    assert(transmission.includes(ORIGINAL_TEXT), 'the person\'s original words stay beside the translated message');
+    assert((app.h.document.body.textContent || '').includes('Card unchanged'),
+      'the status confirms the card itself was not changed');
+  } finally {
+    await app.unmount();
+  }
+}
